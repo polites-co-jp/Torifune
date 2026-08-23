@@ -1,0 +1,12 @@
+# 既定でLFに正規化する。Windowsでの作業でもリポジトリ内はLFで統一する。
+* text=auto eol=lf
+
+# シェルスクリプトは必ずLF。CRLFだとコンテナ内で shebang が壊れる。
+*.sh text eol=lf
+Dockerfile text eol=lf
+
+# 生成物・バイナリ
+pnpm-lock.yaml -diff
+*.png binary
+*.jpg binary
+*.woff2 binary

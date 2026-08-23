@@ -1,0 +1,13 @@
+node_modules/
+.next/
+dist/
+coverage/
+playwright-report/
+test-results/
+pnpm-lock.yaml
+next-env.d.ts
+docs/
+
+# ルールを定義するファイル。整形で差分を出さない。
+CLAUDE.md
+.claude/

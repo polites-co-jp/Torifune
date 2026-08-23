@@ -1,0 +1,39 @@
+{
+  "name": "torifune",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Torifune - open source marketing management application",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/polites-co-jp/Torifune.git"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@11.8.0",
+  "scripts": {
+    "dev": "pnpm --filter @torifune/web dev",
+    "build": "pnpm -r build",
+    "start": "pnpm --filter @torifune/web start",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "pnpm -r typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "pnpm --filter @torifune/web test:e2e",
+    "migrate": "pnpm --filter @torifune/cli exec torifune migrate"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.2.0",
+    "eslint": "^10.9.0",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.9.6",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.67.0",
+    "vitest": "^4.1.11"
+  }
+}
