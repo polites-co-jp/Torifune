@@ -66,6 +66,9 @@ importers:
       '@tailwindcss/postcss':
         specifier: ^4.3.3
         version: 4.3.3
+      '@torifune/cli':
+        specifier: workspace:*
+        version: link:../../packages/cli
       '@types/pg':
         specifier: ^8.23.1
         version: 8.23.1

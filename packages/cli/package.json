@@ -18,5 +18,10 @@
   },
   "devDependencies": {
     "@types/pg": "^8.23.1"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./migrate/runner": "./src/migrate/runner.ts",
+    "./migrate/loader": "./src/migrate/loader.ts"
   }
 }

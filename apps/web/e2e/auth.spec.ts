@@ -1,14 +1,14 @@
 import { expect, test, type APIRequestContext } from '@playwright/test';
+import { SEEDED_ADMIN } from './global-setup';
 
 /**
  * 認証の E2E。
  *
- * `/setup` は「管理者が0人」を前提にするため、このファイルは**直列で実行する**。
- * 並列だと、あるテストが作った管理者で別のテストの前提が崩れる。
+ * 開始状態は `global-setup.ts` が作る（管理者が1人だけいる状態）。
+ * 「管理者が0人のときの挙動」は結合テスト側で検証する。
  */
-test.describe.configure({ mode: 'serial' });
 
-const password = 'correct horse battery staple';
+const origin = 'http://127.0.0.1:3000';
 
 function unique(): string {
   return Math.random().toString(36).slice(2, 10);
@@ -25,71 +25,56 @@ async function csrf(request: APIRequestContext): Promise<string> {
  *
  * Playwright の API クライアントは Origin を送らない。実ブラウザは POST に必ず
  * Origin を付けるため、送らないクライアントは CSRF 検証で弾かれるのが正しい挙動。
- * ここでは「ブラウザとして振る舞う」ことを明示する。
  */
 function browserHeaders(token: string): Record<string, string> {
-  return { 'X-CSRF-Token': token, Origin: 'http://127.0.0.1:3000' };
+  return { 'X-CSRF-Token': token, Origin: origin };
 }
 
-test('初回セットアップ → ログイン → ログアウトが通る', async ({ request }) => {
-  const suffix = unique();
-  const loginId = `admin${suffix}`;
-
-  // --- セットアップが開いている ---
-  const setupPage = await request.get('/setup');
-  expect(setupPage.status()).toBe(200);
-
-  // --- 最初の管理者を作る ---
+async function loginAsSeededAdmin(request: APIRequestContext): Promise<void> {
   const token = await csrf(request);
-  const created = await request.post('/api/v1/setup', {
+  const response = await request.post('/api/v1/auth/login', {
     headers: browserHeaders(token),
     data: {
-      loginId,
-      displayName: 'E2E Admin',
-      email: `${loginId}@example.com`,
-      password,
+      loginId: SEEDED_ADMIN.loginId,
+      password: SEEDED_ADMIN.password,
       csrfToken: token,
     },
   });
-  expect(created.status()).toBe(201);
+  expect(response.status()).toBe(200);
+}
 
-  // --- セットアップが閉じる ---
-  expect((await request.get('/setup')).status()).toBe(404);
-
-  const second = await request.post('/api/v1/setup', {
-    headers: browserHeaders(token),
-    data: {
-      loginId: `other${suffix}`,
-      displayName: 'Other',
-      email: `other${suffix}@example.com`,
-      password,
-      csrfToken: token,
-    },
-  });
-  expect(second.status()).toBe(404);
-
-  // --- ログインできる ---
-  const loginToken = await csrf(request);
+test('ログイン → me → ログアウトが通る', async ({ request }) => {
+  const token = await csrf(request);
   const loggedIn = await request.post('/api/v1/auth/login', {
-    headers: browserHeaders(loginToken),
-    data: { loginId, password, csrfToken: loginToken },
+    headers: browserHeaders(token),
+    data: {
+      loginId: SEEDED_ADMIN.loginId,
+      password: SEEDED_ADMIN.password,
+      csrfToken: token,
+    },
   });
   expect(loggedIn.status()).toBe(200);
 
-  // セッション Cookie が HttpOnly である
+  // セッション Cookie の属性
   const setCookie = loggedIn.headers()['set-cookie'] ?? '';
   expect(setCookie).toContain('torifune_session=');
   expect(setCookie).toContain('HttpOnly');
   expect(setCookie).toContain('SameSite');
 
-  // --- 認証済みとして扱われる ---
+  // 認証済みとして扱われる
   const me = await request.get('/api/v1/auth/me');
   expect(me.status()).toBe(200);
   const meBody = (await me.json()) as { data: Record<string, unknown> };
-  expect(meBody.data['loginId']).toBe(loginId);
-  expect(Object.keys(meBody.data).sort()).toEqual(['displayName', 'email', 'id', 'loginId']);
+  expect(meBody.data['loginId']).toBe(SEEDED_ADMIN.loginId);
+  expect(Object.keys(meBody.data).sort()).toEqual([
+    'displayName',
+    'email',
+    'id',
+    'loginId',
+    'permissions',
+  ]);
 
-  // --- ログアウトすると認証が切れる ---
+  // ログアウトすると認証が切れる
   const logoutToken = await csrf(request);
   const loggedOut = await request.post('/api/v1/auth/logout', {
     headers: browserHeaders(logoutToken),
@@ -100,9 +85,28 @@ test('初回セットアップ → ログイン → ログアウトが通る', a
   expect((await request.get('/api/v1/auth/me')).status()).toBe(401);
 });
 
+test('管理者がいる状態では /setup が 404 になる', async ({ request }) => {
+  expect((await request.get('/setup')).status()).toBe(404);
+});
+
+test('管理者がいる状態では /api/v1/setup も拒否される', async ({ request }) => {
+  const token = await csrf(request);
+  const response = await request.post('/api/v1/setup', {
+    headers: browserHeaders(token),
+    data: {
+      loginId: `other${unique()}`,
+      displayName: 'Other',
+      email: `other${unique()}@example.com`,
+      password: 'whatever password',
+      csrfToken: token,
+    },
+  });
+  expect(response.status()).toBe(404);
+});
+
 test('CSRF トークンが無い POST は拒否される', async ({ request }) => {
   const response = await request.post('/api/v1/auth/login', {
-    headers: { Origin: 'http://127.0.0.1:3000' },
+    headers: { Origin: origin },
     data: { loginId: 'someone', password: 'whatever' },
   });
   expect(response.status()).toBe(403);
@@ -127,7 +131,7 @@ test('別オリジンからの POST は拒否される', async ({ request }) => 
 });
 
 test('未認証で /api/v1/auth/me を呼ぶと 401', async ({ request }) => {
-  const response = await request.get('/api/v1/auth/me');
+  const response = await request.get('/api/v1/auth/me', { headers: { Cookie: '' } });
   expect(response.status()).toBe(401);
 });
 
@@ -175,4 +179,17 @@ test('エラー応答に内部情報が含まれない', async ({ request }) => 
   expect(body).not.toContain('argon2');
   expect(body).not.toContain('postgres');
   expect(body).not.toMatch(/at .*\.ts:\d+/);
+});
+
+test('ログアウト後に再ログインできる', async ({ request }) => {
+  await loginAsSeededAdmin(request);
+
+  const logoutToken = await csrf(request);
+  await request.post('/api/v1/auth/logout', {
+    headers: browserHeaders(logoutToken),
+    data: { csrfToken: logoutToken },
+  });
+
+  await loginAsSeededAdmin(request);
+  expect((await request.get('/api/v1/auth/me')).status()).toBe(200);
 });

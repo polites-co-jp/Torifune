@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { useScratchDatabase, type ScratchDatabase } from '../test-support/database';
 import { createPostgresProvider } from './postgres-provider';
 import type { DatabaseProvider } from './provider';
 
@@ -12,22 +13,20 @@ async function errorFrom(promise: Promise<unknown>): Promise<Error> {
   throw new Error('失敗するはずの処理が成功した');
 }
 
-/**
- * 結合テスト。PostgreSQL を必要とする。
- * DATABASE_URL が無いときは失敗させる（スキップにすると DB 障害を見逃す）。
- */
-const DATABASE_URL = process.env['TORIFUNE_TEST_DATABASE_URL'] ?? process.env['DATABASE_URL'];
-
-if (DATABASE_URL === undefined || DATABASE_URL === '') {
-  throw new Error(
-    '結合テストには TORIFUNE_TEST_DATABASE_URL または DATABASE_URL が必要。' +
-      '`docker compose up -d postgres-test` の上で設定する。',
-  );
-}
-
-const databaseUrl: string = DATABASE_URL;
+/** 結合テスト。PostgreSQL を必要とする。このファイル専用のデータベースを使う。 */
+let scratch: ScratchDatabase;
+let databaseUrl: string;
 
 let provider: DatabaseProvider;
+
+beforeAll(async () => {
+  scratch = await useScratchDatabase('dbprovider');
+  databaseUrl = scratch.connectionString;
+});
+
+afterAll(async () => {
+  await scratch.dispose();
+});
 
 beforeEach(() => {
   provider = createPostgresProvider({ connectionString: databaseUrl, maxConnections: 4 });

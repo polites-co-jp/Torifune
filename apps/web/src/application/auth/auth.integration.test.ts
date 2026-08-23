@@ -2,10 +2,9 @@ import { uuidv7 } from 'uuidv7';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { hashPassword } from '../../authentication/password';
 import { hashSessionToken } from '../../authentication/session-token';
-import { createPostgresProvider } from '../../database/postgres-provider';
-import type { Connection, DatabaseProvider } from '../../database/provider';
-import { setDatabaseProvider } from '../../database/registry';
+import type { Connection } from '../../database/provider';
 import { setAuthenticationProvider } from '../../authentication/registry';
+import { useScratchDatabase, type ScratchDatabase } from '../../test-support/database';
 import { setNotifier, type Notification } from '../notification';
 import { withConnection } from '../transaction';
 import { getCurrentUser } from './current-user';
@@ -18,16 +17,9 @@ import {
 } from './password-reset';
 import { completeSetup, isSetupOpen } from './setup';
 
-const DATABASE_URL = process.env['TORIFUNE_TEST_DATABASE_URL'] ?? process.env['DATABASE_URL'];
-
-if (DATABASE_URL === undefined || DATABASE_URL === '') {
-  throw new Error('結合テストには TORIFUNE_TEST_DATABASE_URL または DATABASE_URL が必要。');
-}
-
-const databaseUrl: string = DATABASE_URL;
 const request = { ipAddress: '203.0.113.10', userAgent: 'vitest' } as const;
 
-let provider: DatabaseProvider;
+let scratch: ScratchDatabase;
 const createdUserIds: string[] = [];
 const sentNotifications: Notification[] = [];
 
@@ -82,28 +74,19 @@ async function countAuditEvents(userId: string, event: string): Promise<number> 
 }
 
 beforeAll(async () => {
-  provider = createPostgresProvider({ connectionString: databaseUrl, maxConnections: 8 });
-  setDatabaseProvider(provider);
+  // このファイル専用のデータベースを使う。初回セットアップは「管理者が0人」を
+  // 前提にするため、他のテストファイルと共有できない。
+  scratch = await useScratchDatabase('auth');
   setNotifier({
     async send(notification) {
       sentNotifications.push(notification);
     },
   });
-
-  // 前回の実行が途中で落ちた場合、ユーザーが残っていることがある。
-  // 初回セットアップは「管理者が0人」を前提にするため、開始状態を保証する。
-  // 専用のテストデータベースを使う前提（compose の postgres-test）。
-  await withConnection(async (connection) => {
-    await connection.db.deleteFrom('users').execute();
-    await connection.db.deleteFrom('login_attempts').execute();
-    await connection.db.deleteFrom('auth_audit_logs').execute();
-  });
 });
 
 afterAll(async () => {
-  setDatabaseProvider(null);
   setAuthenticationProvider(null);
-  await provider.disconnect();
+  await scratch.dispose();
 });
 
 afterEach(async () => {

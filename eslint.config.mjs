@@ -86,6 +86,26 @@ export default tseslint.config(
     },
   },
 
+  // CLI はテスト支援でのみ使う。本番コードから引くとアプリに CLI が同梱される。
+  {
+    files: ['apps/web/src/**/*.{ts,tsx}'],
+    ignores: ['apps/web/src/test-support/**', 'apps/web/src/**/*.test.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['@torifune/cli', '@torifune/cli/*'],
+              message:
+                '@torifune/cli はテスト支援専用。本番コードから参照しない（アプリに CLI が同梱される）。',
+            },
+          ],
+        },
+      ],
+    },
+  },
+
   // UI から Database へ直接触らない（docs/仕様書/06_画面設計.md §3）。
   {
     files: ['apps/web/src/ui/**/*.{ts,tsx}', 'apps/web/src/app/**/*.{ts,tsx}'],
