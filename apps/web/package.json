@@ -11,6 +11,7 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@node-rs/argon2": "^2.1.0",
     "@torifune/plugin-api": "workspace:*",
     "kysely": "^0.29.5",
     "next": "^16.3.2",

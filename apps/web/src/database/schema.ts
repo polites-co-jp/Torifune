@@ -75,6 +75,22 @@ export interface AuthAuditLogsTable {
   occurred_at: CreatedAt;
 }
 
+export interface PasswordResetTokensTable {
+  id: string;
+  user_id: string;
+  token_hash: string;
+  expires_at: ColumnType<Date, Date | string, Date | string>;
+  used_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  created_at: CreatedAt;
+}
+
+export interface LoginAttemptsTable {
+  id: string;
+  /** 'ip:1.2.3.4' / 'login:alice' の形式。 */
+  key: string;
+  occurred_at: CreatedAt;
+}
+
 export interface SchemaMigrationsTable {
   version: string;
   name: string;
@@ -91,5 +107,7 @@ export interface Schema {
   role_permissions: RolePermissionsTable;
   sessions: SessionsTable;
   auth_audit_logs: AuthAuditLogsTable;
+  password_reset_tokens: PasswordResetTokensTable;
+  login_attempts: LoginAttemptsTable;
   schema_migrations: SchemaMigrationsTable;
 }
