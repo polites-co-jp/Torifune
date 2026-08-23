@@ -58,20 +58,20 @@ afterEach(async () => {
 });
 
 describe('実効 Permission', () => {
-  it('administrator は 12 種すべてを持つ', async () => {
+  it('administrator は 9 種すべてを持つ', async () => {
     const userId = await createUserWithRoles(['administrator']);
 
     const permissions = await withConnection((c) => effectivePermissions(c, userId));
 
-    expect(permissions.size).toBe(12);
+    expect(permissions.size).toBe(9);
   });
 
-  it('viewer は read 系 3 種だけを持つ', async () => {
+  it('viewer は read 系だけを持つ', async () => {
     const userId = await createUserWithRoles(['viewer']);
 
     const permissions = await withConnection((c) => effectivePermissions(c, userId));
 
-    expect([...permissions].sort()).toEqual(['content.read', 'site.read', 'social.read']);
+    expect([...permissions].sort()).toEqual(['site.read', 'social.read']);
   });
 
   it('ロールを持たないユーザーは Permission を1つも持たない', async () => {
@@ -89,8 +89,6 @@ describe('実効 Permission', () => {
     const permissions = await withConnection((c) => effectivePermissions(c, userId));
 
     expect([...permissions].sort()).toEqual([
-      'content.read',
-      'content.write',
       'site.read',
       'site.write',
       'social.read',

@@ -32,7 +32,7 @@ test('管理者にはすべてのナビゲーション項目が見える', async
   await page.goto('/dashboard');
 
   const nav = page.getByRole('navigation', { name: 'メインナビゲーション' });
-  for (const label of ['ダッシュボード', 'Webサイト', 'コンテンツ', 'SNS', '設定', 'プラグイン']) {
+  for (const label of ['ダッシュボード', 'Webサイト', 'SNS', '設定', 'プラグイン']) {
     await expect(nav.getByRole('link', { name: label })).toBeVisible();
   }
 });

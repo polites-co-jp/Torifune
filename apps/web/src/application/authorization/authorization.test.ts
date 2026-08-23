@@ -49,8 +49,8 @@ afterEach(() => {
 });
 
 describe('Permission レジストリ', () => {
-  it('本体の Permission 12 種が最初から登録されている', () => {
-    expect(listPermissions()).toHaveLength(12);
+  it('本体の Permission 9 種が最初から登録されている', () => {
+    expect(listPermissions()).toHaveLength(9);
   });
 
   it('Plugin の Permission を登録できる', () => {
@@ -106,7 +106,7 @@ describe('Permission レジストリ', () => {
     unregisterPermissionsOf('seo');
 
     expect(listPermissions().map((p) => p.name)).not.toContain('seo.a.read');
-    expect(listPermissions()).toHaveLength(12);
+    expect(listPermissions()).toHaveLength(9);
   });
 
   it('一覧が名前順である', () => {
@@ -121,7 +121,7 @@ describe('requirePermission', () => {
   });
 
   it('Permission を持っていなければ ForbiddenError', () => {
-    expect(() => requirePermission(context(['content.read']), 'site.read')).toThrowError(
+    expect(() => requirePermission(context(['social.read']), 'site.read')).toThrowError(
       ForbiddenError,
     );
   });

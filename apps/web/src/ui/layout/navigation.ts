@@ -19,7 +19,6 @@ export interface NavigationItem {
 export const CORE_NAVIGATION: readonly NavigationItem[] = [
   { label: 'ダッシュボード', href: '/dashboard', permission: null },
   { label: 'Webサイト', href: '/sites', permission: 'site.read' },
-  { label: 'コンテンツ', href: '/contents', permission: 'content.read' },
   { label: 'SNS', href: '/social', permission: 'social.read' },
   { label: '設定', href: '/settings', permission: 'user.manage' },
   { label: 'プラグイン', href: '/plugins', permission: 'plugin.manage' },

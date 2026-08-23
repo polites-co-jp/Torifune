@@ -70,7 +70,6 @@ describe('ナビゲーション', () => {
     expect(CORE_NAVIGATION.map((item) => item.label)).toEqual([
       'ダッシュボード',
       'Webサイト',
-      'コンテンツ',
       'SNS',
       '設定',
       'プラグイン',

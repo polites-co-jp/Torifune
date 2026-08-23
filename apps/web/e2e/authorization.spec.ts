@@ -28,14 +28,14 @@ async function loginAsAdmin(request: APIRequestContext): Promise<void> {
   expect(response.status()).toBe(200);
 }
 
-test('管理者は 12 種の permissions を持つ', async ({ request }) => {
+test('管理者は 9 種の permissions を持つ', async ({ request }) => {
   await loginAsAdmin(request);
 
   const me = await request.get('/api/v1/auth/me');
   expect(me.status()).toBe(200);
 
   const body = (await me.json()) as { data: { permissions: string[] } };
-  expect(body.data.permissions).toHaveLength(12);
+  expect(body.data.permissions).toHaveLength(9);
   expect(body.data.permissions).toContain('user.manage');
   // 並び順が安定していること（UI 側の比較を安定させるため）
   expect(body.data.permissions).toEqual([...body.data.permissions].sort());
@@ -52,7 +52,7 @@ test('管理者はロール一覧と権限一覧を見られる', async ({ reque
   const permissions = await request.get('/api/v1/permissions');
   expect(permissions.status()).toBe(200);
   const permissionBody = (await permissions.json()) as { data: unknown[] };
-  expect(permissionBody.data).toHaveLength(12);
+  expect(permissionBody.data).toHaveLength(9);
 });
 
 test('未認証では 401 になる', async ({ request }) => {

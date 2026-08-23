@@ -33,14 +33,16 @@ export function isReservedPermissionNamespace(value: string): boolean {
   return value.startsWith('system.');
 }
 
-/** Torifune 本体が定義する Permission。`001_initial.sql` の投入内容と一致させる。 */
+/**
+ * Torifune 本体が定義する Permission。マイグレーションの投入内容と一致させる。
+ *
+ * **コンテンツは Core の責務ではない**（`docs/仕様書/改訂履歴.md` 2026-08-24）。
+ * コンテンツを扱う Plugin は、自身の Permission を Plugin ID の名前空間で登録する。
+ */
 export const CORE_PERMISSIONS = [
   'site.read',
   'site.write',
   'site.delete',
-  'content.read',
-  'content.write',
-  'content.delete',
   'social.read',
   'social.write',
   'social.delete',
