@@ -1,12 +1,14 @@
 'use client';
 
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import { useState, type FormEvent, type ReactNode } from 'react';
+import { apiRequest } from './client/api-client';
+import { Alert, Button, FormField, Input } from './components';
 
 /**
- * 認証まわりの最低限のフォーム。
+ * 認証まわりのフォーム。
  *
- * `005-ui-shell` で共通コンポーネントへ載せ替える前提の、素朴な実装。
- * 色・余白は CSS 変数のみを参照する（後からデザインを差し替えられるようにするため）。
+ * 共通コンポーネントと共通 API Client の上に載せている。
+ * CSRF トークンの取得は API Client が受け持つため、ここには出てこない。
  */
 
 export interface Field {
@@ -26,72 +28,40 @@ export interface AuthFormProps {
   readonly footer?: ReactNode;
 }
 
-interface ApiError {
-  error?: { code?: string; message?: string };
-}
-
 export function AuthForm(props: AuthFormProps) {
-  const [csrfToken, setCsrfToken] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, readonly string[]>>({});
   const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    void fetch('/api/v1/auth/csrf')
-      .then((response) => response.json())
-      .then((body: { data?: { csrfToken?: string } }) => {
-        if (!cancelled && typeof body.data?.csrfToken === 'string') {
-          setCsrfToken(body.data.csrfToken);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setMessage('通信に失敗しました。');
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   async function onSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     setMessage(null);
+    setFieldErrors({});
     setBusy(true);
 
     const form = new FormData(event.currentTarget);
-    const payload: Record<string, string> = { csrfToken: csrfToken ?? '' };
+    const payload: Record<string, string> = {};
     for (const field of props.fields) {
       payload[field.name] = String(form.get(field.name) ?? '');
     }
 
-    try {
-      const response = await fetch(props.endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken ?? '' },
-        body: JSON.stringify(payload),
-      });
+    const result = await apiRequest(props.endpoint, { method: 'POST', body: payload });
 
-      if (response.ok) {
-        window.location.assign(props.redirectTo);
-        return;
-      }
-
-      // サーバーが返した表示用メッセージだけを出す。
-      // 内部の詳細を画面へ出さない（06_画面設計.md §34）。
-      const body = (await response.json().catch(() => ({}))) as ApiError;
-      setMessage(body.error?.message ?? 'エラーが発生しました。');
-    } catch {
-      setMessage('通信に失敗しました。');
-    } finally {
-      setBusy(false);
+    if (result.ok) {
+      window.location.assign(props.redirectTo);
+      return;
     }
+
+    // 表示文言は画面側で持つ。内部事情が混ざった文言を出さない。
+    setMessage(result.error.message);
+    setFieldErrors(result.error.details ?? {});
+    setBusy(false);
   }
 
   return (
     <main
       style={{
-        maxWidth: '360px',
+        maxWidth: 'var(--tf-size-form)',
         margin: '0 auto',
         padding: 'var(--tf-space-8) var(--tf-space-4)',
       }}
@@ -108,60 +78,34 @@ export function AuthForm(props: AuthFormProps) {
       </h2>
 
       {message !== null && (
-        <p
-          role="alert"
-          style={{
-            border: '1px solid var(--tf-color-danger)',
-            borderRadius: 'var(--tf-radius-md)',
-            padding: 'var(--tf-space-3)',
-            marginBottom: 'var(--tf-space-4)',
-            color: 'var(--tf-color-danger)',
-          }}
-        >
-          {message}
-        </p>
+        <div style={{ marginBottom: 'var(--tf-space-4)' }}>
+          <Alert tone="danger">{message}</Alert>
+        </div>
       )}
 
       <form onSubmit={onSubmit}>
         {props.fields.map((field) => (
-          <div key={field.name} style={{ marginBottom: 'var(--tf-space-4)' }}>
-            <label
-              htmlFor={field.name}
-              style={{ display: 'block', marginBottom: 'var(--tf-space-1)' }}
-            >
-              {field.label}
-            </label>
-            <input
-              id={field.name}
-              name={field.name}
-              type={field.type}
-              autoComplete={field.autoComplete}
-              required
-              style={{
-                width: '100%',
-                padding: 'var(--tf-space-2)',
-                border: '1px solid var(--tf-color-border)',
-                borderRadius: 'var(--tf-radius-md)',
-              }}
-            />
-          </div>
+          <FormField
+            key={field.name}
+            label={field.label}
+            required
+            {...(fieldErrors[field.name] === undefined ? {} : { errors: fieldErrors[field.name] })}
+          >
+            {(fieldProps) => (
+              <Input
+                {...fieldProps}
+                name={field.name}
+                type={field.type}
+                autoComplete={field.autoComplete}
+                required
+              />
+            )}
+          </FormField>
         ))}
 
-        <button
-          type="submit"
-          disabled={busy || csrfToken === null}
-          style={{
-            width: '100%',
-            padding: 'var(--tf-space-3)',
-            background: 'var(--tf-color-primary)',
-            color: 'var(--tf-color-primary-text)',
-            border: 'none',
-            borderRadius: 'var(--tf-radius-md)',
-            cursor: busy ? 'progress' : 'pointer',
-          }}
-        >
+        <Button type="submit" variant="primary" disabled={busy} style={{ width: '100%' }}>
           {props.submitLabel}
-        </button>
+        </Button>
       </form>
 
       {props.footer !== undefined && (
