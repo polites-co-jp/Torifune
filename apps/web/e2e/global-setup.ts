@@ -36,6 +36,7 @@ async function seedAdministrator(connectionString: string): Promise<void> {
   try {
     // 前回の実行の残骸を消す。専用のテストデータベースを使う前提。
     await client.query('DELETE FROM sites');
+    await client.query('DELETE FROM social_accounts');
     await client.query('DELETE FROM users');
     await client.query('DELETE FROM login_attempts');
 

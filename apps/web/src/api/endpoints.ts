@@ -16,5 +16,9 @@ import '@/app/api/v1/roles/route';
 import '@/app/api/v1/setup/route';
 import '@/app/api/v1/sites/route';
 import '@/app/api/v1/sites/[id]/route';
+import '@/app/api/v1/social/accounts/route';
+import '@/app/api/v1/social/accounts/[id]/route';
+import '@/app/api/v1/social/posts/route';
+import '@/app/api/v1/social/posts/[id]/route';
 
 export {};

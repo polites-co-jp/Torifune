@@ -86,6 +86,30 @@ export interface SitesTable {
   created_by: string | null;
 }
 
+export interface SocialAccountsTable {
+  id: string;
+  provider: string;
+  display_name: string;
+  handle: Generated<string>;
+  /** **暗号化済みの文字列**。平文を入れてはならない。 */
+  credential: string | null;
+  status: Generated<string>;
+  created_at: CreatedAt;
+  updated_at: UpdatedAt;
+}
+
+export interface SocialPostsTable {
+  id: string;
+  social_account_id: string;
+  body: string;
+  scheduled_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  status: Generated<string>;
+  published_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  failure_reason: string | null;
+  created_at: CreatedAt;
+  updated_at: UpdatedAt;
+}
+
 export interface PasswordResetTokensTable {
   id: string;
   user_id: string;
@@ -113,6 +137,8 @@ export interface SchemaMigrationsTable {
 export interface Schema {
   users: UsersTable;
   sites: SitesTable;
+  social_accounts: SocialAccountsTable;
+  social_posts: SocialPostsTable;
   roles: RolesTable;
   permissions: PermissionsTable;
   user_roles: UserRolesTable;

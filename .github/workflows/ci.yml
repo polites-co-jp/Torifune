@@ -12,8 +12,8 @@ concurrency:
 env:
   # 結合テスト用。services.postgres が公開するポートに合わせる。
   DATABASE_URL: postgresql://torifune:torifune@localhost:5432/torifune_test
-  # テスト用の固定鍵。本番の鍵ではない。
-  TORIFUNE_ENCRYPTION_KEY: dGVzdC1vbmx5LWtleS1kby1ub3QtdXNlLWluLXByb2QhIQ==
+  # テスト用の固定鍵。本番の鍵ではない。32バイトちょうどである必要がある。
+  TORIFUNE_ENCRYPTION_KEY: dGVzdC1vbmx5LWtleS1kby1ub3QtdXNlLWluLXByb2Q=
 
 jobs:
   check:

@@ -43,6 +43,10 @@ test('OpenAPI に登録済みエンドポイントが含まれる', async ({ req
     '/setup',
     '/sites',
     '/sites/{id}',
+    '/social/accounts',
+    '/social/accounts/{id}',
+    '/social/posts',
+    '/social/posts/{id}',
   ]);
 });
 
