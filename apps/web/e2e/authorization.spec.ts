@@ -1,5 +1,4 @@
-import { expect, test, type APIRequestContext } from '@playwright/test';
-import { SEEDED_ADMIN } from './global-setup';
+import { expect, test } from '@playwright/test';
 
 /**
  * 認可の E2E。
@@ -7,30 +6,7 @@ import { SEEDED_ADMIN } from './global-setup';
  * 開始状態は `global-setup.ts` が作る（管理者が1人だけいる状態）。
  */
 
-const origin = 'http://127.0.0.1:3000';
-
-async function csrf(request: APIRequestContext): Promise<string> {
-  const response = await request.get('/api/v1/auth/csrf');
-  const body = (await response.json()) as { data: { csrfToken: string } };
-  return body.data.csrfToken;
-}
-
-async function loginAsAdmin(request: APIRequestContext): Promise<void> {
-  const token = await csrf(request);
-  const response = await request.post('/api/v1/auth/login', {
-    headers: { 'X-CSRF-Token': token, Origin: origin },
-    data: {
-      loginId: SEEDED_ADMIN.loginId,
-      password: SEEDED_ADMIN.password,
-      csrfToken: token,
-    },
-  });
-  expect(response.status()).toBe(200);
-}
-
 test('管理者は 9 種の permissions を持つ', async ({ request }) => {
-  await loginAsAdmin(request);
-
   const me = await request.get('/api/v1/auth/me');
   expect(me.status()).toBe(200);
 
@@ -42,8 +18,6 @@ test('管理者は 9 種の permissions を持つ', async ({ request }) => {
 });
 
 test('管理者はロール一覧と権限一覧を見られる', async ({ request }) => {
-  await loginAsAdmin(request);
-
   const roles = await request.get('/api/v1/roles');
   expect(roles.status()).toBe(200);
   const roleBody = (await roles.json()) as { data: { name: string }[] };

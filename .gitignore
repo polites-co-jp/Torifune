@@ -21,6 +21,7 @@ build/
 coverage/
 playwright-report/
 test-results/
+.auth/
 
 # Claude Code（エージェント定義とコマンドはコミットする）
 .claude/settings.local.json

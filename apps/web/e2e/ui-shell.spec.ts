@@ -3,7 +3,9 @@ import { SEEDED_ADMIN } from './global-setup';
 
 /** UI 基盤の E2E。画面から実際に操作して確かめる。 */
 
+/** ログインの流れそのものを試すとき用。他のテストは storageState で既にログイン済み。 */
 async function loginViaUi(page: Page): Promise<void> {
+  await page.context().clearCookies();
   await page.goto('/login');
   await page.getByLabel('ログインID').fill(SEEDED_ADMIN.loginId);
   await page.getByLabel('パスワード').fill(SEEDED_ADMIN.password);
@@ -19,7 +21,6 @@ test('ログイン画面からログインしてダッシュボードへ行け�
 });
 
 test('共通レイアウトにサービス名とユーザー名が出る', async ({ page }) => {
-  await loginViaUi(page);
   await page.goto('/dashboard');
 
   await expect(page.getByRole('link', { name: 'とりふね' })).toBeVisible();
@@ -28,7 +29,6 @@ test('共通レイアウトにサービス名とユーザー名が出る', async
 });
 
 test('管理者にはすべてのナビゲーション項目が見える', async ({ page }) => {
-  await loginViaUi(page);
   await page.goto('/dashboard');
 
   const nav = page.getByRole('navigation', { name: 'メインナビゲーション' });
@@ -74,6 +74,9 @@ test('エラー表示に内部情報が含まれない', async ({ page }) => {
 });
 
 test('ログアウトするとログイン画面へ戻り、認証が切れる', async ({ page }) => {
+  // **自前のセッションでログインしてからログアウトする。**
+  // 共有セッション（storageState）でログアウトすると、サーバー側でそれが失効し、
+  // 他のテストファイルまで巻き添えになる。
   await loginViaUi(page);
   await page.goto('/dashboard');
 
@@ -85,7 +88,6 @@ test('ログアウトするとログイン画面へ戻り、認証が切れる',
 });
 
 test('トークンを差し替えるだけで見た目が変わる（トークン集約の確認）', async ({ page }) => {
-  await loginViaUi(page);
   await page.goto('/dashboard');
 
   const header = page.getByRole('banner');

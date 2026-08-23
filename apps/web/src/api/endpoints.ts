@@ -14,5 +14,7 @@ import '@/app/api/v1/auth/password-reset/request/route';
 import '@/app/api/v1/permissions/route';
 import '@/app/api/v1/roles/route';
 import '@/app/api/v1/setup/route';
+import '@/app/api/v1/sites/route';
+import '@/app/api/v1/sites/[id]/route';
 
 export {};

@@ -57,6 +57,23 @@ export class NotFoundError extends Error {
   }
 }
 
+/**
+ * 入力が業務ルールを満たさない。
+ *
+ * API Layer の Zod でも検証するが、UseCase を直接呼ぶ経路がある
+ * （Server Component、Plugin の Data API）ため、Domain 側でも表現できる必要がある。
+ */
+export class ValidationError extends Error {
+  constructor(
+    readonly resource: string,
+    readonly field: string,
+    readonly detail: string,
+  ) {
+    super(`${resource} の ${field} が不正`);
+    this.name = 'ValidationError';
+  }
+}
+
 /** 一意制約に反する登録・更新。 */
 export class ConflictError extends Error {
   constructor(

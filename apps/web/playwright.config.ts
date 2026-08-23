@@ -16,6 +16,9 @@ export default defineConfig({
   use: {
     baseURL: BASE_URL,
     trace: 'on-first-retry',
+    // 既定でログイン済み。テストごとにログインすると Rate Limit に当たる。
+    // 未認証を試すテストは clearCookies() か Cookie: '' を使う。
+    storageState: './e2e/.auth/admin.json',
   },
   webServer: process.env['TORIFUNE_E2E_BASE_URL']
     ? undefined

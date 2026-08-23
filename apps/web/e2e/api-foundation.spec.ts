@@ -1,5 +1,4 @@
 import { expect, test, type APIRequestContext } from '@playwright/test';
-import { SEEDED_ADMIN } from './global-setup';
 
 /** API 基盤の E2E。既存 API の回帰と、OpenAPI / 応答形式を確認する。 */
 
@@ -9,19 +8,6 @@ async function csrf(request: APIRequestContext): Promise<string> {
   const response = await request.get('/api/v1/auth/csrf');
   const body = (await response.json()) as { data: { csrfToken: string } };
   return body.data.csrfToken;
-}
-
-async function loginAsAdmin(request: APIRequestContext): Promise<void> {
-  const token = await csrf(request);
-  const response = await request.post('/api/v1/auth/login', {
-    headers: { 'X-CSRF-Token': token, Origin: origin },
-    data: {
-      loginId: SEEDED_ADMIN.loginId,
-      password: SEEDED_ADMIN.password,
-      csrfToken: token,
-    },
-  });
-  expect(response.status()).toBe(200);
 }
 
 test('OpenAPI 文書が取得できる', async ({ request }) => {
@@ -55,6 +41,8 @@ test('OpenAPI に登録済みエンドポイントが含まれる', async ({ req
     '/permissions',
     '/roles',
     '/setup',
+    '/sites',
+    '/sites/{id}',
   ]);
 });
 
@@ -108,18 +96,19 @@ test('型が違う入力が 422 になる', async ({ request }) => {
 });
 
 test('未知のフィールドを送っても拒否されない', async ({ request }) => {
+  // 検証を通ることだけを見る。未知のフィールドで 422 にならなければよい。
   const token = await csrf(request);
-  const response = await request.post('/api/v1/auth/login', {
+  const response = await request.post('/api/v1/sites', {
     headers: { 'X-CSRF-Token': token, Origin: origin },
     data: {
-      loginId: SEEDED_ADMIN.loginId,
-      password: SEEDED_ADMIN.password,
+      name: `未知フィールド ${Math.random().toString(36).slice(2, 8)}`,
+      url: 'https://example.com',
       csrfToken: token,
       futureField: 'x',
     },
   });
 
-  expect(response.status()).toBe(200);
+  expect(response.status()).toBe(201);
 });
 
 test('既定では CORS ヘッダを返さない', async ({ request }) => {
@@ -130,8 +119,6 @@ test('既定では CORS ヘッダを返さない', async ({ request }) => {
 });
 
 test('一覧の応答が data のみを持つ（ページング未対応のエンドポイント）', async ({ request }) => {
-  await loginAsAdmin(request);
-
   const response = await request.get('/api/v1/roles');
   const body = (await response.json()) as Record<string, unknown>;
 

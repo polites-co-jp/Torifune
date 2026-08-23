@@ -5,7 +5,7 @@ import {
 } from '@/application/authorization/authorize';
 import { buildAuthorizationContext } from '@/application/authorization/context';
 import type { PermissionName } from '@/domain/permission';
-import { ConflictError, NotFoundError } from '@/domain/repository';
+import { ConflictError, NotFoundError, ValidationError } from '@/domain/repository';
 import { authorizationErrorResponse } from './authorize';
 import { CSRF_COOKIE, readCookie, requestInfoOf, SESSION_COOKIE } from './cookies';
 import { corsHeaders } from './cors';
@@ -177,6 +177,9 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
       }
       if (error instanceof UnknownSortFieldError) {
         return errorResponse('VALIDATION_ERROR', { sort: ['並び替えに使えません。'] }, cors);
+      }
+      if (error instanceof ValidationError) {
+        return errorResponse('VALIDATION_ERROR', { [error.field]: [error.detail] }, cors);
       }
       if (error instanceof NotFoundError) {
         return errorResponse('NOT_FOUND', undefined, cors);

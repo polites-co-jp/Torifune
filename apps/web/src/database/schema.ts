@@ -75,6 +75,17 @@ export interface AuthAuditLogsTable {
   occurred_at: CreatedAt;
 }
 
+export interface SitesTable {
+  id: string;
+  name: string;
+  url: string;
+  description: Generated<string>;
+  status: Generated<string>;
+  created_at: CreatedAt;
+  updated_at: UpdatedAt;
+  created_by: string | null;
+}
+
 export interface PasswordResetTokensTable {
   id: string;
   user_id: string;
@@ -101,6 +112,7 @@ export interface SchemaMigrationsTable {
 
 export interface Schema {
   users: UsersTable;
+  sites: SitesTable;
   roles: RolesTable;
   permissions: PermissionsTable;
   user_roles: UserRolesTable;
