@@ -1,0 +1,32 @@
+# 依存
+node_modules/
+.pnpm-store/
+
+# ビルド成果物
+.next/
+out/
+dist/
+build/
+*.tsbuildinfo
+
+# 環境設定・Secret（.env.example のみコミットする）
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# テスト
+coverage/
+playwright-report/
+test-results/
+
+# Claude Code（エージェント定義とコマンドはコミットする）
+.claude/settings.local.json
+
+# OS / エディタ
+.DS_Store
+Thumbs.db
+.idea/
+*.log
