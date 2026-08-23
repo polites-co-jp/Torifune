@@ -54,6 +54,10 @@ jobs:
       - run: pnpm lint
       - run: pnpm format:check
       - run: pnpm typecheck
+
+      # 結合テストは適用済みスキーマを前提にする。
+      - run: pnpm migrate
+
       - run: pnpm test
 
   build:
@@ -72,6 +76,22 @@ jobs:
   e2e:
     name: e2e
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: torifune
+          POSTGRES_PASSWORD: torifune
+          POSTGRES_DB: torifune_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U torifune -d torifune_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
@@ -80,6 +100,7 @@ jobs:
           node-version: '22'
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm migrate
       - run: pnpm --filter @torifune/web exec playwright install --with-deps chromium
       - run: pnpm test:e2e
       - uses: actions/upload-artifact@v4

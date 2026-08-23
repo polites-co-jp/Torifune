@@ -1,6 +1,6 @@
 /**
- * Liveness 用のヘルスチェック。
- * DB 等の依存を確認する Readiness は Database Provider 導入後（001-database-foundation）に追加する。
+ * Liveness: プロセスが生きているか。依存を確認しない。
+ * 落ちていたらコンテナを再起動するべき、という判断に使う。
  */
 export function GET() {
   return Response.json({ status: 'ok' });

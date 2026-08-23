@@ -1,0 +1,95 @@
+import type { ColumnType, Generated, JSONColumnType } from 'kysely';
+
+/**
+ * Torifune のテーブル定義（Kysely 用）。
+ *
+ * `migrations/` の連番SQL が正であり、この型はそれに追随する手書きの写し。
+ * 型定義から SQL を生成する方式は採らない（D-04：連番SQL を正とする）。
+ * マイグレーションを足したら、この型も同じコミットで更新すること。
+ */
+
+/** DB が既定値を入れるため、INSERT では省略できる timestamptz。 */
+type CreatedAt = ColumnType<Date, Date | string | undefined, never>;
+type UpdatedAt = ColumnType<Date, Date | string | undefined, Date | string>;
+
+export interface UsersTable {
+  id: string;
+  login_id: string;
+  email: string;
+  display_name: string;
+  password_hash: string | null;
+  status: Generated<string>;
+  created_at: CreatedAt;
+  updated_at: UpdatedAt;
+  last_login_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+}
+
+export interface RolesTable {
+  id: string;
+  name: string;
+  display_name: string;
+  is_system: Generated<boolean>;
+  created_at: CreatedAt;
+  updated_at: UpdatedAt;
+}
+
+export interface PermissionsTable {
+  name: string;
+  display_name: string;
+  description: Generated<string>;
+  is_system: Generated<boolean>;
+  created_at: CreatedAt;
+}
+
+export interface UserRolesTable {
+  user_id: string;
+  role_id: string;
+}
+
+export interface RolePermissionsTable {
+  role_id: string;
+  permission_name: string;
+}
+
+export interface SessionsTable {
+  id: string;
+  user_id: string;
+  token_hash: string;
+  created_at: CreatedAt;
+  last_accessed_at: ColumnType<Date, Date | string | undefined, Date | string>;
+  expires_at: ColumnType<Date, Date | string, Date | string>;
+  revoked_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  ip_address: string | null;
+  user_agent: string | null;
+}
+
+export interface AuthAuditLogsTable {
+  id: string;
+  event: string;
+  user_id: string | null;
+  login_id_attempted: string | null;
+  ip_address: string | null;
+  user_agent: string | null;
+  /** パスワード・トークン・Cookie を入れてはならない（04_認証設計.md §26）。 */
+  detail: JSONColumnType<Record<string, unknown>, string | undefined, string>;
+  occurred_at: CreatedAt;
+}
+
+export interface SchemaMigrationsTable {
+  version: string;
+  name: string;
+  checksum: string;
+  applied_at: CreatedAt;
+  execution_ms: number;
+}
+
+export interface Schema {
+  users: UsersTable;
+  roles: RolesTable;
+  permissions: PermissionsTable;
+  user_roles: UserRolesTable;
+  role_permissions: RolePermissionsTable;
+  sessions: SessionsTable;
+  auth_audit_logs: AuthAuditLogsTable;
+  schema_migrations: SchemaMigrationsTable;
+}
