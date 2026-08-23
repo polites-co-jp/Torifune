@@ -6,6 +6,7 @@
  */
 
 export type ErrorCode =
+  | 'BAD_REQUEST'
   | 'VALIDATION_ERROR'
   | 'CSRF_FAILED'
   | 'INVALID_CREDENTIALS'
@@ -17,6 +18,7 @@ export type ErrorCode =
   | 'INTERNAL_ERROR';
 
 const STATUS_BY_CODE: Record<ErrorCode, number> = {
+  BAD_REQUEST: 400,
   VALIDATION_ERROR: 422,
   CSRF_FAILED: 403,
   INVALID_CREDENTIALS: 401,
@@ -29,6 +31,7 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
 };
 
 const MESSAGE_BY_CODE: Record<ErrorCode, string> = {
+  BAD_REQUEST: 'リクエストの形式が正しくありません。',
   VALIDATION_ERROR: '入力内容を確認してください。',
   CSRF_FAILED: 'リクエストを検証できませんでした。画面を再読み込みしてください。',
   INVALID_CREDENTIALS: 'ログインIDまたはパスワードが正しくありません。',
@@ -71,14 +74,6 @@ export function errorResponse(
     status: STATUS_BY_CODE[code],
     headers: extraHeaders,
   });
-}
-
-/** 成功応答。一覧のページング情報は `004-api-foundation` で足す。 */
-export function dataResponse<T>(
-  data: T,
-  init?: { status?: number; headers?: Record<string, string> },
-): Response {
-  return Response.json({ data }, { status: init?.status ?? 200, headers: init?.headers });
 }
 
 /** リクエストボディを JSON として読む。壊れていても例外を投げない。 */

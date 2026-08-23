@@ -1,18 +1,12 @@
-import { requirePermission } from '@/application/authorization/authorize';
-import { buildAuthorizationContext } from '@/application/authorization/context';
 import { listPermissions } from '@/application/authorization/permission-registry';
-import { readCookie, requestInfoOf, SESSION_COOKIE } from '@/api/cookies';
-import { dataResponse } from '@/api/errors';
-import { withAuthorization } from '@/api/authorize';
+import { defineRoute } from '@/api/route';
+import { dataResponse } from '@/api/response';
 
-export async function GET(request: Request): Promise<Response> {
-  return withAuthorization(async () => {
-    const context = await buildAuthorizationContext(
-      readCookie(request, SESSION_COOKIE),
-      requestInfoOf(request),
-    );
-    requirePermission(context, 'user.manage');
-
-    return dataResponse(listPermissions());
-  });
-}
+export const GET = defineRoute({
+  operationId: 'listPermissions',
+  method: 'GET',
+  path: '/permissions',
+  summary: '登録済み Permission の一覧を取得する',
+  permission: 'user.manage',
+  handler: async () => dataResponse(listPermissions()),
+});

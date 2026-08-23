@@ -1,19 +1,15 @@
-import { requirePermission } from '@/application/authorization/authorize';
-import { buildAuthorizationContext } from '@/application/authorization/context';
+import { defineRoute } from '@/api/route';
+import { dataResponse } from '@/api/response';
 import { roleRepository } from '@/infrastructure/role-repository';
-import { readCookie, requestInfoOf, SESSION_COOKIE } from '@/api/cookies';
-import { dataResponse } from '@/api/errors';
-import { withAuthorization } from '@/api/authorize';
 
-export async function GET(request: Request): Promise<Response> {
-  return withAuthorization(async () => {
-    const context = await buildAuthorizationContext(
-      readCookie(request, SESSION_COOKIE),
-      requestInfoOf(request),
-    );
-    requirePermission(context, 'user.manage');
-
+export const GET = defineRoute({
+  operationId: 'listRoles',
+  method: 'GET',
+  path: '/roles',
+  summary: 'ロール一覧を取得する',
+  permission: 'user.manage',
+  handler: async ({ context }) => {
     const roles = await roleRepository.list(context.connection);
     return dataResponse(roles);
-  });
-}
+  },
+});

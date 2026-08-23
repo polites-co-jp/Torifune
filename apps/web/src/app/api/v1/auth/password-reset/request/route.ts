@@ -1,31 +1,25 @@
+import { z } from 'zod';
 import { requestPasswordReset } from '@/application/auth/password-reset';
-import { CSRF_COOKIE, readCookie, requestInfoOf } from '@/api/cookies';
-import { verifyCsrf } from '@/api/csrf';
-import { errorResponse, readJsonBody, stringField } from '@/api/errors';
+import { requestInfoOf } from '@/api/cookies';
+import { noContentResponse } from '@/api/response';
+import { defineRoute } from '@/api/route';
 
-export async function POST(request: Request): Promise<Response> {
-  const body = await readJsonBody(request);
-  if (body === null) {
-    return errorResponse('VALIDATION_ERROR');
-  }
+export const POST = defineRoute({
+  operationId: 'requestPasswordReset',
+  method: 'POST',
+  path: '/auth/password-reset/request',
+  summary: 'パスワード再設定を要求する',
+  permission: null,
+  reason: '認証前に呼ばれる。登録の有無にかかわらず同じ応答を返すため、情報を漏らさない',
+  body: z.object({
+    email: z.string().min(1, '入力してください。'),
+    csrfToken: z.string().optional(),
+  }),
+  rateLimit: { windowMs: 60_000, max: 10 },
+  handler: async ({ request, body }) => {
+    await requestPasswordReset({ email: body.email, request: requestInfoOf(request) });
 
-  if (
-    !verifyCsrf(request, {
-      cookieToken: readCookie(request, CSRF_COOKIE),
-      bodyToken: stringField(body, 'csrfToken'),
-    })
-  ) {
-    return errorResponse('CSRF_FAILED');
-  }
-
-  const email = stringField(body, 'email');
-  if (email === undefined || email === '') {
-    return errorResponse('VALIDATION_ERROR', { email: ['入力してください。'] });
-  }
-
-  await requestPasswordReset({ email, request: requestInfoOf(request) });
-
-  // 登録済みかどうかにかかわらず同じ応答を返す。
-  // 存在するアドレスだけ成功を返すと、登録の有無を調べられる。
-  return new Response(null, { status: 204 });
-}
+    // 登録済みかどうかにかかわらず同じ応答を返す。
+    return noContentResponse();
+  },
+});

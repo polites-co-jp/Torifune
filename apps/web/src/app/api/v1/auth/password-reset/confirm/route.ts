@@ -1,41 +1,37 @@
+import { z } from 'zod';
 import { confirmPasswordReset } from '@/application/auth/password-reset';
-import { CSRF_COOKIE, readCookie, requestInfoOf } from '@/api/cookies';
-import { verifyCsrf } from '@/api/csrf';
-import { errorResponse, readJsonBody, stringField } from '@/api/errors';
+import { requestInfoOf } from '@/api/cookies';
+import { errorResponse } from '@/api/errors';
+import { noContentResponse } from '@/api/response';
+import { defineRoute } from '@/api/route';
 
-export async function POST(request: Request): Promise<Response> {
-  const body = await readJsonBody(request);
-  if (body === null) {
-    return errorResponse('VALIDATION_ERROR');
-  }
+export const POST = defineRoute({
+  operationId: 'confirmPasswordReset',
+  method: 'POST',
+  path: '/auth/password-reset/confirm',
+  summary: 'パスワードを再設定する',
+  permission: null,
+  reason: '認証前に呼ばれる。トークンの所持が本人性の根拠になる',
+  body: z.object({
+    token: z.string().min(1, '入力してください。'),
+    newPassword: z.string().min(1, '入力してください。'),
+    csrfToken: z.string().optional(),
+  }),
+  rateLimit: { windowMs: 60_000, max: 20 },
+  handler: async ({ request, body }) => {
+    const outcome = await confirmPasswordReset({
+      token: body.token,
+      newPassword: body.newPassword,
+      request: requestInfoOf(request),
+    });
 
-  if (
-    !verifyCsrf(request, {
-      cookieToken: readCookie(request, CSRF_COOKIE),
-      bodyToken: stringField(body, 'csrfToken'),
-    })
-  ) {
-    return errorResponse('CSRF_FAILED');
-  }
+    if (!outcome.ok) {
+      // 「トークンが無い」と「期限切れ」を区別しない。
+      return errorResponse(
+        outcome.reason === 'invalid_password' ? 'VALIDATION_ERROR' : 'INVALID_CREDENTIALS',
+      );
+    }
 
-  const token = stringField(body, 'token');
-  const newPassword = stringField(body, 'newPassword');
-  if (token === undefined || token === '' || newPassword === undefined || newPassword === '') {
-    return errorResponse('VALIDATION_ERROR');
-  }
-
-  const outcome = await confirmPasswordReset({
-    token,
-    newPassword,
-    request: requestInfoOf(request),
-  });
-
-  if (!outcome.ok) {
-    // 「トークンが無い」と「期限切れ」を区別しない。
-    return errorResponse(
-      outcome.reason === 'invalid_password' ? 'VALIDATION_ERROR' : 'INVALID_CREDENTIALS',
-    );
-  }
-
-  return new Response(null, { status: 204 });
-}
+    return noContentResponse();
+  },
+});
