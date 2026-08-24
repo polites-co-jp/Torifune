@@ -25,7 +25,9 @@ rebuild() {
     cp -a /app/apps/web/.next "$STATE_DIR/last-good"
   fi
 
-  if ${TORIFUNE_BUILD_CMD:-pnpm --filter @torifune/web build}; then
+  # レジストリの再生成もビルドに含める（pnpm build が generate:plugins を先に走らせる）。
+  # アプリ側で生成すると、生成の実体が2箇所になって必ずずれる。
+  if ${TORIFUNE_BUILD_CMD:-pnpm build}; then
     echo "[torifune] rebuild succeeded"
     return 0
   fi

@@ -42,6 +42,13 @@ function discover() {
   for (const name of readdirSync(pluginsDir, { withFileTypes: true })) {
     if (!name.isDirectory()) continue;
 
+    // 隔離マークのあるものは読み込まない。
+    // ビルドを壊した Plugin を置いたままにすると、次のビルドも失敗し続ける。
+    if (existsSync(join(pluginsDir, name.name, '.torifune-quarantine'))) {
+      console.warn(`[plugins] ${name.name}: 隔離されているため読み込まない`);
+      continue;
+    }
+
     const manifestPath = join(pluginsDir, name.name, 'plugin.json');
     if (!existsSync(manifestPath)) continue;
 

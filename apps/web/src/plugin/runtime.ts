@@ -4,6 +4,7 @@ import type { Connection } from '@/database/provider';
 import type { DependencyCandidate } from './dependencies';
 import { discoverPlugins, type DiscoveryProblem } from './loader';
 import { enablePlugin, listPluginRecords } from './lifecycle';
+import { reconcileOperations } from './reconcile';
 import { isLoaded, resetPluginRegistry } from './registry';
 
 /**
@@ -30,6 +31,13 @@ async function boot(authorization: AuthorizationContext): Promise<BootResult> {
   const failed: { pluginId: string; reason: string }[] = [];
 
   await withConnection(async (connection: Connection) => {
+    // 再ビルドを跨いだ操作の成否をここで判定する。
+    // 判定しないと、画面が「再ビルド中」のまま止まる。
+    await reconcileOperations({
+      connection,
+      builtPluginIds: new Set(discovery.plugins.map((entry) => entry.manifest.id)),
+    });
+
     const records = await listPluginRecords(connection);
     const statusById = new Map(records.map((record) => [record.id, record.status]));
 

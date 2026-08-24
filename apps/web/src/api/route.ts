@@ -43,6 +43,14 @@ export interface RouteDefinition<TBodySchema extends z.ZodType, TQuerySchema ext
   readonly permission: PermissionName | null;
   readonly reason?: string;
   readonly body?: TBodySchema;
+  /**
+   * ボディの読み方。既定は JSON。
+   *
+   * `raw` はハンドラが自分で読む（ファイルのアップロードなど）。
+   * 大きなボディを JSON として読もうとすると、その分だけ無駄に確保する。
+   * CSRF トークンは `x-csrf-token` ヘッダで送る。
+   */
+  readonly bodyKind?: 'json' | 'raw';
   readonly query?: TQuerySchema;
   /** 公開 API 仕様に載せるか。内部エンドポイントは false。 */
   readonly documented?: boolean;
@@ -110,10 +118,12 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
       // 状態を変えるメソッドは CSRF を検証する（04_認証設計.md §12）。
       let rawBody: unknown;
       if (!SAFE_METHODS.has(definition.method)) {
-        rawBody = await request
-          .clone()
-          .json()
-          .catch(() => undefined);
+        if ((definition.bodyKind ?? 'json') === 'json') {
+          rawBody = await request
+            .clone()
+            .json()
+            .catch(() => undefined);
+        }
 
         const bodyToken =
           typeof rawBody === 'object' && rawBody !== null && 'csrfToken' in rawBody

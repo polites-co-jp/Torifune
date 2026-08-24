@@ -129,6 +129,17 @@ export interface PluginStoreTable {
   updated_at: UpdatedAt;
 }
 
+export interface PluginOperationsTable {
+  id: string;
+  plugin_id: string;
+  kind: string;
+  status: Generated<string>;
+  message: string | null;
+  requested_by: string;
+  started_at: CreatedAt;
+  finished_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+}
+
 export interface PasswordResetTokensTable {
   id: string;
   user_id: string;
@@ -160,6 +171,7 @@ export interface Schema {
   social_posts: SocialPostsTable;
   plugins: PluginsTable;
   plugin_store: PluginStoreTable;
+  plugin_operations: PluginOperationsTable;
   roles: RolesTable;
   permissions: PermissionsTable;
   user_roles: UserRolesTable;

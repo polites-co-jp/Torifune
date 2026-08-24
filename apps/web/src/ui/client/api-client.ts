@@ -80,6 +80,11 @@ export async function apiRequest<T>(
     };
   }
 
+  return interpret<T>(response);
+}
+
+/** 応答の解釈。JSON でもファイル送信でも同じ扱いにする。 */
+async function interpret<T>(response: Response): Promise<ApiResult<T>> {
   if (response.status === 204) {
     return { ok: true, data: undefined as T };
   }
@@ -117,6 +122,34 @@ export async function apiRequest<T>(
       ...(parsed?.error?.details === undefined ? {} : { details: parsed.error.details }),
     },
   };
+}
+
+/**
+ * ファイルを送る。
+ *
+ * JSON では送れないため `apiRequest` と別入口にするが、
+ * **CSRF とエラー処理は同じ扱いにする。** 別扱いにすると、
+ * こちらだけ抜けが起きる。
+ */
+export async function apiUpload<T>(path: string, form: FormData): Promise<ApiResult<T>> {
+  const token = await ensureCsrfToken();
+  const headers: Record<string, string> = {};
+  if (token !== null) {
+    headers['X-CSRF-Token'] = token;
+  }
+
+  let response: Response;
+  try {
+    // Content-Type は指定しない。boundary を fetch に決めさせる。
+    response = await fetch(path, { method: 'POST', headers, body: form });
+  } catch {
+    return {
+      ok: false,
+      error: { code: 'NETWORK_ERROR', message: messageFor('NETWORK_ERROR'), status: 0 },
+    };
+  }
+
+  return interpret<T>(response);
 }
 
 /** 401 のとき、ログイン画面へ送る。 */
