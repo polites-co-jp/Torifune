@@ -12,8 +12,11 @@ Torifune を **TorifuneHub なしで完結して動く状態**にする。
    > **コンテンツは Core の責務から外した**（`docs/仕様書/改訂履歴.md` 2026-08-24）。
    > コンテンツ管理は Plugin の責務であり、Torifune は画面を作る仕組み・
    > デザインを揃える共通 Component・データへアクセスする API を提供する。
-4. `plugins/` にサンプルPluginを置いて管理画面から「読み込む」を押すと、再ビルド・再起動を経て
-   左ナビに項目が増え、ダッシュボードにWidgetが出て、`content.created` を購読したPluginが反応する
+4. `plugins/` にサンプルPluginを置いて管理画面から「導入」を押すと、再ビルド・再起動を経て
+   左ナビに項目が増え、ダッシュボードにWidgetが出て、`site.created` を購読したPluginが反応する
+
+   > 当初は `content.created` と書いていたが、**コンテンツを Core の責務から外した**ため
+   > `site.created` に読み替える（`docs/仕様書/改訂履歴.md` 2026-08-24）。
 5. すべての保護APIで「権限あり→200 / 権限なし→403 / 未認証→401」がテストで確認できる
 6. `torifune migrate --database-url=...` が任意の空DBへスキーマを適用できる
    （TorifuneHub がテナントDBを払い出すための前提。この計画時点では OSS 単体の初期化機能として実装する）
