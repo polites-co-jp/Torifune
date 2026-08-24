@@ -51,20 +51,25 @@ test('未ログインで Plugin の URL を開くとログイン画面へ送ら�
   await expect(page).toHaveURL(/\/login/);
 });
 
-test('Plugin が無くてもダッシュボードの拡張枠は邪魔をしない', async ({ page }) => {
+test('誰も使っていない拡張枠は描かれない', async ({ page }) => {
+  // 空の枠を描くと、余白だけが残って見た目が崩れる。
+  //
+  // 「Plugin が1つも無い」ことに頼らない。同じサーバーで
+  // サンプル Plugin を有効にするテストが動くため、
+  // **誰も登録していない置き場**で確かめる。
   await page.goto('/dashboard');
 
   await expect(page.getByRole('heading', { name: 'ダッシュボード' })).toBeVisible();
-  // 空の枠を描くと、余白だけが残って見た目が崩れる。
-  await expect(page.locator('[data-plugin-widgets]')).toHaveCount(0);
-  await expect(page.locator('[data-extension-point]')).toHaveCount(0);
+  await expect(page.locator('[data-plugin-widgets="site.detail"]')).toHaveCount(0);
+  await expect(page.locator('[data-extension-point="settings.tabs"]')).toHaveCount(0);
 });
 
-test('Plugin が無くてもナビゲーションは本体の項目だけで揃う', async ({ page }) => {
+test('本体の項目が Plugin に押しのけられない', async ({ page }) => {
+  // Plugin の項目は Core の項目のあとに並ぶ（011-plugin-runtime）。
   await page.goto('/dashboard');
 
   const nav = page.getByRole('navigation', { name: 'メインナビゲーション' });
   const links = await nav.getByRole('link').allTextContents();
 
-  expect(links).toEqual(['ダッシュボード', 'Webサイト', 'SNS', '設定', 'プラグイン']);
+  expect(links.slice(0, 5)).toEqual(['ダッシュボード', 'Webサイト', 'SNS', '設定', 'プラグイン']);
 });

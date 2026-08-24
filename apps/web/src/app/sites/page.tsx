@@ -1,6 +1,6 @@
 import { listSites } from '@/application/site/site-use-cases';
 import { AppShell } from '@/ui/layout/app-shell';
-import { ExtensionPoint } from '@/ui/plugin/plugin-slot';
+import { ExtensionPoint, PluginActions } from '@/ui/plugin/plugin-slot';
 import { requirePageSession } from '@/ui/server/page-session';
 import { SiteList } from '@/ui/site/site-list';
 import { AsyncState } from '@/ui/states/async-state';
@@ -42,7 +42,8 @@ export default async function SitesPage({
 
   return (
     <AppShell displayName={displayName} permissions={permissions}>
-      <ExtensionPoint point="site.list.actions" permissions={permissions} />
+      <PluginActions location="site.list.actions" permissions={permissions} context={context} />
+      <ExtensionPoint point="site.list.actions" permissions={permissions} context={context} />
       <SiteList
         initialSites={result.items.map((site) => ({
           id: site.id,

@@ -73,6 +73,38 @@ export const CORE_EXTENSION_POINTS = [
   'login.methods',
 ] as const;
 
+/**
+ * 設定項目（06_画面設計.md §27, §38）。
+ *
+ * **Plugin は項目を宣言するだけ。** 画面の描画と保存は本体が行う。
+ * Plugin ごとにフォームを書かせると、Secret の扱いが Plugin ごとに変わり、
+ * どこかで平文が表に出る。
+ */
+export interface PluginSettingsField {
+  /** Key-Value Store のキーになる。 */
+  readonly key: string;
+  readonly label: string;
+  readonly description?: string;
+  /**
+   * `secret` は暗号化して保存し、**画面には平文を出さない**。
+   * 「設定済み」かどうかだけを見せる（同 §38）。
+   */
+  readonly kind: 'text' | 'secret';
+  readonly placeholder?: string;
+}
+
+export interface SettingsRegistration {
+  readonly fields: readonly PluginSettingsField[];
+  /**
+   * 保存の前に呼ばれる検証。問題があればメッセージを返す。
+   *
+   * ここで例外を投げても保存は止まる。**返すほうが利用者に理由が伝わる。**
+   */
+  readonly validate?: (
+    values: Readonly<Record<string, string>>,
+  ) => Readonly<Record<string, string>> | null | Promise<Readonly<Record<string, string>> | null>;
+}
+
 export interface PluginUiApi {
   registerMenu(registration: MenuRegistration): void;
   registerPage(registration: PageRegistration): void;
@@ -82,4 +114,10 @@ export interface PluginUiApi {
   registerExtension(registration: ExtensionPointRegistration): void;
   /** 自分の画面に拡張点を作り、他の Plugin へ公開する。 */
   defineExtensionPoint(point: string): void;
+  /**
+   * 設定項目を宣言する。
+   *
+   * 画面（`/plugins/<id>/settings`）と保存は本体が受け持つ。
+   */
+  registerSettings(registration: SettingsRegistration): void;
 }

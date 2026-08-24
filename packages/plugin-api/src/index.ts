@@ -34,13 +34,16 @@ export type {
   MenuRegistration,
   PageRegistration,
   PluginComponent,
+  PluginSettingsField,
   PluginUiApi,
+  SettingsRegistration,
   WidgetRegistration,
 } from './ui';
 
 export { CORE_EVENTS } from './events';
 export type {
   CoreEventName,
+  CoreEventPayloads,
   EventHandler,
   PluginEventApi,
   SiteEventPayload,
@@ -67,6 +70,11 @@ export type {
   PluginUserIdentity,
 } from './authentication';
 
-export type { PluginDatabaseConnection, PluginDatabaseProvider } from './database';
+export { PluginExtensionNotDeclaredError } from './database';
+export type {
+  PluginDatabaseApi,
+  PluginDatabaseConnection,
+  PluginDatabaseProvider,
+} from './database';
 
 export type { Plugin, PluginContext, PluginLogger } from './context';

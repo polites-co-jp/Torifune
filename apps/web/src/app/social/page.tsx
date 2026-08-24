@@ -22,7 +22,7 @@ export default async function SocialPage() {
 
   return (
     <AppShell displayName={displayName} permissions={permissions}>
-      <ExtensionPoint point="social.list.actions" permissions={permissions} />
+      <ExtensionPoint point="social.list.actions" permissions={permissions} context={context} />
       <SocialAccounts
         initialAccounts={page.items.map((account) => ({
           id: account.id,

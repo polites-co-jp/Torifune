@@ -1,9 +1,13 @@
 import type {
   PluginContext,
+  PluginDatabaseApi,
   PluginEventApi,
   PluginManifest,
   PluginUiApi,
 } from '@torifune/plugin-api';
+import { PluginExtensionNotDeclaredError } from '@torifune/plugin-api';
+import { setDatabaseProvider } from '@/database/registry';
+import { adaptPluginDatabaseProvider } from './database-adapter';
 import { PLUGIN_API_VERSION } from '@torifune/plugin-api';
 import type { AuthorizationContext } from '@/application/authorization/authorize';
 import { emit, subscribe } from '@/application/events';
@@ -56,10 +60,14 @@ export function buildPluginContext(deps: BuildContextDeps): PluginContext {
     defineExtensionPoint(point) {
       registrations.definedPoints.add(point);
     },
+    registerSettings(registration) {
+      registrations.settings = registration;
+    },
   };
 
   const events: PluginEventApi = {
-    subscribe(eventName, handler) {
+    // 多重定義（overload）を持つメンバーは、実装側で型を明示する。
+    subscribe(eventName: string, handler: (payload: never) => void | Promise<void>) {
       // 解除関数を控えておく。無効化時にまとめて外す。
       // 外さないと、無効化したはずの Plugin がイベントに反応し続ける。
       const unsubscribe = subscribe(eventName, handler as (payload: unknown) => void);
@@ -80,9 +88,25 @@ export function buildPluginContext(deps: BuildContextDeps): PluginContext {
     },
   };
 
+  const declaredExtensions = new Set(manifest.extensions ?? []);
+
+  const database: PluginDatabaseApi = {
+    registerProvider(provider) {
+      // **宣言していなければ差し替えさせない。**
+      // 宣言なしに差し替えられると、Plugin を入れた側が
+      // 「何がデータアクセスを握っているか」を知らないまま運用することになる。
+      if (!declaredExtensions.has('database')) {
+        throw new PluginExtensionNotDeclaredError(pluginId, 'database');
+      }
+      registrations.databaseProviders.push(provider.id);
+      setDatabaseProvider(adaptPluginDatabaseProvider(provider));
+    },
+  };
+
   return {
     pluginId,
     apiVersion: PLUGIN_API_VERSION,
+    database,
     store: createPluginStore({ connection, pluginId }),
     data: createPluginDataApi({
       pluginId,

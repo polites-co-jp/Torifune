@@ -39,7 +39,12 @@ export default async function EditSitePage({ params }: { params: Promise<{ id: s
         }}
       />
       {/* Plugin は編集画面の脇に自分の欄を足せる（06_画面設計.md §26）。 */}
-      <ExtensionPoint point="site.edit.sidebar" permissions={permissions} props={{ siteId: id }} />
+      <ExtensionPoint
+        point="site.edit.sidebar"
+        permissions={permissions}
+        context={context}
+        props={{ siteId: id }}
+      />
     </AppShell>
   );
 }

@@ -43,8 +43,29 @@ export interface SocialPostEventPayload {
   readonly status?: string;
 }
 
+/**
+ * Core のイベント名と Payload の対応。
+ *
+ * **これがあると、Plugin 側で Payload の型を書き写さずに済む。**
+ * 書き写すと、Payload が増えたときに Plugin 側が古い形のまま残る。
+ */
+export interface CoreEventPayloads {
+  readonly 'site.created': SiteEventPayload;
+  readonly 'site.updated': SiteEventPayload;
+  readonly 'site.deleted': SiteEventPayload;
+  readonly 'social.account.connected': SocialAccountEventPayload;
+  readonly 'social.account.disconnected': SocialAccountEventPayload;
+  readonly 'social.post.created': SocialPostEventPayload;
+  readonly 'social.post.published': SocialPostEventPayload;
+}
+
 export interface PluginEventApi {
-  /** 購読する。返る関数を呼ぶと解除できる。 */
+  /** Core のイベントを購読する。Payload の型が付く。 */
+  subscribe<K extends CoreEventName>(
+    eventName: K,
+    handler: EventHandler<CoreEventPayloads[K]>,
+  ): () => void;
+  /** 任意のイベントを購読する。返る関数を呼ぶと解除できる。 */
   subscribe<T = unknown>(eventName: string, handler: EventHandler<T>): () => void;
   /**
    * 自分のイベントを発火する。

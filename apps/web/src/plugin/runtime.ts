@@ -1,6 +1,7 @@
 import type { AuthorizationContext } from '@/application/authorization/authorize';
 import { withConnection } from '@/application/transaction';
 import type { Connection } from '@/database/provider';
+import { processState } from '@/infrastructure/process-state';
 import type { DependencyCandidate } from './dependencies';
 import { discoverPlugins, type DiscoveryProblem } from './loader';
 import { enablePlugin, listPluginRecords } from './lifecycle';
@@ -17,7 +18,12 @@ import { isLoaded, resetPluginRegistry } from './registry';
  * 登録が積み重なってメニューが増殖する。
  */
 
-let bootPromise: Promise<BootResult> | null = null;
+/** 起動状態もプロセスに1つ。理由は `process-state.ts`。 */
+interface BootState {
+  promise: Promise<BootResult> | null;
+}
+
+const bootState = processState<BootState>('runtime.boot', () => ({ promise: null }));
 
 export interface BootResult {
   readonly enabled: readonly string[];
@@ -84,12 +90,12 @@ async function boot(authorization: AuthorizationContext): Promise<BootResult> {
 export async function ensurePluginsStarted(
   authorization: AuthorizationContext,
 ): Promise<BootResult> {
-  bootPromise ??= boot(authorization);
-  return bootPromise;
+  bootState.promise ??= boot(authorization);
+  return bootState.promise;
 }
 
 /** テストと、Plugin の有効・無効を切り替えた直後に使う。 */
 export function resetPluginRuntime(): void {
-  bootPromise = null;
+  bootState.promise = null;
   resetPluginRegistry();
 }

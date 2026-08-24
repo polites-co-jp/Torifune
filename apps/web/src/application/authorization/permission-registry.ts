@@ -4,6 +4,7 @@ import {
   isValidPermissionName,
   type PermissionName,
 } from '../../domain/permission';
+import { processState } from '@/infrastructure/process-state';
 
 /**
  * 登録済み Permission の管理。
@@ -40,7 +41,12 @@ export class UnknownPermissionError extends Error {
   }
 }
 
-const registry = new Map<string, PermissionDefinition>();
+// **プロセスに1つ。** 理由は `infrastructure/process-state.ts`。
+// 分かれると、Plugin が登録した Permission が経路によって見えたり見えなかったりする。
+const registry = processState(
+  'authorization.permissions',
+  () => new Map<string, PermissionDefinition>(),
+);
 
 function registerCorePermissions(): void {
   for (const name of CORE_PERMISSIONS) {

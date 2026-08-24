@@ -28,3 +28,25 @@ export interface PluginDatabaseProvider {
   /** **例外を投げない。** Readiness プローブから呼ぶため。 */
   healthCheck(): Promise<boolean>;
 }
+
+/**
+ * Database Provider を差し替えるための入口。
+ *
+ * **Manifest で `extensions: ['database']` を宣言していなければ使えない。**
+ * 宣言なしに差し替えられると、Plugin を入れた側が
+ * 「何がデータアクセスを握っているか」を知らないまま運用することになる。
+ */
+export interface PluginDatabaseApi {
+  registerProvider(provider: PluginDatabaseProvider): void;
+}
+
+/** 宣言していない拡張点を使おうとした。 */
+export class PluginExtensionNotDeclaredError extends Error {
+  constructor(
+    readonly pluginId: string,
+    readonly kind: string,
+  ) {
+    super('Plugin が宣言していない拡張点');
+    this.name = 'PluginExtensionNotDeclaredError';
+  }
+}

@@ -3,10 +3,12 @@ import type {
   ExtensionPointRegistration,
   MenuRegistration,
   PageRegistration,
+  SettingsRegistration,
   Plugin,
   PluginManifest,
   WidgetRegistration,
 } from '@torifune/plugin-api';
+import { processState } from '@/infrastructure/process-state';
 
 /**
  * 読み込まれた Plugin と、その登録内容の保持。
@@ -31,6 +33,16 @@ interface Registrations {
   readonly unsubscribers: (() => void)[];
   /** この Plugin が登録した Permission。無効化時に取り下げる。 */
   readonly permissions: string[];
+  /**
+   * この Plugin が差し替えた Database Provider の ID。
+   *
+   * **記録するだけで、無効化しても元へは戻さない。**
+   * 動いている最中に接続方式を差し替えると、走っている処理が道連れになる。
+   * 元へ戻すには再起動が要る（Provider の差し替えは高権限の拡張点）。
+   */
+  readonly databaseProviders: string[];
+  /** 宣言された設定項目。**1 Plugin につき1つ。** */
+  settings: SettingsRegistration | null;
 }
 
 function emptyRegistrations(): Registrations {
@@ -43,11 +55,19 @@ function emptyRegistrations(): Registrations {
     definedPoints: new Set(),
     unsubscribers: [],
     permissions: [],
+    databaseProviders: [],
+    settings: null,
   };
 }
 
-const loaded = new Map<string, LoadedPlugin>();
-const registrations = new Map<string, Registrations>();
+// **プロセスに1つ。** モジュールの変数に置くと、Next.js のバンドル分割で
+// Route Handler と Server Component が別の実体を見てしまい、
+// 「API で無効化したのに画面から消えない」という壊れ方をする。
+const loaded = processState('registry.loaded', () => new Map<string, LoadedPlugin>());
+const registrations = processState(
+  'registry.registrations',
+  () => new Map<string, Registrations>(),
+);
 
 export function registerLoadedPlugin(entry: LoadedPlugin): void {
   loaded.set(entry.manifest.id, entry);
@@ -133,33 +153,68 @@ export function collectMenus(permissions: ReadonlySet<string>): readonly MenuReg
     .sort(byOrder);
 }
 
+/**
+ * 収集したものに「どの Plugin のものか」を添える。
+ *
+ * **描画側が Plugin ごとの Data API を組み立てるために要る。**
+ * 誰の登録か分からないと、その要求のユーザー権限で読む口を渡せない。
+ */
+export interface Owned<T> {
+  readonly pluginId: string;
+  readonly registration: T;
+}
+
+function ownedEntries<T>(pick: (entry: Registrations) => readonly T[]): Owned<T>[] {
+  const result: Owned<T>[] = [];
+  for (const [pluginId, entry] of registrations) {
+    for (const registration of pick(entry)) {
+      result.push({ pluginId, registration });
+    }
+  }
+  return result;
+}
+
+function byOwnedOrder<T extends { order?: number }>(a: Owned<T>, b: Owned<T>): number {
+  return byOrder(a.registration, b.registration);
+}
+
 export function collectWidgets(
   location: string,
   permissions: ReadonlySet<string>,
-): readonly WidgetRegistration[] {
-  return [...registrations.values()]
-    .flatMap((entry) => entry.widgets)
-    .filter((widget) => widget.location === location && allowed(widget.permission, permissions))
-    .sort(byOrder);
+): readonly Owned<WidgetRegistration>[] {
+  return ownedEntries((entry) => entry.widgets)
+    .filter(
+      ({ registration }) =>
+        registration.location === location && allowed(registration.permission, permissions),
+    )
+    .sort(byOwnedOrder);
 }
 
 export function collectActions(
   location: string,
   permissions: ReadonlySet<string>,
-): readonly ActionRegistration[] {
-  return [...registrations.values()]
-    .flatMap((entry) => entry.actions)
-    .filter((action) => action.location === location && allowed(action.permission, permissions));
+): readonly Owned<ActionRegistration>[] {
+  return ownedEntries((entry) => entry.actions).filter(
+    ({ registration }) =>
+      registration.location === location && allowed(registration.permission, permissions),
+  );
 }
 
 export function collectExtensions(
   point: string,
   permissions: ReadonlySet<string>,
-): readonly ExtensionPointRegistration[] {
-  return [...registrations.values()]
-    .flatMap((entry) => entry.extensions)
-    .filter((extension) => extension.point === point && allowed(extension.permission, permissions))
-    .sort(byOrder);
+): readonly Owned<ExtensionPointRegistration>[] {
+  return ownedEntries((entry) => entry.extensions)
+    .filter(
+      ({ registration }) =>
+        registration.point === point && allowed(registration.permission, permissions),
+    )
+    .sort(byOwnedOrder);
+}
+
+/** その Plugin の設定項目。宣言していなければ null。 */
+export function settingsOf(pluginId: string): SettingsRegistration | null {
+  return registrations.get(pluginId)?.settings ?? null;
 }
 
 /** Plugin が定義した拡張点。Core のものと合わせて一覧できる。 */

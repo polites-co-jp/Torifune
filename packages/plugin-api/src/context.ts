@@ -1,4 +1,5 @@
 import type { PluginDataApi } from './data';
+import type { PluginDatabaseApi } from './database';
 import type { PluginEventApi } from './events';
 import type { PluginStore } from './store';
 import type { PluginUiApi } from './ui';
@@ -29,6 +30,14 @@ export interface PluginContext {
 
   readonly ui: PluginUiApi;
   readonly events: PluginEventApi;
+
+  /**
+   * データベース接続方式の差し替え（01_アーキテクチャ設計.md §9）。
+   *
+   * **高権限の拡張点。** Manifest で `extensions: ['database']` を
+   * 宣言していなければ使えない。
+   */
+  readonly database: PluginDatabaseApi;
 
   /** ログ。**Secret を渡しても平文は出ない。** */
   readonly logger: PluginLogger;

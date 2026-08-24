@@ -16,6 +16,7 @@ import '@/app/api/v1/plugins/route';
 import '@/app/api/v1/plugins/[id]/route';
 import '@/app/api/v1/plugins/[id]/disable/route';
 import '@/app/api/v1/plugins/[id]/enable/route';
+import '@/app/api/v1/plugins/[id]/settings/route';
 import '@/app/api/v1/plugins/operations/[id]/route';
 import '@/app/api/v1/plugins/package/inspect/route';
 import '@/app/api/v1/plugins/package/install/route';

@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation';
 import { findPage, loadedPlugin } from '@/plugin/registry';
 import { AppShell } from '@/ui/layout/app-shell';
+import { requestDataApi } from '@/ui/plugin/plugin-slot';
 import { requirePageSession } from '@/ui/server/page-session';
 import { AsyncState } from '@/ui/states/async-state';
 
@@ -19,7 +20,7 @@ export default async function PluginPage({
   params: Promise<{ pluginId: string; rest?: string[] }>;
 }) {
   const { pluginId, rest } = await params;
-  const { displayName, permissions } = await requirePageSession();
+  const { context, displayName, permissions } = await requirePageSession();
 
   // 未導入・無効な Plugin は存在しないものとして扱う。
   // 「無効です」と返すと、どの Plugin が入っているかを未認可の相手へ教える。
@@ -51,7 +52,12 @@ export default async function PluginPage({
 
   return (
     <AppShell displayName={displayName} permissions={permissions}>
-      <Component pluginId={pluginId} route={route} />
+      {/*
+        **その要求の Data API を渡す。** activate() の時点の Data API は
+        そのとき起動したユーザーの権限に縛られており、
+        画面の描画で使うと見ている人と違う権限で読むことになる。
+      */}
+      <Component pluginId={pluginId} route={route} data={requestDataApi(pluginId, context)} />
     </AppShell>
   );
 }

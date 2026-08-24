@@ -8,9 +8,13 @@
  * サイトが作れなくなる、という壊れ方をする。
  */
 
+import { processState } from '@/infrastructure/process-state';
+
 export type EventHandler = (payload: unknown) => void | Promise<void>;
 
-const handlers = new Map<string, EventHandler[]>();
+// **プロセスに1つ。** 理由は `infrastructure/process-state.ts`。
+// 分かれると、Plugin が購読したのに発火が届かない、という壊れ方をする。
+const handlers = processState('events.handlers', () => new Map<string, EventHandler[]>());
 
 export function subscribe(eventName: string, handler: EventHandler): () => void {
   const list = handlers.get(eventName) ?? [];

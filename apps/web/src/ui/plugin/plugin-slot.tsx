@@ -1,5 +1,14 @@
+import type { PluginDataApi } from '@torifune/plugin-api';
 import type { ReactNode } from 'react';
-import { collectActions, collectExtensions, collectWidgets } from '@/plugin/registry';
+import type { AuthorizationContext } from '@/application/authorization/authorize';
+import { createPluginDataApi } from '@/plugin/data-api';
+import {
+  collectActions,
+  collectExtensions,
+  collectWidgets,
+  loadedPlugin,
+  type Owned,
+} from '@/plugin/registry';
 
 /**
  * Plugin の描画枠（06_画面設計.md §20、03_プラグイン設計.md §9）。
@@ -9,33 +18,60 @@ import { collectActions, collectExtensions, collectWidgets } from '@/plugin/regi
  *
  * 権限で絞るのは表示制御であって認可ではない（06 §29）。
  * ページへの到達と操作の可否はサーバー側で別途検証する。
+ *
+ * **描画する部品には、その要求の Data API を渡す。**
+ * `activate()` の時点で受け取った Data API は、そのとき起動した
+ * ユーザーの権限に縛られている。画面の描画でそれを使うと、
+ * 見ている人と違う権限で読むことになる。
  */
 
 type Renderable = (props: Record<string, unknown>) => ReactNode;
 
-function renderAll(
-  entries: readonly { readonly component: unknown }[],
-  props: Record<string, unknown>,
-): ReactNode[] {
-  return entries.map((entry, index) => {
-    const Component = entry.component as Renderable;
-    // Plugin の描画が例外を投げても本体を落とさないよう、
-    // 呼び出し側で ErrorBoundary を掛けられる粒度で並べる。
-    return <Component key={index} {...props} />;
+/** その Plugin 用の、いま見ているユーザーの権限で動く Data API。 */
+export function requestDataApi(pluginId: string, context: AuthorizationContext): PluginDataApi {
+  const manifest = loadedPlugin(pluginId)?.manifest;
+  return createPluginDataApi({
+    pluginId,
+    declaredPermissions: new Set(manifest?.permissions ?? []),
+    context,
   });
 }
 
-export interface PluginWidgetsProps {
-  /** `dashboard` `site.detail` など。 */
-  readonly location: string;
+function renderAll<T extends { component: unknown }>(
+  entries: readonly Owned<T>[],
+  context: AuthorizationContext,
+  props: Record<string, unknown>,
+): ReactNode[] {
+  return entries.map(({ pluginId, registration }, index) => {
+    const Component = registration.component as Renderable;
+    return (
+      <Component
+        key={`${pluginId}-${index}`}
+        {...props}
+        pluginId={pluginId}
+        data={requestDataApi(pluginId, context)}
+      />
+    );
+  });
+}
+
+export interface PluginSlotProps {
   readonly permissions: ReadonlySet<string>;
+  /** 描画する部品へ渡す Data API の元になる認可文脈。 */
+  readonly context: AuthorizationContext;
   readonly props?: Record<string, unknown>;
 }
 
-export function PluginWidgets({ location, permissions, props = {} }: PluginWidgetsProps) {
+export interface PluginWidgetsProps extends PluginSlotProps {
+  /** `dashboard` `site.detail` など。 */
+  readonly location: string;
+}
+
+export function PluginWidgets({ location, permissions, context, props = {} }: PluginWidgetsProps) {
   const widgets = collectWidgets(location, permissions);
 
   if (widgets.length === 0) {
+    // 空の枠を描くと、余白だけが残って見た目が崩れる。
     return null;
   }
 
@@ -49,19 +85,17 @@ export function PluginWidgets({ location, permissions, props = {} }: PluginWidge
         marginTop: 'var(--tf-space-4)',
       }}
     >
-      {renderAll(widgets, props)}
+      {renderAll(widgets, context, props)}
     </div>
   );
 }
 
-export interface ExtensionPointProps {
+export interface ExtensionPointProps extends PluginSlotProps {
   /** `site.edit.sidebar` など。 */
   readonly point: string;
-  readonly permissions: ReadonlySet<string>;
-  readonly props?: Record<string, unknown>;
 }
 
-export function ExtensionPoint({ point, permissions, props = {} }: ExtensionPointProps) {
+export function ExtensionPoint({ point, permissions, context, props = {} }: ExtensionPointProps) {
   const extensions = collectExtensions(point, permissions);
 
   if (extensions.length === 0) {
@@ -70,18 +104,16 @@ export function ExtensionPoint({ point, permissions, props = {} }: ExtensionPoin
 
   return (
     <div data-extension-point={point} style={{ display: 'grid', gap: 'var(--tf-space-3)' }}>
-      {renderAll(extensions, props)}
+      {renderAll(extensions, context, props)}
     </div>
   );
 }
 
-export interface PluginActionsProps {
+export interface PluginActionsProps extends PluginSlotProps {
   readonly location: string;
-  readonly permissions: ReadonlySet<string>;
-  readonly props?: Record<string, unknown>;
 }
 
-export function PluginActions({ location, permissions, props = {} }: PluginActionsProps) {
+export function PluginActions({ location, permissions, context, props = {} }: PluginActionsProps) {
   const actions = collectActions(location, permissions);
 
   if (actions.length === 0) {
@@ -93,7 +125,7 @@ export function PluginActions({ location, permissions, props = {} }: PluginActio
       data-plugin-actions={location}
       style={{ display: 'flex', gap: 'var(--tf-space-2)', flexWrap: 'wrap' }}
     >
-      {renderAll(actions, props)}
+      {renderAll(actions, context, props)}
     </div>
   );
 }

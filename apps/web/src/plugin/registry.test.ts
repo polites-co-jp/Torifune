@@ -115,6 +115,13 @@ describe('収集', () => {
     expect(collectActions('site.list.actions', new Set(['site.write']))).toHaveLength(1);
   });
 
+  it('収集したものに、どの Plugin のものかが付く', () => {
+    // 描画側が Plugin ごとの Data API を組み立てるために要る。
+    load('a-plugin').widgets.push({ location: 'dashboard', component: () => null });
+
+    expect(collectWidgets('dashboard', new Set())[0]?.pluginId).toBe('a-plugin');
+  });
+
   it('拡張点は複数の Plugin から差し込める', () => {
     load('a-plugin').extensions.push({
       point: 'site.edit.sidebar',
@@ -128,7 +135,7 @@ describe('収集', () => {
     });
 
     expect(collectExtensions('site.edit.sidebar', new Set())).toHaveLength(2);
-    expect(collectExtensions('site.edit.sidebar', new Set())[0]?.order).toBe(10);
+    expect(collectExtensions('site.edit.sidebar', new Set())[0]?.registration.order).toBe(10);
   });
 
   it('Plugin が定義した拡張点を一覧できる', () => {
