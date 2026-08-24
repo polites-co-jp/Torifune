@@ -110,6 +110,16 @@ export interface SocialPostsTable {
   updated_at: UpdatedAt;
 }
 
+export interface PluginStoreTable {
+  plugin_id: string;
+  key: string;
+  value: ColumnType<unknown, string, string>;
+  /** 真なら value は暗号化した文字列。get() では取り出せない。 */
+  is_secret: Generated<boolean>;
+  created_at: CreatedAt;
+  updated_at: UpdatedAt;
+}
+
 export interface PasswordResetTokensTable {
   id: string;
   user_id: string;
@@ -139,6 +149,7 @@ export interface Schema {
   sites: SitesTable;
   social_accounts: SocialAccountsTable;
   social_posts: SocialPostsTable;
+  plugin_store: PluginStoreTable;
   roles: RolesTable;
   permissions: PermissionsTable;
   user_roles: UserRolesTable;
