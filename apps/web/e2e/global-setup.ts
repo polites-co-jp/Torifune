@@ -1,0 +1,97 @@
+import { request as playwrightRequest, type FullConfig } from '@playwright/test';
+import { hash } from '@node-rs/argon2';
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
+import pg from 'pg';
+import { uuidv7 } from 'uuidv7';
+
+/**
+ * E2E の開始状態を作る。
+ *
+ * 1. 既知の管理者を1人だけ用意する
+ * 2. その管理者でログインし、セッションを `storageState` として保存する
+ *
+ * **テストごとにログインしない。**
+ * ログインには Rate Limit が掛かっており（`05_API設計.md` §36）、
+ * テストの数だけ叩くと、テストが Rate Limit に当たって落ちる。
+ * それは製品の不具合ではなく、テストの設計の問題。
+ *
+ * また `/setup` は「管理者が0人」を前提にするため、複数のテストファイルが
+ * その状態を奪い合うと結果が実行順に依存する。ここで1人作っておく。
+ * 「管理者が0人のときの挙動」は結合テスト側で検証する。
+ */
+
+export const SEEDED_ADMIN = {
+  loginId: 'e2e_admin',
+  email: 'e2e_admin@example.com',
+  password: 'e2e correct horse battery staple',
+} as const;
+
+export const ADMIN_STORAGE_STATE = 'e2e/.auth/admin.json';
+
+async function seedAdministrator(connectionString: string): Promise<void> {
+  const client = new pg.Client({ connectionString });
+  await client.connect();
+
+  try {
+    // 前回の実行の残骸を消す。専用のテストデータベースを使う前提。
+    await client.query('DELETE FROM sites');
+    await client.query('DELETE FROM social_accounts');
+    await client.query('DELETE FROM users');
+    await client.query('DELETE FROM login_attempts');
+
+    const id = uuidv7();
+    const passwordHash = await hash(SEEDED_ADMIN.password);
+
+    await client.query(
+      'INSERT INTO users (id, login_id, email, display_name, password_hash) VALUES ($1, $2, $3, $4, $5)',
+      [id, SEEDED_ADMIN.loginId, SEEDED_ADMIN.email, 'E2E Admin', passwordHash],
+    );
+    await client.query(
+      "INSERT INTO user_roles (user_id, role_id) SELECT $1, id FROM roles WHERE name = 'administrator'",
+      [id],
+    );
+  } finally {
+    await client.end();
+  }
+}
+
+async function saveLoggedInState(baseURL: string): Promise<void> {
+  const context = await playwrightRequest.newContext({ baseURL });
+
+  try {
+    const csrfResponse = await context.get('/api/v1/auth/csrf');
+    const csrfBody = (await csrfResponse.json()) as { data: { csrfToken: string } };
+    const token = csrfBody.data.csrfToken;
+
+    const login = await context.post('/api/v1/auth/login', {
+      headers: { 'X-CSRF-Token': token, Origin: baseURL },
+      data: {
+        loginId: SEEDED_ADMIN.loginId,
+        password: SEEDED_ADMIN.password,
+        csrfToken: token,
+      },
+    });
+
+    if (login.status() !== 200) {
+      throw new Error(`E2E の初期ログインに失敗した: ${login.status()} ${await login.text()}`);
+    }
+
+    mkdirSync(dirname(ADMIN_STORAGE_STATE), { recursive: true });
+    await context.storageState({ path: ADMIN_STORAGE_STATE });
+  } finally {
+    await context.dispose();
+  }
+}
+
+export default async function globalSetup(config: FullConfig): Promise<void> {
+  const connectionString = process.env['DATABASE_URL'];
+  if (connectionString === undefined || connectionString === '') {
+    throw new Error('E2E には DATABASE_URL が必要。');
+  }
+
+  await seedAdministrator(connectionString);
+
+  const baseURL = config.projects[0]?.use.baseURL ?? 'http://127.0.0.1:3000';
+  await saveLoggedInState(baseURL);
+}

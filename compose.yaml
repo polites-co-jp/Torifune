@@ -1,0 +1,47 @@
+# 開発用の PostgreSQL。アプリケーションはホスト側で `pnpm dev` として動かす。
+#
+# 本番構成のコンテナ設計はこのリポジトリの責務ではない。
+# Torifune は単体で動くアプリケーションであり、どう配置するかは利用者が決める。
+name: torifune
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: torifune
+      POSTGRES_PASSWORD: torifune
+      POSTGRES_DB: torifune
+      # 日本語を含むデータの照合順序を安定させる
+      POSTGRES_INITDB_ARGS: '--encoding=UTF8 --locale=C'
+    ports:
+      - '${TORIFUNE_DB_PORT:-21700}:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U torifune -d torifune']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # 結合テスト用。データを永続化しない（tmpfs）ため、落とせば必ず初期状態に戻る。
+  postgres-test:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: torifune
+      POSTGRES_PASSWORD: torifune
+      POSTGRES_DB: torifune_test
+      POSTGRES_INITDB_ARGS: '--encoding=UTF8 --locale=C'
+    ports:
+      - '${TORIFUNE_DB_TEST_PORT:-21701}:5432'
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U torifune -d torifune_test']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres-data:

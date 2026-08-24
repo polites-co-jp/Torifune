@@ -1,0 +1,40 @@
+/*
+ * デザイントークン。
+ * 色・余白・角丸・フォント・影はすべてここに集約し、コンポーネントは変数のみを参照する。
+ * 詳細は docs/実装計画/001-Torifune単体稼働/02_画面デザイン方針.md を参照。
+ * 値は暫定であり、デザインを詰めるときはここだけを差し替える。
+ */
+:root {
+  --tf-color-bg: #ffffff;
+  --tf-color-surface: #f7f7f8;
+  --tf-color-border: #e3e3e6;
+  --tf-color-text: #1a1a1e;
+  --tf-color-text-muted: #6b6b73;
+
+  --tf-color-primary: #2f6fdb;
+  --tf-color-primary-text: #ffffff;
+  --tf-color-danger: #c0392b;
+  --tf-color-success: #1e8e5a;
+  --tf-color-warning: #b8860b;
+
+  --tf-space-1: 4px;
+  --tf-space-2: 8px;
+  --tf-space-3: 12px;
+  --tf-space-4: 16px;
+  --tf-space-6: 24px;
+  --tf-space-8: 32px;
+
+  --tf-radius-sm: 4px;
+  --tf-radius-md: 6px;
+  --tf-radius-lg: 10px;
+
+  --tf-shadow-1: 0 1px 2px rgb(0 0 0 / 6%);
+  --tf-shadow-2: 0 4px 12px rgb(0 0 0 / 10%);
+
+  /* 寸法 */
+  --tf-size-dialog: 480px;
+  --tf-size-nav: 220px;
+  --tf-size-form: 360px;
+
+  --tf-font-sans: system-ui, 'Hiragino Sans', 'Noto Sans JP', sans-serif;
+}

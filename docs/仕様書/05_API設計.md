@@ -389,19 +389,12 @@ DELETE /api/v1/sites/{id}
 
 ---
 
-## 17. Content API
+## 17. Content API（Coreでは提供しない）
 
-コンテンツを管理するAPI。
+コンテンツ管理はPluginの責務とする（2026-08-24 改訂。`改訂履歴.md` を参照）。
 
-```text
-GET    /api/v1/contents
-POST   /api/v1/contents
-GET    /api/v1/contents/{id}
-PATCH  /api/v1/contents/{id}
-DELETE /api/v1/contents/{id}
-```
-
-必要に応じて公開・下書き等の状態を管理する。
+コンテンツを扱うPluginは、自身のAPIを `/api/v1/plugins/<plugin-id>/...` の
+名前空間で提供する。Coreは `/api/v1/contents` を持たない。
 
 ---
 
@@ -486,7 +479,6 @@ PluginがTorifuneのデータを利用するためのAPI。
 
 ```text
 Sites
-Contents
 Campaigns
 Social Accounts
 Social Posts
@@ -526,7 +518,7 @@ PluginがTorifune内部イベントを購読するためのAPI。
 
 ```text
 subscribe(
-    "content.created",
+    "site.created",
     handler
 )
 ```
@@ -704,7 +696,7 @@ Torifune OSS Coreでは、Tenant Contextを必須概念としない。
 基本形式：
 
 ```text
-GET /api/v1/contents?page=1&perPage=20
+GET /api/v1/sites?page=1&perPage=20
 ```
 
 Response：
@@ -731,7 +723,7 @@ Response：
 例：
 
 ```text
-GET /api/v1/contents?status=published
+GET /api/v1/sites?status=active
 ```
 
 複雑な検索条件を提供する場合でも、SQLをそのままAPIへ渡すような仕様は採用しない。
@@ -745,7 +737,7 @@ GET /api/v1/contents?status=published
 例：
 
 ```text
-GET /api/v1/contents?sort=-createdAt
+GET /api/v1/sites?sort=-createdAt
 ```
 
 利用可能なSort FieldをAPIごとに明示し、任意のDatabase Columnを指定できる仕様にはしない。
@@ -798,8 +790,7 @@ API TokenにはScopeを設定できる構造とする。
 
 ```text
 site.read
-content.read
-content.write
+site.write
 analytics.read
 social.read
 social.write

@@ -9,6 +9,9 @@ dist/
 build/
 *.tsbuildinfo
 
+# 自動生成（pnpm generate:plugins）
+apps/web/src/plugin/generated-registry.ts
+
 # 環境設定・Secret（.env.example のみコミットする）
 .env
 .env.*
@@ -21,6 +24,7 @@ build/
 coverage/
 playwright-report/
 test-results/
+.auth/
 
 # Claude Code（エージェント定義とコマンドはコミットする）
 .claude/settings.local.json

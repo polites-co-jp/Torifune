@@ -1,0 +1,11 @@
+{
+  "id": "example-plugin",
+  "name": "サンプルPlugin",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "description": "Plugin API のすべての拡張点を1つずつ使ってみせるサンプル。",
+  "author": "Torifune",
+  "license": "MIT",
+  "permissions": ["site.read", "example-plugin.report.read"],
+  "extensions": ["ui", "events", "database"]
+}

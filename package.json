@@ -1,0 +1,44 @@
+{
+  "name": "torifune",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Torifune - open source marketing management application",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/polites-co-jp/Torifune.git"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@11.8.0",
+  "scripts": {
+    "dev": "pnpm generate:plugins && pnpm --filter @torifune/web dev",
+    "build": "pnpm generate:plugins && pnpm -r build",
+    "start": "pnpm --filter @torifune/web start",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm generate:plugins && vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "pnpm --filter @torifune/web test:e2e",
+    "migrate": "pnpm --filter @torifune/cli build && node packages/cli/dist/main.js migrate",
+    "generate:plugins": "node scripts/generate-plugin-registry.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@torifune/plugin-api": "workspace:*",
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.2.18",
+    "eslint": "^10.9.0",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.9.6",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.67.0",
+    "vitest": "^4.1.11"
+  }
+}

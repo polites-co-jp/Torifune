@@ -1,0 +1,35 @@
+{
+  "name": "@torifune/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@node-rs/argon2": "^2.1.0",
+    "@torifune/plugin-api": "workspace:*",
+    "kysely": "^0.29.5",
+    "next": "^16.3.2",
+    "pg": "^8.23.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "uuidv7": "^1.2.1",
+    "yauzl": "^3.4.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@torifune/cli": "workspace:*",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@types/yauzl": "^3.4.0",
+    "tailwindcss": "^4.3.3"
+  }
+}

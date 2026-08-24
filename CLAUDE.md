@@ -46,40 +46,68 @@ Torifuneに**入れてはならない**もの（これらはすべて TorifuneHu
 
 ## 技術スタック
 
-* **TypeScript / Next.js フルスタック**（画面とAPIを Next.js に集約）
+* **TypeScript / Next.js フルスタック**（画面とAPIを Next.js に集約。App Router）
 * **PostgreSQL**（標準構成では 1インスタンス = 1データベース）
-* パッケージマネージャは **pnpm**
+* パッケージマネージャは **pnpm**（workspace）
+* DBアクセスは **node-postgres + Kysely**。ORMは使わない
+* マイグレーションは **連番SQL + 自前ランナー**（`schema_migrations` + advisory lock）
+* バリデーションは **Zod**。OpenAPI はZodスキーマから生成する
+* UIは **Tailwind CSS + 自前ミニマルコンポーネント**。UIライブラリは導入しない
 * テストは Vitest（ユニット・結合）、E2E は Playwright
+* Node.js は 22 以上
 
-> フレームワーク周辺の細部（ORM、マイグレーションツール、バリデーションライブラリ等）は未確定。
-> 選定が必要になったら、実装を始める前に `docs/設計/` に選定理由を残してから進める。
+> 選定理由と却下した案は `docs/実装計画/001-Torifune単体稼働/00_決定事項.md` に記録してある。
+> **設計書側でこれを蒸し返さない。** 新たな選定が必要になったら、実装を始める前に
+> `docs/設計/` へ選定理由を残してから進める。
 
 ### コマンド
 
 ```bash
 pnpm install
 pnpm dev            # 開発サーバ
-pnpm build
-pnpm lint
-pnpm typecheck
+pnpm build          # 全ワークスペースのビルド
+pnpm start          # ビルド済みアプリの起動
+pnpm lint           # ESLint（レイヤ境界の検査を含む）
+pnpm format         # Prettier（検査のみは format:check）
+pnpm typecheck      # 型検査
 pnpm test           # ユニット・結合テスト
 pnpm test:e2e       # E2E
-```
+pnpm migrate        # DBマイグレーション
 
-> まだ実装コードが存在しない段階のため、上記は想定コマンド。
-> `package.json` を作成した時点で、この節を実際のスクリプト名に更新すること。
+docker compose up -d postgres   # 開発用PostgreSQL
+```
 
 ## ディレクトリ構成
 
+pnpm workspace。**公開Plugin APIを独立パッケージに切り出し、依存の向きをビルドで守る。**
+
 ```text
-docs/仕様書/     上位仕様（システム全体の設計。安定した基盤。勝手に変えない）
-docs/設計/       機能単位の詳細設計（機能ごとに1ディレクトリ。開発の起点）
-src/             実装
-migrations/      DBマイグレーション（連番SQL。順番に適用できる状態を保つ）
+docs/仕様書/          上位仕様（システム全体の設計。安定した基盤。勝手に変えない）
+docs/設計/            機能単位の詳細設計（機能ごとに1ディレクトリ。開発の起点）
+docs/実装計画/        スプリント分解と技術選定
+apps/web/             Next.jsアプリ本体
+packages/plugin-api/  公開Plugin API（型とインターフェースのみ。将来npm公開）
+packages/cli/         torifune CLI（migrate 等）
+plugins/              ローカルPluginの配置先
+migrations/           DBマイグレーション（連番SQL。順番に適用できる状態を保つ）
 ```
 
-`src/` 配下は仕様書の責務分離に従う：
-`API / Application / Domain / Infrastructure / Plugin / Authentication / Database / UI`
+`apps/web/src/` 配下は仕様書の責務分離に従う：
+`api / application / domain / infrastructure / plugin / authentication / database / ui`
+
+各ディレクトリの `README.md` に責務を書いてある。迷ったらそれを読む。
+
+### 依存の向き（ESLintで検査している）
+
+* `packages/plugin-api` → **本体へ依存しない**（一方向）
+* `domain/` → DB製品（`pg` / `kysely`）へ依存しない。Infrastructure・API・UIへ依存しない
+* `ui/` `app/` → DB製品へ直接依存しない。Application層を経由する
+
+### 認可を書く場所
+
+**Permissionチェックは Application層（UseCase）で行う。** API Layerに置かない。
+画面は Server Component から UseCase を直接呼び、更新系は `/api/v1` を叩くため、
+API Layerに置くと経路ごとに漏れる。
 
 ## 開発フロー（テスト先行 / TDD）
 

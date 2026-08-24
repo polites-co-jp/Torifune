@@ -1,0 +1,27 @@
+{
+  "name": "@torifune/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "torifune": "./dist/main.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./migrate/runner": "./src/migrate/runner.ts",
+    "./migrate/loader": "./src/migrate/loader.ts"
+  }
+}
