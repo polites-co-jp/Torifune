@@ -19,6 +19,7 @@ export default tseslint.config(
       '**/playwright-report/**',
       '**/test-results/**',
       '**/next-env.d.ts',
+      'apps/web/src/plugin/generated-registry.ts',
     ],
   },
 
@@ -119,6 +120,18 @@ export default tseslint.config(
           })),
         },
       ],
+    },
+  },
+
+  // ビルド用スクリプト。Node で直接動かすので、
+  // ブラウザ前提の既定とは前提が違う。進捗の出力も要る。
+  {
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: { console: 'readonly', process: 'readonly' },
+    },
+    rules: {
+      'no-console': 'off',
     },
   },
 

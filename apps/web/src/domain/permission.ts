@@ -5,8 +5,14 @@
  * 文字列に形式の制約だけを課し、実在するかは実行時のレジストリで見る。
  */
 
-/** `<resource>.<action>` 形式。ドットで2つ以上の区切りを許す（Plugin の名前空間用）。 */
-const PERMISSION_PATTERN = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/;
+/**
+ * `<resource>.<action>` 形式。ドットで2つ以上の区切りを許す（Plugin の名前空間用）。
+ *
+ * **ハイフンを許す。** Plugin ID がハイフンを含むため（`seo-plugin.report.read`）、
+ * 許さないと Plugin が自分の ID を名前空間にできない。
+ * DB 側の制約は migrations/008 で合わせてある。
+ */
+const PERMISSION_PATTERN = /^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*)+$/;
 
 export type PermissionName = string & { readonly __brand?: 'PermissionName' };
 

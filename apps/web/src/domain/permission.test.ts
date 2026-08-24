@@ -36,8 +36,15 @@ describe('isValidPermissionName', () => {
     expect(isValidPermissionName('')).toBe(false);
   });
 
-  it('ハイフンを拒否する', () => {
-    expect(isValidPermissionName('site-read.x')).toBe(false);
+  it('ハイフンを許す', () => {
+    // Plugin ID がハイフンを含むため、許さないと Plugin が
+    // 自分の ID を Permission の名前空間にできない。
+    expect(isValidPermissionName('seo-plugin.report.read')).toBe(true);
+  });
+
+  it('先頭がハイフンの名前を拒否する', () => {
+    expect(isValidPermissionName('-seo.read')).toBe(false);
+    expect(isValidPermissionName('seo.-read')).toBe(false);
   });
 
   it('末尾がドットの名前を拒否する', () => {

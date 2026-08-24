@@ -71,6 +71,7 @@ export type ManifestValidation =
  * Plugin が古い本体で一切動かなくなる（前方互換性）。
  *
  * `knownPermissions` を渡すと、宣言された Permission の実在も確かめる。
+ * ただし `<plugin-id>.…` は Plugin が自分で定義するものとして許す。
  */
 export function validateManifest(
   input: unknown,
@@ -118,12 +119,21 @@ export function validateManifest(
       problems.push({ field: 'permissions', message: '文字列の配列で指定する' });
     } else if (options.knownPermissions !== undefined) {
       for (const permission of permissions as string[]) {
-        if (!options.knownPermissions.includes(permission)) {
-          problems.push({
-            field: 'permissions',
-            message: `未定義の Permission: ${permission}`,
-          });
+        if (options.knownPermissions.includes(permission)) {
+          continue;
         }
+        // **自分の名前空間なら新しく定義してよい。**
+        // 本体の Permission しか宣言できないと、Plugin は
+        // 自分の機能に対する権限を作れない（03_プラグイン設計.md §20.2）。
+        if (typeof id === 'string' && permission.startsWith(`${id}.`)) {
+          continue;
+        }
+        problems.push({
+          field: 'permissions',
+          message: `未定義の Permission: ${permission}（本体の Permission か ${
+            typeof id === 'string' ? id : '<plugin-id>'
+          }.… のいずれかにする）`,
+        });
       }
     }
   }

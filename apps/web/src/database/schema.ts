@@ -110,6 +110,15 @@ export interface SocialPostsTable {
   updated_at: UpdatedAt;
 }
 
+export interface PluginsTable {
+  id: string;
+  version: string;
+  status: Generated<string>;
+  installed_at: CreatedAt;
+  enabled_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  updated_at: UpdatedAt;
+}
+
 export interface PluginStoreTable {
   plugin_id: string;
   key: string;
@@ -149,6 +158,7 @@ export interface Schema {
   sites: SitesTable;
   social_accounts: SocialAccountsTable;
   social_posts: SocialPostsTable;
+  plugins: PluginsTable;
   plugin_store: PluginStoreTable;
   roles: RolesTable;
   permissions: PermissionsTable;

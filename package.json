@@ -13,18 +13,19 @@
   },
   "packageManager": "pnpm@11.8.0",
   "scripts": {
-    "dev": "pnpm --filter @torifune/web dev",
-    "build": "pnpm -r build",
+    "dev": "pnpm generate:plugins && pnpm --filter @torifune/web dev",
+    "build": "pnpm generate:plugins && pnpm -r build",
     "start": "pnpm --filter @torifune/web start",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "pnpm -r typecheck",
-    "test": "vitest run",
+    "test": "pnpm generate:plugins && vitest run",
     "test:watch": "vitest",
     "test:e2e": "pnpm --filter @torifune/web test:e2e",
-    "migrate": "pnpm --filter @torifune/cli build && node packages/cli/dist/main.js migrate"
+    "migrate": "pnpm --filter @torifune/cli build && node packages/cli/dist/main.js migrate",
+    "generate:plugins": "node scripts/generate-plugin-registry.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

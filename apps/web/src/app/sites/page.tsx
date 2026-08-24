@@ -1,9 +1,7 @@
-import { cookies, headers } from 'next/headers';
-import { redirect } from 'next/navigation';
-import { SESSION_COOKIE } from '@/api/cookies';
-import { buildAuthorizationContext } from '@/application/authorization/context';
 import { listSites } from '@/application/site/site-use-cases';
 import { AppShell } from '@/ui/layout/app-shell';
+import { ExtensionPoint } from '@/ui/plugin/plugin-slot';
+import { requirePageSession } from '@/ui/server/page-session';
 import { SiteList } from '@/ui/site/site-list';
 import { AsyncState } from '@/ui/states/async-state';
 
@@ -20,27 +18,15 @@ export default async function SitesPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const cookieStore = await cookies();
-  const headerStore = await headers();
   const params = await searchParams;
-
-  const context = await buildAuthorizationContext(cookieStore.get(SESSION_COOKIE)?.value, {
-    ipAddress: headerStore.get('x-forwarded-for'),
-    userAgent: headerStore.get('user-agent'),
-  });
-
-  if (context.identity === null) {
-    redirect('/login');
-  }
+  const { context, displayName, permissions } = await requirePageSession();
 
   const page = Math.max(1, Number(params['page'] ?? 1) || 1);
   const perPage = 20;
 
-  const permissions = [...context.permissions];
-
-  if (!context.permissions.has('site.read')) {
+  if (!permissions.has('site.read')) {
     return (
-      <AppShell displayName={context.identity.displayName} permissions={context.permissions}>
+      <AppShell displayName={displayName} permissions={permissions}>
         <AsyncState status="forbidden">{null}</AsyncState>
       </AppShell>
     );
@@ -55,7 +41,8 @@ export default async function SitesPage({
   });
 
   return (
-    <AppShell displayName={context.identity.displayName} permissions={context.permissions}>
+    <AppShell displayName={displayName} permissions={permissions}>
+      <ExtensionPoint point="site.list.actions" permissions={permissions} />
       <SiteList
         initialSites={result.items.map((site) => ({
           id: site.id,
@@ -66,7 +53,7 @@ export default async function SitesPage({
         total={result.total}
         page={page}
         perPage={perPage}
-        permissions={permissions}
+        permissions={[...permissions]}
       />
     </AppShell>
   );

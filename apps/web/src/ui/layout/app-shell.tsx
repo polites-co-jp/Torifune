@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import type { ReactNode } from 'react';
-import { CORE_NAVIGATION, visibleNavigation } from './navigation';
+import { collectMenus } from '@/plugin/registry';
+import { CORE_NAVIGATION, visibleNavigation, type NavigationItem } from './navigation';
 
 /**
  * ログイン後の共通レイアウト（06_画面設計.md §7）。
@@ -15,7 +16,15 @@ export interface AppShellProps {
 }
 
 export function AppShell({ displayName, permissions, children }: AppShellProps) {
-  const items = visibleNavigation(CORE_NAVIGATION, permissions);
+  // Plugin が追加した項目を Core の項目のあとに並べる。
+  // Plugin が既存の項目を押しのけないよう、順序は Core を先にする。
+  const pluginItems: NavigationItem[] = collectMenus(permissions).map((menu) => ({
+    label: menu.label,
+    href: menu.route,
+    permission: menu.permission ?? null,
+  }));
+
+  const items = [...visibleNavigation(CORE_NAVIGATION, permissions), ...pluginItems];
 
   return (
     <div
@@ -74,10 +83,7 @@ export function AppShell({ displayName, permissions, children }: AppShellProps) 
               </li>
             ))}
           </ul>
-          {/*
-            Plugin が追加するナビゲーション項目は、011-plugin-runtime でここへ差し込む。
-            拡張点の位置を先に確保しておく（デザインを詰めるときに消えないように）。
-          */}
+          {/* Plugin が追加した項目は上の一覧に含まれている（011-plugin-runtime）。 */}
         </nav>
 
         <main style={{ padding: 'var(--tf-space-6)' }}>{children}</main>

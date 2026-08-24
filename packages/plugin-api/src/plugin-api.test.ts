@@ -187,6 +187,24 @@ describe('validateManifest', () => {
     expect(!result.ok && result.problems.map((p) => p.field)).toContain('permissions');
   });
 
+  it('自分の名前空間の Permission は新しく定義できる', () => {
+    // 本体の Permission しか宣言できないと、
+    // Plugin は自分の機能に対する権限を作れない。
+    const result = validateManifest(
+      validManifest({ permissions: ['site.read', 'seo-plugin.report.read'] }),
+      { knownPermissions: ['site.read'] },
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it('他の Plugin の名前空間は名乗れない', () => {
+    // 名乗れると、他の Plugin の権限を横取りできる。
+    const result = validateManifest(validManifest({ permissions: ['other-plugin.report.read'] }), {
+      knownPermissions: ['site.read'],
+    });
+    expect(!result.ok && result.problems.map((p) => p.field)).toContain('permissions');
+  });
+
   it('extensions の値を検証する', () => {
     expect(validateManifest(validManifest({ extensions: ['ui', 'events'] })).ok).toBe(true);
     expect(validateManifest(validManifest({ extensions: ['unknown'] })).ok).toBe(false);

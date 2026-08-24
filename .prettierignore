@@ -11,3 +11,6 @@ docs/
 # ルールを定義するファイル。整形で差分を出さない。
 CLAUDE.md
 .claude/
+
+# 自動生成
+apps/web/src/plugin/generated-registry.ts

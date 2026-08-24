@@ -1,28 +1,18 @@
-import { cookies, headers } from 'next/headers';
-import { notFound, redirect } from 'next/navigation';
-import { SESSION_COOKIE } from '@/api/cookies';
-import { buildAuthorizationContext } from '@/application/authorization/context';
+import { notFound } from 'next/navigation';
 import { getSite } from '@/application/site/site-use-cases';
 import { NotFoundError } from '@/domain/repository';
 import { AppShell } from '@/ui/layout/app-shell';
+import { ExtensionPoint } from '@/ui/plugin/plugin-slot';
+import { requirePageSession } from '@/ui/server/page-session';
 import { SiteForm } from '@/ui/site/site-form';
 
 export const dynamic = 'force-dynamic';
 
 export default async function EditSitePage({ params }: { params: Promise<{ id: string }> }) {
-  const cookieStore = await cookies();
-  const headerStore = await headers();
   const { id } = await params;
+  const { context, displayName, permissions } = await requirePageSession();
 
-  const context = await buildAuthorizationContext(cookieStore.get(SESSION_COOKIE)?.value, {
-    ipAddress: headerStore.get('x-forwarded-for'),
-    userAgent: headerStore.get('user-agent'),
-  });
-
-  if (context.identity === null) {
-    redirect('/login');
-  }
-  if (!context.permissions.has('site.write')) {
+  if (!permissions.has('site.write')) {
     notFound();
   }
 
@@ -37,7 +27,7 @@ export default async function EditSitePage({ params }: { params: Promise<{ id: s
   }
 
   return (
-    <AppShell displayName={context.identity.displayName} permissions={context.permissions}>
+    <AppShell displayName={displayName} permissions={permissions}>
       <SiteForm
         title="Webサイトを編集"
         siteId={site.id}
@@ -48,6 +38,8 @@ export default async function EditSitePage({ params }: { params: Promise<{ id: s
           status: site.status,
         }}
       />
+      {/* Plugin は編集画面の脇に自分の欄を足せる（06_画面設計.md §26）。 */}
+      <ExtensionPoint point="site.edit.sidebar" permissions={permissions} props={{ siteId: id }} />
     </AppShell>
   );
 }
