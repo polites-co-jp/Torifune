@@ -71,5 +71,5 @@ test('本体の項目が Plugin に押しのけられない', async ({ page }) =
   const nav = page.getByRole('navigation', { name: 'メインナビゲーション' });
   const links = await nav.getByRole('link').allTextContents();
 
-  expect(links.slice(0, 4)).toEqual(['ダッシュボード', 'Webサイト', 'SNS', 'プラグイン']);
+  expect(links.slice(0, 5)).toEqual(['ダッシュボード', 'Webサイト', 'SNS', '設定', 'プラグイン']);
 });

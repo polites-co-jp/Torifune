@@ -1,6 +1,14 @@
 import type { Plugin, PluginContext } from '@torifune/plugin-api';
+import { createDummyAuthenticationProvider } from './authentication';
 import { createDummyDatabaseProvider } from './database';
-import { ExampleSiteAction, ExampleSiteSidebar, ExampleWidget } from './ui/components';
+import {
+  ExampleBrokenPage,
+  ExampleLoginMethod,
+  ExampleSettingsTab,
+  ExampleSiteAction,
+  ExampleSiteSidebar,
+  ExampleWidget,
+} from './ui/components';
 import { ExamplePage } from './ui/pages';
 
 /**
@@ -26,6 +34,17 @@ const API_TOKEN_KEY = 'api-token';
  */
 function shouldReplaceDatabase(): boolean {
   return process.env['EXAMPLE_PLUGIN_REPLACE_DATABASE'] === '1';
+}
+
+/**
+ * ダミーの Authentication Provider を差し替えるかどうか。
+ *
+ * **既定では差し替えない。** 差し替えると、以後のログインがこのダミーを通る。
+ * `EXAMPLE_PLUGIN_AUTH_USER_ID` に実在するユーザーの ID を渡すこと。
+ */
+function dummyAuthenticationUserId(): string | null {
+  const userId = process.env['EXAMPLE_PLUGIN_AUTH_USER_ID'];
+  return userId === undefined || userId === '' ? null : userId;
 }
 
 const plugin: Plugin = {
@@ -63,6 +82,19 @@ const plugin: Plugin = {
       point: 'site.edit.sidebar',
       component: ExampleSiteSidebar,
       order: 50,
+    });
+
+    // 設定画面とログイン画面への差し込み。
+    ui.registerExtension({ point: 'settings.tabs', component: ExampleSettingsTab, order: 50 });
+    ui.registerExtension({ point: 'login.methods', component: ExampleLoginMethod, order: 50 });
+
+    // **わざと例外を投げるページ。** Error Boundary が枠だけを落とすことを見せる。
+    // 実装の見本ではない（`docs/Plugin開発ガイド.md` §3）。
+    ui.registerPage({
+      route: '/plugins/example-plugin/broken',
+      title: 'わざと壊れるページ',
+      component: ExampleBrokenPage,
+      permission: 'site.read',
     });
 
     // 自分の画面に拡張点を作り、他の Plugin へ公開する。
@@ -115,6 +147,21 @@ const plugin: Plugin = {
       // 高権限の拡張点。Manifest で extensions: ['database'] を宣言していないと使えない。
       context.database.registerProvider(createDummyDatabaseProvider(logger));
       logger.warn('Database Provider をダミーへ差し替えた');
+    }
+
+    // --- Authentication Provider ----------------------------------------
+    const authUserId = dummyAuthenticationUserId();
+    if (authUserId !== null) {
+      // 高権限の拡張点。extensions: ['authentication'] の宣言が要る。
+      // **セッションの発行は Torifune が続ける。** ここが決めるのは「誰か」まで。
+      context.authentication.registerProvider(
+        createDummyAuthenticationProvider({
+          logger,
+          userId: authUserId,
+          passphrase: process.env['EXAMPLE_PLUGIN_AUTH_PASSPHRASE'] ?? 'example-passphrase',
+        }),
+      );
+      logger.warn('Authentication Provider をダミーへ差し替えた');
     }
 
     logger.info('サンプルPlugin を有効化した');

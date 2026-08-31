@@ -68,3 +68,40 @@ export function ExampleSiteSidebar(props: Record<string, unknown>) {
     </Panel>
   );
 }
+
+/** 設定画面へ差し込むタブ（`settings.tabs`）。 */
+export function ExampleSettingsTab() {
+  return (
+    <Panel title="サンプルPluginの設定タブ">
+      <p style={{ margin: 0 }} data-testid="example-settings-tab">
+        Plugin は設定画面へ自分の欄を足せます。
+        <a
+          href="/plugins/example-plugin/settings"
+          style={{ color: 'var(--tf-color-primary)', marginLeft: '0.5rem' }}
+        >
+          設定を開く
+        </a>
+      </p>
+    </Panel>
+  );
+}
+
+/** ログイン画面へ差し込む追加のログイン手段（`login.methods`）。 */
+export function ExampleLoginMethod() {
+  return (
+    <p style={{ margin: 0 }} data-testid="example-login-method">
+      サンプルPluginのログイン手段（実際には何もしません）
+    </p>
+  );
+}
+
+/**
+ * **わざと例外を投げる部品。**
+ *
+ * Error Boundary が枠だけを落とすことを示すために置いている
+ * （`03_リスクと未決事項.md` S-4）。
+ * 実装の見本ではない。**自分の Plugin にこれを真似しない。**
+ */
+export function ExampleBrokenPage() {
+  throw new Error('サンプルPlugin：わざと投げた例外');
+}

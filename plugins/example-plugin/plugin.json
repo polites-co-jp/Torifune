@@ -7,5 +7,5 @@
   "author": "Torifune",
   "license": "MIT",
   "permissions": ["site.read", "example-plugin.report.read"],
-  "extensions": ["ui", "events", "database"]
+  "extensions": ["ui", "events", "database", "authentication"]
 }

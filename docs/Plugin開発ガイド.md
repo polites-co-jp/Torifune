@@ -147,14 +147,23 @@ context.ui.defineExtensionPoint('my-plugin.page.footer');
 Core の拡張点は `CORE_EXTENSION_POINTS` にある。
 ここに無い名前も使ってよい（Plugin が定義したもの）。
 
-**ただし、次の2つはまだ描画先の画面が無い。** 登録は通るが何も出ない。
+**ここにあるものはすべて実際に描画される。** 登録すれば必ずどこかに出る。
 
-| 名前 | 使えるようになるとき |
-| --- | --- |
-| `settings.tabs` | 設定画面ができたとき（`015-settings`） |
-| `login.methods` | Authentication Provider の登録口ができたとき（§9 を参照） |
+`login.methods` だけは認証前の画面なので、**Data API が渡らない**。
+権限は空集合として扱われるため、`permission` を指定した登録は描画されない。
 
-一度公開した名前は消さない（削除は破壊的変更）。使えないものは消さずにここへ書く。
+### 描画が失敗したとき
+
+**Plugin の描画が例外を投げても、その枠だけが落ちる。** 画面全体は残り、
+その位置に「表示できませんでした」とだけ出る。例外の内容は画面へ出ない
+（サーバーのログには残る）。
+
+そのため、**Plugin の不具合で Torifune 全体が使えなくなることはない。**
+ただし利用者からは黙って欠けたように見えるので、失敗しうる処理は
+自分で捕まえて意味のある表示を出すほうがよい。
+
+実際の壊れ方は `plugins/example-plugin` の
+「わざと壊れるページ」（`/plugins/example-plugin/broken`）で見られる。
 
 ### 3.4 見た目
 
@@ -326,16 +335,50 @@ context.database.registerProvider({
 > 差し替えは**元へ戻らない**。戻すには再起動が要る。
 > 動いている最中に接続方式を差し替えると、走っている処理が道連れになるため。
 
-### Authentication Provider（まだ使えない）
+### Authentication Provider
 
-**`extensions: ["authentication"]` は Manifest の検証を通るが、いま宣言しても何もできない。**
-`PluginContext` に登録の口（`context.authentication.registerProvider`）がまだ無い。
+認証方式そのものを差し替える。**最も高い権限の拡張点。**
 
-認証方式の差し替えは `04_認証設計.md` §15 にある仕様だが、
-**実際に使う Plugin（OIDC / LDAP 等）が無いまま口だけ先に固めない**という判断で
-保留してある（`docs/実装計画/001-Torifune単体稼働/03_リスクと未決事項.md` S-6）。
-外部認証 Plugin を作る予定がある場合は、その要求と合わせて形を決めるので、
-Issue で相談してほしい。
+```json
+{ "extensions": ["authentication"] }
+```
+
+```ts
+context.authentication.registerProvider({
+  id: 'my-plugin.oidc',
+  async authenticate(credentials, context) {
+    // 外部へ問い合わせ、Torifune のユーザーへ結び付ける
+    return { ok: true, identity: { userId, loginId, displayName, email,
+      providerId: 'my-plugin.oidc', externalUserId } };
+  },
+  async getIdentity() { return null; },
+  async logout() { /* … */ },
+  async refresh() { /* … */ },
+});
+```
+
+**宣言していなければ使えない**（`PluginExtensionNotDeclaredError`）。
+
+守られている境界が2つある。
+
+* **セッションは Torifune が発行する。** Provider が決めるのは「誰か」まで。
+  セッションの発行・ハッシュ保存・ログイン時の再生成・有効期限・
+  アイドルタイムアウトは Core に残る（`04_認証設計.md` §22）
+* **`userId` は Torifune に実在するユーザーの ID でなければならない。**
+  実在しなければログインは資格情報の誤りとして扱われる。
+  返した `displayName` / `email` / `providerId` は採用されず、
+  本体が持つユーザー情報と、登録された Provider の ID が使われる
+
+外部の利用者を初回ログインで自動作成する仕組み（JIT プロビジョニング）は、
+まだ提供していない。新規ユーザーへどのロールを与えるかが決まっていないため。
+必要な場合は Issue で用途を挙げてほしい。
+
+実物の例は `plugins/example-plugin/authentication.ts`（合言葉を照合するだけのダミー）。
+`EXAMPLE_PLUGIN_AUTH_USER_ID` に実在するユーザーの ID を渡したときだけ差し替わる。
+
+> 差し替えは**元へ戻らない**。戻すには再起動が要る。
+> 認証中のセッションを持つ利用者が居るところへ差し戻すと、
+> 誰が認証済みなのかの判定が途中で変わる。
 
 ---
 

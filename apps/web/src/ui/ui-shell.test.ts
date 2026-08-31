@@ -72,13 +72,13 @@ describe('ナビゲーション', () => {
       'ダッシュボード',
       'Webサイト',
       'SNS',
+      '設定',
       'プラグイン',
     ]);
   });
 
   it('行き先の画面が存在する項目だけを載せる', () => {
     // 画面の無い項目を置くと、権限を持つ利用者がクリックしたときに 404 になる。
-    // 「設定」（06_画面設計.md §16）を載せていないのはそのため（→ 015-settings）。
     const appDir = join(UI_DIR, '..', 'app');
 
     for (const item of CORE_NAVIGATION) {
@@ -159,11 +159,10 @@ describe('Core の Extension Point', () => {
    * 一度公開した名前は消さない（削除は破壊的変更。`07_開発者向けガイド.md` §47）。
    * その代わり、どれが「宣言だけ」なのかをここで固定する。
    * 画面を作ったらこの一覧から外す。外し忘れれば下のテストが落ちる。
+   *
+   * **いまは空。** Core が公開している拡張点はすべて描画先を持つ。
    */
-  const PENDING: Record<string, string> = {
-    'settings.tabs': '設定画面が無い（→ 015-settings）',
-    'login.methods': 'Authentication Provider の登録口が無い（→ 03_リスクと未決事項.md S-6）',
-  };
+  const PENDING: Record<string, string> = {};
 
   async function sourceFiles(dir: string): Promise<string[]> {
     const entries = await readdir(dir, { withFileTypes: true, recursive: true });

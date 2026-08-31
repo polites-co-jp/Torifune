@@ -253,3 +253,45 @@ test('Permission を持たないユーザーが Plugin ページへ直接来る�
     await client.end();
   }
 });
+
+/**
+ * 2026-09-01 に足した拡張点と Error Boundary。
+ *
+ * どれも「設計はあるが実装が無い」まま残っていたもの。
+ */
+
+test('設定画面に Plugin のタブが出る', async ({ page }) => {
+  // `settings.tabs`（06_画面設計.md §27）。器は最小で、Core のタブは 015-settings。
+  await page.goto('/settings');
+
+  await expect(page.getByRole('heading', { name: '設定', exact: true })).toBeVisible();
+  await expect(page.locator('[data-extension-point="settings.tabs"]')).toBeVisible();
+  await expect(page.getByTestId('example-settings-tab')).toBeVisible();
+});
+
+test('ログイン画面に Plugin のログイン手段が出る', async ({ page }) => {
+  // `login.methods`（06_画面設計.md §5-6）。**未認証の画面**なので Data API は渡らない。
+  await page.context().clearCookies();
+  await page.goto('/login');
+
+  await expect(page.locator('[data-extension-point="login.methods"]')).toBeVisible();
+  await expect(page.getByTestId('example-login-method')).toBeVisible();
+});
+
+test('Plugin の描画が失敗しても、その枠だけが落ちる', async ({ page }) => {
+  // S-4。これが無いと Plugin ひとつの不具合で画面が丸ごと白くなる。
+  const response = await page.goto('/plugins/example-plugin/broken');
+  expect(response?.status()).toBe(200);
+
+  // 枠は落ちるが、共通レイアウトは残っている。
+  await expect(page.getByRole('navigation', { name: 'メインナビゲーション' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'とりふね' })).toBeVisible();
+
+  const fallback = page.locator('[data-plugin-error="example-plugin"]');
+  await expect(fallback).toBeVisible();
+  await expect(fallback).toContainText('表示できませんでした');
+
+  // **例外の内容を画面へ出さない**（06_画面設計.md §34）。
+  const body = await page.locator('body').innerText();
+  expect(body).not.toContain('わざと投げた例外');
+});

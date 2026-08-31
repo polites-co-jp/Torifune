@@ -1,7 +1,16 @@
 import Link from 'next/link';
+import { ensurePluginsStartedAnonymously } from '@/plugin/runtime';
 import { AuthForm } from '@/ui/auth-form';
+import { PublicExtensionPoint } from '@/ui/plugin/plugin-slot';
 
-export default function LoginPage() {
+export const dynamic = 'force-dynamic';
+
+export default async function LoginPage() {
+  // **認証を通す前に Plugin を起動する。**
+  // 認証方式を差し替える Plugin は、ここより前に起動していなければ
+  // ログイン手段を出すことも、その認証を通すこともできない。
+  await ensurePluginsStartedAnonymously();
+
   return (
     <AuthForm
       title="ログイン"
@@ -23,15 +32,12 @@ export default function LoginPage() {
             パスワードを忘れた場合
           </Link>
           {/*
-            Plugin による追加のログイン手段は、ここへ差し込む（06_画面設計.md §5-6）。
+            Plugin による追加のログイン手段（06_画面設計.md §5-6）。
 
-            拡張点の名前 `login.methods` は `CORE_EXTENSION_POINTS` にあるが、
-            **まだ枠を置かない。** ログイン手段を足す Plugin は Authentication
-            Provider を登録できて初めて意味を持つが、その登録口は保留にしてある
-            （`03_リスクと未決事項.md` S-6）。描画枠だけ先に作ると、登録しても
-            ログインできない拡張点が動いているように見える。
-            S-6 が決着したときに枠を入れ、`ui-shell.test.ts` の PENDING から外す。
+            **Data API を渡さない。** 見ているのがまだ誰とも分からない相手だから。
+            Permission を要求する登録も描画されない（権限は空集合として扱う）。
           */}
+          <PublicExtensionPoint point="login.methods" />
         </>
       }
     />

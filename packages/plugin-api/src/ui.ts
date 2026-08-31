@@ -65,15 +65,11 @@ export interface ExtensionPointRegistration {
  * **一度公開した名前を消さない。** Extension Point の削除は破壊的変更であり
  * （`07_開発者向けガイド.md` §47）、消せば新しい API Version と移行手引きが要る。
  *
- * ただし、**このうち2つはまだ描画先の画面が無い。**
- * 登録は通るが何も出ないので、対応する画面ができるまで使えない。
+ * **ここにあるものはすべて実際に描画される。** 描画先があることは
+ * `apps/web` 側のテストで固定してあり、描画先の無い名前は載せられない。
  *
- * | 名前 | 描画先 | 使えるようになるとき |
- * | --- | --- | --- |
- * | `settings.tabs` | 設定画面（`06_画面設計.md` §16） | `015-settings` |
- * | `login.methods` | ログイン画面（同 §5-6） | Authentication Provider の登録口ができたとき（`03_リスクと未決事項.md` S-6） |
- *
- * どれが描画済みかは `apps/web` 側のテストで固定してある。
+ * `login.methods` だけは認証前の画面のため、**Data API が渡らない**。
+ * 権限は空集合として扱われるので、Permission を要求する登録は描画されない。
  */
 export const CORE_EXTENSION_POINTS = [
   'dashboard.before',
