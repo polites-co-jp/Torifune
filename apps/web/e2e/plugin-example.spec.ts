@@ -179,3 +179,77 @@ test('無効化すると拡張がすべて消える', async ({ page, request }) 
   // 元へ戻しておく。afterAll が無効化と削除を行う。
   await post(request, `/api/v1/plugins/${PLUGIN_ID}/enable`);
 });
+
+/**
+ * `011-plugin-runtime` の受け入れ条件 #32（Permission を持たないユーザー）。
+ *
+ * 011 の検証で「表示の E2E は Plugin が要る」として 013 へ持ち越されたまま、
+ * どこにも書かれていなかった。ここで解消する。
+ *
+ * **画面は 403 を返さず「権限がありません」を描画する**（HTTP は 200）。
+ * `/sites` `/social` と同じ扱い。API 側は実際に 403 を返す。
+ * 経緯は `docs/設計/011-plugin-runtime/検証レポート.md` §4.1。
+ */
+test('Permission を持たないユーザーが Plugin ページへ直接来ると「権限がありません」になる', async ({
+  playwright,
+}) => {
+  const { hash } = await import('@node-rs/argon2');
+  const { default: pg } = await import('pg');
+  const { uuidv7 } = await import('uuidv7');
+
+  const connectionString = process.env['DATABASE_URL'];
+  expect(connectionString, 'E2E には DATABASE_URL が必要').toBeTruthy();
+
+  // サンプル Plugin のページは `site.read` を要求する。
+  // **ロールを1つも持たないユーザー**を作れば、その権限だけが無い状態になる。
+  const loginId = 'e2e_no_permission';
+  const password = 'e2e no permission user password';
+  const client = new pg.Client({ connectionString });
+  await client.connect();
+
+  try {
+    await client.query('DELETE FROM users WHERE login_id = $1', [loginId]);
+    await client.query(
+      'INSERT INTO users (id, login_id, email, display_name, password_hash) VALUES ($1, $2, $3, $4, $5)',
+      [uuidv7(), loginId, `${loginId}@example.com`, '権限なし', await hash(password)],
+    );
+
+    const context = await playwright.request.newContext({ baseURL: origin });
+    let storage;
+    try {
+      const token = await csrf(context);
+      const login = await context.post('/api/v1/auth/login', {
+        headers: { Origin: origin, 'X-CSRF-Token': token },
+        data: { loginId, password, csrfToken: token },
+      });
+      expect(login.status(), await login.text()).toBe(200);
+      storage = await context.storageState();
+    } finally {
+      await context.dispose();
+    }
+
+    const browser = await playwright.chromium.launch();
+    try {
+      const page = await browser.newPage({ baseURL: origin, storageState: storage });
+
+      // **このサンプルのメニューは permission を宣言していないので、誰にでも出る。**
+      // 見えることと使えることは別だ、というのがこの拡張点の要点
+      // （`plugins/example-plugin/index.tsx` のコメントを参照）。
+      await page.goto('/dashboard');
+      const nav = page.getByRole('navigation', { name: 'メインナビゲーション' });
+      await expect(nav.getByRole('link', { name: 'サンプルPlugin' })).toBeVisible();
+
+      // **URL を直接叩いても止まる。** 表示を隠すだけでは認可にならない。
+      const response = await page.goto(`/plugins/${PLUGIN_ID}`);
+      expect(response?.status()).toBe(200);
+      await expect(page.getByText('この操作を行う権限がありません')).toBeVisible();
+      // Plugin のページの中身が出ていないこと。
+      await expect(page.getByTestId('example-site-total')).toHaveCount(0);
+    } finally {
+      await browser.close();
+    }
+  } finally {
+    await client.query('DELETE FROM users WHERE login_id = $1', [loginId]);
+    await client.end();
+  }
+});
