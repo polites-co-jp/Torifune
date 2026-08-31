@@ -3,13 +3,11 @@
  *
  * **このイベントの詳細情報にパスワード・トークン・Cookie を入れてはならない。**
  *
- * `password.changed` / `user.created` / `user.disabled` は**まだ発火しない。**
- * 対応する操作（パスワード変更・ユーザー作成・ユーザー無効化）が
- * `015-settings` まで無いため。**未使用に見えても外さない。**
- * 操作を作るときに繋ぐ（`03_リスクと未決事項.md` S-7）。
+ * `password.changed` / `user.created` / `user.disabled` / `role.changed` は
+ * `015-settings` のユーザー管理から発火する。
  *
- * 同 §26 が挙げる「Role変更」「Permission変更」「外部認証連携設定変更」も
- * まだここに無い。これらも `015-settings` で操作と同時に足す。
+ * 同 §26 が挙げる「Permission変更」「外部認証連携設定変更」はまだ無い。
+ * **その操作自体が存在しないため。** 操作を作るときに同時に足す。
  */
 
 export const AUTH_AUDIT_EVENTS = [
@@ -21,6 +19,7 @@ export const AUTH_AUDIT_EVENTS = [
   'password.reset.completed',
   'user.created',
   'user.disabled',
+  'role.changed',
   'setup.completed',
 ] as const;
 

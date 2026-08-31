@@ -28,5 +28,7 @@ import '@/app/api/v1/social/accounts/route';
 import '@/app/api/v1/social/accounts/[id]/route';
 import '@/app/api/v1/social/posts/route';
 import '@/app/api/v1/social/posts/[id]/route';
+import '@/app/api/v1/users/route';
+import '@/app/api/v1/users/[id]/route';
 
 export {};
