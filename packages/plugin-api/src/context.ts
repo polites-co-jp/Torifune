@@ -1,3 +1,4 @@
+import type { PluginAuthenticationApi } from './authentication';
 import type { PluginDataApi } from './data';
 import type { PluginDatabaseApi } from './database';
 import type { PluginEventApi } from './events';
@@ -38,6 +39,16 @@ export interface PluginContext {
    * 宣言していなければ使えない。
    */
   readonly database: PluginDatabaseApi;
+
+  /**
+   * 認証方式の差し替え（04_認証設計.md §15）。
+   *
+   * **高権限の拡張点。** Manifest で `extensions: ['authentication']` を
+   * 宣言していなければ使えない。
+   *
+   * **セッションの発行は Core に残る。** Provider が決めるのは「誰か」まで。
+   */
+  readonly authentication: PluginAuthenticationApi;
 
   /** ログ。**Secret を渡しても平文は出ない。** */
   readonly logger: PluginLogger;

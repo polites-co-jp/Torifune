@@ -63,6 +63,7 @@ export type {
 } from './data';
 
 export type {
+  PluginAuthenticationApi,
   PluginAuthenticationContext,
   PluginAuthenticationProvider,
   PluginAuthenticationResult,

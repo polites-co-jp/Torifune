@@ -41,6 +41,7 @@ export interface PluginAuthenticationContext {
 }
 
 export interface PluginAuthenticationProvider {
+  /** Provider の識別子。認証したユーザーの `providerId` に入る。 */
   readonly id: string;
   authenticate(
     credentials: PluginCredentials,
@@ -52,4 +53,25 @@ export interface PluginAuthenticationProvider {
   ): Promise<PluginUserIdentity | null>;
   logout(sessionToken: string, context: PluginAuthenticationContext): Promise<void>;
   refresh(sessionToken: string, context: PluginAuthenticationContext): Promise<void>;
+}
+
+/**
+ * Authentication Provider を差し替えるための入口。
+ *
+ * **Manifest で `extensions: ['authentication']` を宣言していなければ使えない。**
+ * 宣言なしに差し替えられると、Plugin を入れた側が
+ * 「何が認証を握っているか」を知らないまま運用することになる。
+ *
+ * **セッションは Torifune が発行する。**
+ * Provider が受け持つのは「その資格情報が誰なのか」を決めるところまでで、
+ * セッションの発行・ハッシュ保存・ログイン時の再生成・有効期限は Core に残る
+ * （`04_認証設計.md` §22「Torifune自身のセッションを確立する方式を基本とする」）。
+ *
+ * そのため `authenticate()` が返す `userId` は、**Torifune に既に存在する
+ * ユーザーの ID でなければならない。** 存在しない ID を返した場合、
+ * ログインは資格情報の誤りとして扱われる（理由は呼び出し元へ返さない）。
+ * 外部の利用者を初回ログインで自動作成する仕組みは、まだ提供していない。
+ */
+export interface PluginAuthenticationApi {
+  registerProvider(provider: PluginAuthenticationProvider): void;
 }

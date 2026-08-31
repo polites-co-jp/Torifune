@@ -1,4 +1,5 @@
 import type { AuthorizationContext } from '@/application/authorization/authorize';
+import { buildAuthorizationContext } from '@/application/authorization/context';
 import { withConnection } from '@/application/transaction';
 import type { Connection } from '@/database/provider';
 import { processState } from '@/infrastructure/process-state';
@@ -98,4 +99,29 @@ export async function ensurePluginsStarted(
 export function resetPluginRuntime(): void {
   bootState.promise = null;
   resetPluginRegistry();
+}
+
+/**
+ * 認証を通す前に Plugin を起動する。
+ *
+ * **認証方式を差し替える Plugin は、最初のログインより前に起動していなければ
+ * 意味を持たない。** 起動していなければ `getAuthenticationProvider()` は
+ * 標準認証を返し、差し替えたはずの Provider を誰も通らない。
+ *
+ * **匿名の認可文脈で起動する。** `activate()` が受け取る Data API は
+ * 権限を1つも持たない。認証済みの誰かの権限で起動するより安全であり、
+ * 「最初に画面を開いた人が誰か」で Plugin の起動条件が変わることも無くなる。
+ * 画面の描画に使う Data API は、そのつど見ている人の権限で作り直される
+ * （`ui/plugin/plugin-slot.tsx`）。
+ */
+export async function ensurePluginsStartedAnonymously(): Promise<BootResult> {
+  if (bootState.promise !== null) {
+    return bootState.promise;
+  }
+
+  const authorization = await buildAuthorizationContext(undefined, {
+    ipAddress: null,
+    userAgent: null,
+  });
+  return ensurePluginsStarted(authorization);
 }

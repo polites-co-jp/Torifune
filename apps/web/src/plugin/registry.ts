@@ -41,6 +41,14 @@ interface Registrations {
    * 元へ戻すには再起動が要る（Provider の差し替えは高権限の拡張点）。
    */
   readonly databaseProviders: string[];
+  /**
+   * この Plugin が差し替えた Authentication Provider の ID。
+   *
+   * `databaseProviders` と同じく**記録するだけで、無効化しても元へは戻さない。**
+   * 認証中のセッションを持つ利用者が居るところへ差し戻すと、
+   * 誰が認証済みなのかの判定が途中で変わる。元へ戻すには再起動が要る。
+   */
+  readonly authenticationProviders: string[];
   /** 宣言された設定項目。**1 Plugin につき1つ。** */
   settings: SettingsRegistration | null;
 }
@@ -56,6 +64,7 @@ function emptyRegistrations(): Registrations {
     unsubscribers: [],
     permissions: [],
     databaseProviders: [],
+    authenticationProviders: [],
     settings: null,
   };
 }

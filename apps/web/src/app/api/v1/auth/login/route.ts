@@ -4,6 +4,7 @@ import { requestInfoOf, sessionCookie } from '@/api/cookies';
 import { errorResponse } from '@/api/errors';
 import { dataResponse } from '@/api/response';
 import { defineRoute } from '@/api/route';
+import { ensurePluginsStartedAnonymously } from '@/plugin/runtime';
 
 const LoginBody = z.object({
   loginId: z.string().min(1, '入力してください。'),
@@ -23,6 +24,11 @@ export const POST = defineRoute({
   // そこへ到達する前の物量も止める（05_API設計.md §36）。
   rateLimit: { windowMs: 60_000, max: 30 },
   handler: async ({ request, body }) => {
+    // **認証を通す前に Plugin を起動する。**
+    // 認証方式を差し替える Plugin は、ここより前に起動していなければ
+    // 差し替えたはずの Provider を誰も通らない（04_認証設計.md §15）。
+    await ensurePluginsStartedAnonymously();
+
     const outcome = await login({
       loginId: body.loginId,
       password: body.password,

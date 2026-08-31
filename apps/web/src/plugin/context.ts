@@ -1,4 +1,5 @@
 import type {
+  PluginAuthenticationApi,
   PluginContext,
   PluginDatabaseApi,
   PluginEventApi,
@@ -6,7 +7,9 @@ import type {
   PluginUiApi,
 } from '@torifune/plugin-api';
 import { PluginExtensionNotDeclaredError } from '@torifune/plugin-api';
+import { getAuthenticationProvider, setAuthenticationProvider } from '@/authentication/registry';
 import { setDatabaseProvider } from '@/database/registry';
+import { adaptPluginAuthenticationProvider } from './authentication-adapter';
 import { adaptPluginDatabaseProvider } from './database-adapter';
 import { PLUGIN_API_VERSION } from '@torifune/plugin-api';
 import type { AuthorizationContext } from '@/application/authorization/authorize';
@@ -103,10 +106,33 @@ export function buildPluginContext(deps: BuildContextDeps): PluginContext {
     },
   };
 
+  const authentication: PluginAuthenticationApi = {
+    registerProvider(provider) {
+      // **宣言していなければ差し替えさせない。** database と同じ扱い。
+      // 認証を握るのは最も高い権限であり、宣言なしに差し替えられると、
+      // Plugin を入れた側が誰の認証を通しているか分からなくなる。
+      if (!declaredExtensions.has('authentication')) {
+        throw new PluginExtensionNotDeclaredError(pluginId, 'authentication');
+      }
+      registrations.authenticationProviders.push(provider.id);
+
+      // **セッション発行は差し替え前の Provider のものを使い続ける。**
+      // ここを Plugin へ渡すと、Session Fixation 対策と失効の責任が
+      // Plugin ごとにばらける（`04_認証設計.md` §22）。
+      setAuthenticationProvider(
+        adaptPluginAuthenticationProvider({
+          provider,
+          sessionIssuer: getAuthenticationProvider(),
+        }),
+      );
+    },
+  };
+
   return {
     pluginId,
     apiVersion: PLUGIN_API_VERSION,
     database,
+    authentication,
     store: createPluginStore({ connection, pluginId }),
     data: createPluginDataApi({
       pluginId,
