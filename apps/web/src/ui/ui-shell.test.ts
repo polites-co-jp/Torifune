@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -71,9 +71,19 @@ describe('ナビゲーション', () => {
       'ダッシュボード',
       'Webサイト',
       'SNS',
-      '設定',
       'プラグイン',
     ]);
+  });
+
+  it('行き先の画面が存在する項目だけを載せる', () => {
+    // 画面の無い項目を置くと、権限を持つ利用者がクリックしたときに 404 になる。
+    // 「設定」（06_画面設計.md §16）を載せていないのはそのため（→ 015-settings）。
+    const appDir = join(UI_DIR, '..', 'app');
+
+    for (const item of CORE_NAVIGATION) {
+      const segment = item.href.replace(/^\//, '');
+      expect(existsSync(join(appDir, segment, 'page.tsx')), `${item.href} の画面が無い`).toBe(true);
+    }
   });
 
   it('Permission を持つ項目だけを返す', () => {

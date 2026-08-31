@@ -44,6 +44,12 @@ export function isReservedPermissionNamespace(value: string): boolean {
  *
  * **コンテンツは Core の責務ではない**（`docs/仕様書/改訂履歴.md` 2026-08-24）。
  * コンテンツを扱う Plugin は、自身の Permission を Plugin ID の名前空間で登録する。
+ *
+ * `system.manage` を要求する UseCase はまだ無い。
+ * `01_スプリント計画.md` S3 が体系として先に確定させたもので、
+ * 実際の消費先はシステム設定（`06_画面設計.md` §16）＝ `015-settings` になる。
+ * **未使用に見えても外さない。** マイグレーションの投入内容と
+ * administrator への割り当てがこの一覧と対応している。
  */
 export const CORE_PERMISSIONS = [
   'site.read',

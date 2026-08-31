@@ -147,6 +147,10 @@ context.ui.defineExtensionPoint('my-plugin.page.footer');
 Core の拡張点は `CORE_EXTENSION_POINTS` にある。
 ここに無い名前も使ってよい（Plugin が定義したもの）。
 
+**`CORE_EXTENSION_POINTS` に載っているのは、Core が実際に描画している点だけ。**
+登録すれば必ずどこかに出る。設定画面（`settings.tabs`）とログイン画面
+（`login.methods`）は、その画面自体がまだ無いため一覧に入っていない。
+
 ### 3.4 見た目
 
 **Torifune のデザイントークンに寄せる。**
@@ -302,6 +306,17 @@ context.database.registerProvider({
 
 > 差し替えは**元へ戻らない**。戻すには再起動が要る。
 > 動いている最中に接続方式を差し替えると、走っている処理が道連れになるため。
+
+### Authentication Provider（まだ使えない）
+
+**`extensions: ["authentication"]` は Manifest の検証を通るが、いま宣言しても何もできない。**
+`PluginContext` に登録の口（`context.authentication.registerProvider`）がまだ無い。
+
+認証方式の差し替えは `04_認証設計.md` §15 にある仕様だが、
+**実際に使う Plugin（OIDC / LDAP 等）が無いまま口だけ先に固めない**という判断で
+保留してある（`docs/実装計画/001-Torifune単体稼働/03_リスクと未決事項.md` S-6）。
+外部認証 Plugin を作る予定がある場合は、その要求と合わせて形を決めるので、
+Issue で相談してほしい。
 
 ---
 

@@ -61,6 +61,15 @@ export interface ExtensionPointRegistration {
  *
  * **Plugin は自身の画面に Extension Point を定義し、他の Plugin へ公開できる。**
  * ここに無い名前を使ってよい（`docs/仕様書/改訂履歴.md` 2026-08-24）。
+ *
+ * **ここに載せるのは、Core が実際に描画している点だけ。**
+ * 描画先が無い名前を載せると、Plugin 作者は登録しても何も起きない理由を
+ * 自分のコードの中に探すことになる。以下は描画先ができた時点で戻す。
+ *
+ * | 名前 | 描画先 | 戻すとき |
+ * | --- | --- | --- |
+ * | `settings.tabs` | 設定画面（`06_画面設計.md` §16） | `015-settings` |
+ * | `login.methods` | ログイン画面（同 §5-6） | Authentication Provider の登録口ができたとき（`03_リスクと未決事項.md` S-6） |
  */
 export const CORE_EXTENSION_POINTS = [
   'dashboard.before',
@@ -69,8 +78,6 @@ export const CORE_EXTENSION_POINTS = [
   'site.list.actions',
   'social.edit.sidebar',
   'social.list.actions',
-  'settings.tabs',
-  'login.methods',
 ] as const;
 
 /**

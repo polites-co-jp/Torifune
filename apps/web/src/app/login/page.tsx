@@ -23,8 +23,13 @@ export default function LoginPage() {
             パスワードを忘れた場合
           </Link>
           {/*
-            Plugin による追加のログイン手段は、ここへ差し込む（06_画面設計.md §5）。
-            拡張ポイント `login.methods` として 011-plugin-runtime で実装する。
+            Plugin による追加のログイン手段は、ここへ差し込む（06_画面設計.md §5-6）。
+
+            **まだ枠を置かない。** ログイン手段を足す Plugin は Authentication
+            Provider を登録できて初めて意味を持つが、その登録口は保留にしてある
+            （`03_リスクと未決事項.md` S-6）。描画枠だけ先に作ると、登録しても
+            ログインできない拡張点を公開することになる。
+            S-6 が決着したときに `login.methods` として同時に入れる。
           */}
         </>
       }

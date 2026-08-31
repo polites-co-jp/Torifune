@@ -16,11 +16,17 @@ export interface NavigationItem {
   readonly permission: PermissionName | null;
 }
 
+/**
+ * **画面が存在する項目だけを載せる。**
+ *
+ * 「設定」（`06_画面設計.md` §16 の 一般 / ユーザー / 権限 / 認証 / API / Plugin）は
+ * `015-settings` で作る。画面が無いうちからここへ置くと、`user.manage` を持つ
+ * ユーザーがクリックしたときに 404 になる。**先に項目だけ置かない。**
+ */
 export const CORE_NAVIGATION: readonly NavigationItem[] = [
   { label: 'ダッシュボード', href: '/dashboard', permission: null },
   { label: 'Webサイト', href: '/sites', permission: 'site.read' },
   { label: 'SNS', href: '/social', permission: 'social.read' },
-  { label: '設定', href: '/settings', permission: 'user.manage' },
   { label: 'プラグイン', href: '/plugins', permission: 'plugin.manage' },
 ];
 
