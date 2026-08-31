@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import type { AccountStatus } from '@/domain/social/social';
 import { apiRequest } from '@/ui/client/api-client';
 import {
   Alert,
@@ -17,6 +18,7 @@ import {
   type Column,
   type ToastMessage,
 } from '@/ui/components';
+import { ACCOUNT_STATUS_LABEL } from '@/ui/social/labels';
 import { AsyncState } from '@/ui/states/async-state';
 
 /** SNSアカウント一覧。型A（一覧画面）。 */
@@ -29,12 +31,6 @@ export interface AccountRow {
   readonly status: string;
   readonly credentialConfigured: boolean;
 }
-
-const STATUS_LABEL: Record<string, string> = {
-  connected: '接続済み',
-  disconnected: '未接続',
-  error: 'エラー',
-};
 
 const PROVIDER_LABEL: Record<string, string> = {
   x: 'X',
@@ -128,7 +124,7 @@ export function SocialAccounts(props: SocialAccountsProps) {
       key: 'status',
       header: '状態',
       width: '8rem',
-      render: (account) => STATUS_LABEL[account.status] ?? account.status,
+      render: (account) => ACCOUNT_STATUS_LABEL[account.status as AccountStatus] ?? account.status,
     },
     {
       key: 'actions',

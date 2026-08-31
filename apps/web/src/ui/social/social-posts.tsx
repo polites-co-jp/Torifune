@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useState } from 'react';
+import type { PostStatus } from '@/domain/social/social';
 import { apiRequest } from '@/ui/client/api-client';
 import {
   Button,
@@ -13,6 +14,7 @@ import {
   type Column,
   type ToastMessage,
 } from '@/ui/components';
+import { POST_STATUS_LABEL } from '@/ui/social/labels';
 import { AsyncState } from '@/ui/states/async-state';
 
 /**
@@ -33,13 +35,6 @@ export interface PostRow {
   readonly status: string;
   readonly publishedAt: string | null;
 }
-
-const STATUS_LABEL: Record<string, string> = {
-  draft: '下書き',
-  scheduled: '予約済み',
-  published: '配信済み',
-  failed: '失敗',
-};
 
 /** 一覧に本文を全部出すと表が崩れる。1行に収まる長さで切る。 */
 const EXCERPT_LENGTH = 60;
@@ -113,7 +108,7 @@ export function SocialPosts(props: SocialPostsProps) {
       key: 'status',
       header: '状態',
       width: '8rem',
-      render: (post) => STATUS_LABEL[post.status] ?? post.status,
+      render: (post) => POST_STATUS_LABEL[post.status as PostStatus] ?? post.status,
     },
     {
       key: 'actions',

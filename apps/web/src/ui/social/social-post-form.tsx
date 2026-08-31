@@ -4,6 +4,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { canTransition, isPostStatus, type PostStatus } from '@/domain/social/social';
 import { apiRequest } from '@/ui/client/api-client';
 import { Alert, Button, FormField, Input, Select, Textarea } from '@/ui/components';
+import { POST_STATUS_LABEL } from '@/ui/social/labels';
 
 /**
  * SNS投稿の作成・編集フォーム。
@@ -15,13 +16,6 @@ import { Alert, Button, FormField, Input, Select, Textarea } from '@/ui/componen
  * ここで独自に列挙すると、「画面には出るが保存すると 422」という
  * 食い違いが出る。規則は Domain に1つだけ置く。
  */
-
-const STATUS_LABEL: Record<PostStatus, string> = {
-  draft: '下書き',
-  scheduled: '予約済み',
-  published: '配信済み',
-  failed: '失敗',
-};
 
 export interface AccountOption {
   readonly id: string;
@@ -86,7 +80,7 @@ export function SocialPostForm({ title, initial, accounts, postId }: SocialPostF
 
   // 新規はどの状態からでも作れる。編集は現在の状態から進める先だけを出す。
   // `published` / `failed` は自分自身しか残らない（起きた事実は書き換えない）。
-  const statusOptions = (Object.keys(STATUS_LABEL) as PostStatus[]).filter((status) =>
+  const statusOptions = (Object.keys(POST_STATUS_LABEL) as PostStatus[]).filter((status) =>
     postId === undefined
       ? status === 'draft' || status === 'scheduled'
       : canTransition(initial.status, status),
@@ -147,87 +141,105 @@ export function SocialPostForm({ title, initial, accounts, postId }: SocialPostF
         </Alert>
       </div>
 
-      <form onSubmit={onSubmit}>
-        <FormField
-          label="アカウント"
-          required
-          {...(fieldErrors['socialAccountId'] === undefined
-            ? {}
-            : { errors: fieldErrors['socialAccountId'] })}
-        >
-          {(props) => (
-            <Select
-              {...props}
-              name="socialAccountId"
-              defaultValue={initial.socialAccountId}
-              required
-              // 投稿先の付け替えは履歴の意味を変えるので、編集では変えさせない。
-              disabled={postId !== undefined}
-            >
-              {accounts.map((account) => (
-                <option key={account.id} value={account.id}>
-                  {account.label}
-                </option>
-              ))}
-            </Select>
-          )}
-        </FormField>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr var(--tf-size-form)',
+          gap: 'var(--tf-space-6)',
+        }}
+      >
+        <form onSubmit={onSubmit}>
+          <FormField
+            label="アカウント"
+            required
+            {...(fieldErrors['socialAccountId'] === undefined
+              ? {}
+              : { errors: fieldErrors['socialAccountId'] })}
+          >
+            {(props) => (
+              <Select
+                {...props}
+                name="socialAccountId"
+                defaultValue={initial.socialAccountId}
+                required
+                // 投稿先の付け替えは履歴の意味を変えるので、編集では変えさせない。
+                disabled={postId !== undefined}
+              >
+                {accounts.map((account) => (
+                  <option key={account.id} value={account.id}>
+                    {account.label}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </FormField>
 
-        <FormField
-          label="本文"
-          required
-          {...(fieldErrors['body'] === undefined ? {} : { errors: fieldErrors['body'] })}
-        >
-          {(props) => (
-            <Textarea {...props} name="body" defaultValue={initial.body} rows={8} required />
-          )}
-        </FormField>
+          <FormField
+            label="本文"
+            required
+            {...(fieldErrors['body'] === undefined ? {} : { errors: fieldErrors['body'] })}
+          >
+            {(props) => (
+              <Textarea {...props} name="body" defaultValue={initial.body} rows={8} required />
+            )}
+          </FormField>
 
-        <FormField
-          label="予約日時"
-          description="空欄なら予約しません。"
-          {...(fieldErrors['scheduledAt'] === undefined
-            ? {}
-            : { errors: fieldErrors['scheduledAt'] })}
-        >
-          {(props) => (
-            <Input
-              {...props}
-              type="datetime-local"
-              name="scheduledAt"
-              value={scheduledAt}
-              onChange={(event) => setScheduledAt(event.target.value)}
-            />
-          )}
-        </FormField>
+          <FormField
+            label="予約日時"
+            description="空欄なら予約しません。"
+            {...(fieldErrors['scheduledAt'] === undefined
+              ? {}
+              : { errors: fieldErrors['scheduledAt'] })}
+          >
+            {(props) => (
+              <Input
+                {...props}
+                type="datetime-local"
+                name="scheduledAt"
+                value={scheduledAt}
+                onChange={(event) => setScheduledAt(event.target.value)}
+              />
+            )}
+          </FormField>
 
-        <FormField
-          label="状態"
-          {...(locked
-            ? { description: `${STATUS_LABEL[initial.status]}になった投稿は状態を戻せません。` }
-            : {})}
-          {...(fieldErrors['status'] === undefined ? {} : { errors: fieldErrors['status'] })}
-        >
-          {(props) => (
-            <Select {...props} name="status" defaultValue={initial.status} disabled={locked}>
-              {statusOptions.map((status) => (
-                <option key={status} value={status}>
-                  {STATUS_LABEL[status]}
-                </option>
-              ))}
-            </Select>
-          )}
-        </FormField>
+          <FormField
+            label="状態"
+            {...(locked
+              ? {
+                  description: `${POST_STATUS_LABEL[initial.status]}になった投稿は状態を戻せません。`,
+                }
+              : {})}
+            {...(fieldErrors['status'] === undefined ? {} : { errors: fieldErrors['status'] })}
+          >
+            {(props) => (
+              <Select {...props} name="status" defaultValue={initial.status} disabled={locked}>
+                {statusOptions.map((status) => (
+                  <option key={status} value={status}>
+                    {POST_STATUS_LABEL[status]}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </FormField>
 
-        <div style={{ display: 'flex', gap: 'var(--tf-space-2)' }}>
-          <Button type="submit" variant="primary" disabled={busy}>
-            保存
-          </Button>
-          <Button variant="secondary" onClick={() => window.location.assign('/social')}>
-            キャンセル
-          </Button>
-        </div>
-      </form>
+          <div style={{ display: 'flex', gap: 'var(--tf-space-2)' }}>
+            <Button type="submit" variant="primary" disabled={busy}>
+              保存
+            </Button>
+            <Button variant="secondary" onClick={() => window.location.assign('/social')}>
+              キャンセル
+            </Button>
+          </div>
+        </form>
+
+        <aside>
+          {/*
+            型B のサイドバー（02_画面デザイン方針.md §4）。
+            Plugin の Extension Point（social.edit.sidebar）の位置を確保しておく。
+            デザインを詰めるときに位置が消えないよう、先に枠を置く。
+          */}
+        </aside>
+      </div>
     </>
   );
 }
