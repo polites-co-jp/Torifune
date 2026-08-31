@@ -141,6 +141,16 @@ pnpm test
 pnpm build
 ```
 
+Plugin の読み込み・配置・再ビルドに関わる変更では、これに加えて
+**本番と同じイメージでの確認**を行う（Docker が要る。数分かかる）。
+
+```bash
+./scripts/verify-container-rebuild.sh
+```
+
+`import.meta` はビルドで書き換わるため、**dev と Vitest では動くのに
+本番ビルドでだけ壊れる**ことがある。CI の `container` ジョブが同じものを走らせる。
+
 ---
 
 ## 9. 脆弱性の報告 / Reporting a vulnerability

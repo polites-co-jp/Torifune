@@ -73,6 +73,15 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
 
+  container:
+    name: container (plugin rebuild / rollback)
+    runs-on: ubuntu-latest
+    # イメージのビルドを含むため重い。**dev と Vitest では出ない不具合を見る**
+    # 唯一の経路なので、他が緑でもここは通す。
+    steps:
+      - uses: actions/checkout@v5
+      - run: ./scripts/verify-container-rebuild.sh
+
   e2e:
     name: e2e
     runs-on: ubuntu-latest

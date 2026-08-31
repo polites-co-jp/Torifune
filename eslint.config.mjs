@@ -128,7 +128,15 @@ export default tseslint.config(
   {
     files: ['scripts/**/*.mjs'],
     languageOptions: {
-      globals: { console: 'readonly', process: 'readonly' },
+      globals: {
+        console: 'readonly',
+        process: 'readonly',
+        Buffer: 'readonly',
+        // 検証ドライバはコンテナの中から HTTP を叩く。Node 22 の標準。
+        fetch: 'readonly',
+        FormData: 'readonly',
+        Blob: 'readonly',
+      },
     },
     rules: {
       'no-console': 'off',

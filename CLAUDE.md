@@ -72,6 +72,9 @@ pnpm format         # Prettier（検査のみは format:check）
 pnpm typecheck      # 型検査
 pnpm test           # ユニット・結合テスト
 pnpm test:e2e       # E2E
+
+# 本番イメージでの確認（Plugin の再ビルドと失敗時の復帰）。Docker が要る
+./scripts/verify-container-rebuild.sh
 pnpm migrate        # DBマイグレーション
 
 docker compose up -d postgres   # 開発用PostgreSQL
