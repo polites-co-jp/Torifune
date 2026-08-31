@@ -7,7 +7,12 @@ FROM node:22-bookworm-slim
 ENV PNPM_HOME=/pnpm \
     PATH=/pnpm:$PATH \
     NEXT_TELEMETRY_DISABLED=1 \
-    NODE_ENV=production
+    NODE_ENV=production \
+    # Plugin の置き場を明示する。既定でも解決できるが、ここを
+    # VOLUME で差し替える構成があるため、意図を設定として残す。
+    TORIFUNE_PLUGINS_DIR=/app/plugins \
+    # 監視ループはこの entrypoint にある。無い環境で落ちると誰も起こしてくれない。
+    TORIFUNE_SELF_RESTART=1
 
 RUN corepack enable
 
