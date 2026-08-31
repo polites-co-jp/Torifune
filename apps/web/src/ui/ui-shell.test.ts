@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { CORE_EXTENSION_POINTS } from '@torifune/plugin-api';
 import { describe, expect, it } from 'vitest';
 import { ERROR_CODES, messageFor } from './client/error-message';
 import { CORE_NAVIGATION, visibleNavigation } from './layout/navigation';
@@ -148,5 +149,55 @@ describe('表示制御の位置づけ', () => {
   it('ナビゲーション定義にも同じ注意がある', () => {
     const source = readFileSync(join(UI_DIR, 'layout', 'navigation.ts'), 'utf8');
     expect(source).toContain('認可ではない');
+  });
+});
+
+describe('Core の Extension Point', () => {
+  /**
+   * **描画先がまだ無い拡張点。**
+   *
+   * 一度公開した名前は消さない（削除は破壊的変更。`07_開発者向けガイド.md` §47）。
+   * その代わり、どれが「宣言だけ」なのかをここで固定する。
+   * 画面を作ったらこの一覧から外す。外し忘れれば下のテストが落ちる。
+   */
+  const PENDING: Record<string, string> = {
+    'settings.tabs': '設定画面が無い（→ 015-settings）',
+    'login.methods': 'Authentication Provider の登録口が無い（→ 03_リスクと未決事項.md S-6）',
+  };
+
+  async function sourceFiles(dir: string): Promise<string[]> {
+    const entries = await readdir(dir, { withFileTypes: true, recursive: true });
+    return entries
+      .filter((entry) => entry.isFile() && /\.tsx?$/.test(entry.name))
+      .map((entry) => join(entry.parentPath, entry.name))
+      .filter((path) => !path.endsWith('.test.ts') && !path.endsWith('.test.tsx'));
+  }
+
+  it('宣言した拡張点は、描画されているか PENDING に理由つきで載っている', async () => {
+    // 描画先の無い拡張点は、Plugin 作者から見ると「登録しても何も起きない」だけで、
+    // 理由が分からない。宣言と描画の食い違いをここで検出する。
+    const files = [
+      ...(await sourceFiles(join(UI_DIR, '..', 'app'))),
+      ...(await sourceFiles(UI_DIR)),
+    ];
+    const sources = files.map((file) => readFileSync(file, 'utf8')).join('\n');
+
+    for (const point of CORE_EXTENSION_POINTS) {
+      const rendered =
+        sources.includes(`point="${point}"`) || sources.includes(`point={'${point}'}`);
+      if (PENDING[point] !== undefined) {
+        expect(rendered, `${point} は PENDING なのに描画されている。PENDING から外すこと`).toBe(
+          false,
+        );
+      } else {
+        expect(rendered, `${point} を描画している画面が無い`).toBe(true);
+      }
+    }
+  });
+
+  it('PENDING に、もう存在しない拡張点が残っていない', () => {
+    for (const point of Object.keys(PENDING)) {
+      expect(CORE_EXTENSION_POINTS as readonly string[]).toContain(point);
+    }
   });
 });

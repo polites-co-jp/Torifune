@@ -147,9 +147,14 @@ context.ui.defineExtensionPoint('my-plugin.page.footer');
 Core の拡張点は `CORE_EXTENSION_POINTS` にある。
 ここに無い名前も使ってよい（Plugin が定義したもの）。
 
-**`CORE_EXTENSION_POINTS` に載っているのは、Core が実際に描画している点だけ。**
-登録すれば必ずどこかに出る。設定画面（`settings.tabs`）とログイン画面
-（`login.methods`）は、その画面自体がまだ無いため一覧に入っていない。
+**ただし、次の2つはまだ描画先の画面が無い。** 登録は通るが何も出ない。
+
+| 名前 | 使えるようになるとき |
+| --- | --- |
+| `settings.tabs` | 設定画面ができたとき（`015-settings`） |
+| `login.methods` | Authentication Provider の登録口ができたとき（§9 を参照） |
+
+一度公開した名前は消さない（削除は破壊的変更）。使えないものは消さずにここへ書く。
 
 ### 3.4 見た目
 
