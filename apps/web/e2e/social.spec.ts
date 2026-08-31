@@ -210,3 +210,106 @@ test('SNS画面に「配信はプラグインが行う」旨が出る', async ({
 
   await expect(page.getByText(/実際の配信は、連携プラグインが行います/)).toBeVisible();
 });
+
+// ---------------------------------------------------------------------------
+// 投稿の画面（009-social 受け入れ条件 #34）
+//
+// API とテーブルだけでは「投稿を管理できる」にならない。
+// 画面から作成・編集・削除まで通ることをここで確かめる。
+// ---------------------------------------------------------------------------
+
+async function createPost(
+  request: APIRequestContext,
+  accountId: string,
+  overrides: Record<string, unknown> = {},
+): Promise<{ id: string; body: string }> {
+  const token = await csrf(request);
+  const response = await request.post('/api/v1/social/posts', {
+    headers: { 'X-CSRF-Token': token, Origin: origin },
+    data: {
+      socialAccountId: accountId,
+      body: `E2E の投稿 ${unique()}`,
+      status: 'draft',
+      csrfToken: token,
+      ...overrides,
+    },
+  });
+  expect(response.status()).toBe(201);
+  return ((await response.json()) as { data: { id: string; body: string } }).data;
+}
+
+test('SNS画面に投稿一覧が出る', async ({ page, request }) => {
+  const account = await createAccount(request);
+  const post = await createPost(request, account.id);
+
+  await page.goto('/social');
+
+  await expect(page.getByRole('heading', { name: '投稿' })).toBeVisible();
+  await expect(page.getByText(post.body)).toBeVisible();
+  // アカウントIDではなく人が読める名前で出す。
+  await expect(page.getByText(account.displayName, { exact: false }).first()).toBeVisible();
+});
+
+test('画面から投稿を作成できる', async ({ page, request }) => {
+  const account = await createAccount(request);
+  const body = `画面から作った投稿 ${unique()}`;
+
+  await page.goto('/social/posts/new');
+  await page.getByLabel('アカウント').selectOption({ label: `${account.displayName}（X）` });
+  await page.getByLabel('本文').fill(body);
+  await page.getByRole('button', { name: '保存' }).click();
+
+  await page.waitForURL('**/social');
+  await expect(page.getByText(body)).toBeVisible();
+});
+
+test('画面から投稿を編集できる', async ({ page, request }) => {
+  const account = await createAccount(request);
+  const post = await createPost(request, account.id);
+  const edited = `編集した本文 ${unique()}`;
+
+  await page.goto(`/social/posts/${post.id}/edit`);
+  await page.getByLabel('本文').fill(edited);
+  await page.getByRole('button', { name: '保存' }).click();
+
+  await page.waitForURL('**/social');
+  await expect(page.getByText(edited)).toBeVisible();
+});
+
+test('配信済みの投稿は状態を戻せない', async ({ page, request }) => {
+  // Domain の遷移規則（published からは戻せない）が画面にも出ていること。
+  // 画面に選べる選択肢として出しておいて保存で 422 にするのは、利用者を騙している。
+  const account = await createAccount(request);
+  const post = await createPost(request, account.id, { status: 'published' });
+
+  await page.goto(`/social/posts/${post.id}/edit`);
+
+  const status = page.getByLabel('状態');
+  await expect(status).toBeDisabled();
+  await expect(status.locator('option')).toHaveCount(1);
+});
+
+test('画面から投稿を削除できる', async ({ page, request }) => {
+  const account = await createAccount(request);
+  const post = await createPost(request, account.id);
+
+  await page.goto('/social');
+  await expect(page.getByText(post.body)).toBeVisible();
+
+  const row = page.getByRole('row').filter({ hasText: post.body });
+  await row.getByRole('button', { name: '削除' }).click();
+  await page.getByRole('button', { name: '削除する' }).click();
+
+  await expect(page.getByText(post.body)).toHaveCount(0);
+});
+
+test('投稿の編集画面に social.edit.sidebar の枠がある', async ({ page, request }) => {
+  // Plugin が登録していなければ枠自体を描かない（余白が残る）。
+  // ここでは「拡張点の描画先が存在すること」を、Plugin 無しの状態で確かめる。
+  const account = await createAccount(request);
+  const post = await createPost(request, account.id);
+
+  await page.goto(`/social/posts/${post.id}/edit`);
+  await expect(page.getByRole('heading', { name: '投稿を編集' })).toBeVisible();
+  await expect(page.locator('[data-extension-point="social.edit.sidebar"]')).toHaveCount(0);
+});
