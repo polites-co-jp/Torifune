@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation';
 import { findPage, loadedPlugin } from '@/plugin/registry';
 import { AppShell } from '@/ui/layout/app-shell';
+import { PluginBoundary } from '@/ui/plugin/plugin-boundary';
 import { requestDataApi } from '@/ui/plugin/plugin-slot';
 import { requirePageSession } from '@/ui/server/page-session';
 import { AsyncState } from '@/ui/states/async-state';
@@ -57,7 +58,9 @@ export default async function PluginPage({
         そのとき起動したユーザーの権限に縛られており、
         画面の描画で使うと見ている人と違う権限で読むことになる。
       */}
-      <Component pluginId={pluginId} route={route} data={requestDataApi(pluginId, context)} />
+      <PluginBoundary pluginId={pluginId} label="ページ">
+        <Component pluginId={pluginId} route={route} data={requestDataApi(pluginId, context)} />
+      </PluginBoundary>
     </AppShell>
   );
 }
