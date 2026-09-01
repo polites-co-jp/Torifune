@@ -15,6 +15,15 @@ export interface RateLimitPolicy {
   readonly max: number;
 }
 
+/**
+ * 既定の Rate Limit。`defineRoute` が省略時にかける。
+ *
+ * **まともな利用では当たらないが、総当たりと大量取得は止まる**水準にする。
+ * 厳しくすると正規の利用者を締め出し、緩めると意味が無い。
+ * 認証系はこれより厳しい値をルート側で上書きしている。
+ */
+export const DEFAULT_RATE_LIMIT: RateLimitPolicy = { windowMs: 60_000, max: 300 };
+
 export interface RateLimitVerdict {
   readonly allowed: boolean;
   /** 429 のとき、何秒後に再試行してよいか。 */
