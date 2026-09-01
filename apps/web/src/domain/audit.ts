@@ -35,6 +35,7 @@ export const AUDIT_RESOURCE_TYPES = [
   'plugin_settings',
   'api_token',
   'system_settings',
+  'webhook',
 ] as const;
 
 export type AuditResourceType = (typeof AUDIT_RESOURCE_TYPES)[number];

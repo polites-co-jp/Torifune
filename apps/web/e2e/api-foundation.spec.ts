@@ -65,6 +65,9 @@ test('OpenAPI に登録済みエンドポイントが含まれる', async ({ req
     '/social/posts/{id}',
     '/users',
     '/users/{id}',
+    '/webhooks',
+    '/webhooks/deliver',
+    '/webhooks/{id}',
   ]);
 });
 

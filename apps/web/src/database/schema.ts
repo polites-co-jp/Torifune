@@ -231,6 +231,32 @@ export interface PluginOperationsTable {
   finished_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
 }
 
+/** Webhook（05_API設計.md §39）。設計は docs/設計/023-webhook/。 */
+export interface WebhooksTable {
+  id: string;
+  name: string;
+  url: string;
+  /** **暗号化済みの文字列**。平文を入れてはならない。 */
+  secret: string;
+  events: string[];
+  status: Generated<string>;
+  created_at: CreatedAt;
+  updated_at: UpdatedAt;
+}
+
+export interface WebhookDeliveriesTable {
+  id: string;
+  webhook_id: string;
+  event: string;
+  payload: JSONColumnType<Record<string, unknown>, string, string>;
+  status: Generated<string>;
+  attempts: Generated<number>;
+  last_error: string | null;
+  next_attempt_at: ColumnType<Date, Date | string | undefined, Date | string>;
+  delivered_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  created_at: CreatedAt;
+}
+
 export interface PasswordResetTokensTable {
   id: string;
   user_id: string;
@@ -276,6 +302,8 @@ export interface Schema {
   audit_logs: AuditLogsTable;
   api_tokens: ApiTokensTable;
   system_settings: SystemSettingsTable;
+  webhooks: WebhooksTable;
+  webhook_deliveries: WebhookDeliveriesTable;
   password_reset_tokens: PasswordResetTokensTable;
   login_attempts: LoginAttemptsTable;
   schema_migrations: SchemaMigrationsTable;

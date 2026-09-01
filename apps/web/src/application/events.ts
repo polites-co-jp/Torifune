@@ -9,6 +9,7 @@
  */
 
 import { processState } from '@/infrastructure/process-state';
+import { enqueueWebhookDeliveries } from './webhook/webhook-use-cases';
 
 export type EventHandler = (payload: unknown) => void | Promise<void>;
 
@@ -39,6 +40,15 @@ export async function emit(eventName: string, payload: unknown): Promise<void> {
       // 記録は 011-plugin-runtime で Plugin ごとのログへ回す。
     }
   }
+
+  // Webhook へ配信を**予約する**（05_API設計.md §39、023-webhook 設計 §3.4）。
+  //
+  // **subscribe() を使わない。** Plugin と同じ購読の仕組みに乗せると、
+  // Plugin の登録・解除と混ざり、無効化のたびに Webhook まで外れうる。
+  // Core の機能として発火の最後に固定で呼ぶ。
+  //
+  // 予約に失敗しても発火元は止めない（enqueue 側で握っている）。
+  await enqueueWebhookDeliveries(eventName, payload);
 }
 
 /** テスト用。 */
