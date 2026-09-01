@@ -62,12 +62,43 @@ export interface SiteInput {
   readonly status?: string;
 }
 
+export interface CampaignView {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly status: string;
+  /** 開始日。`YYYY-MM-DD`。時刻は持たない。 */
+  readonly startsOn: string;
+  readonly endsOn: string | null;
+  readonly siteIds: readonly string[];
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface CampaignInput {
+  readonly name: string;
+  readonly description?: string;
+  readonly status?: string;
+  readonly startsOn: string;
+  readonly endsOn?: string | null;
+  readonly siteIds?: readonly string[];
+}
+
 export interface PluginDataApi {
   readonly sites: {
     list(options?: ListOptions): Promise<Page<SiteView>>;
     get(id: string): Promise<SiteView | null>;
     create(input: SiteInput): Promise<SiteView>;
     update(id: string, input: Partial<SiteInput>): Promise<SiteView>;
+    delete(id: string): Promise<void>;
+  };
+
+  /** キャンペーン（05_API設計.md §22、017-campaigns）。 */
+  readonly campaigns: {
+    list(options?: ListOptions & { siteId?: string }): Promise<Page<CampaignView>>;
+    get(id: string): Promise<CampaignView | null>;
+    create(input: CampaignInput): Promise<CampaignView>;
+    update(id: string, input: Partial<CampaignInput>): Promise<CampaignView>;
     delete(id: string): Promise<void>;
   };
 

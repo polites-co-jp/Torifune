@@ -6,12 +6,12 @@ import { expect, test } from '@playwright/test';
  * 開始状態は `global-setup.ts` が作る（管理者が1人だけいる状態）。
  */
 
-test('管理者は 10 種の permissions を持つ', async ({ request }) => {
+test('管理者は 13 種の permissions を持つ', async ({ request }) => {
   const me = await request.get('/api/v1/auth/me');
   expect(me.status()).toBe(200);
 
   const body = (await me.json()) as { data: { permissions: string[] } };
-  expect(body.data.permissions).toHaveLength(10);
+  expect(body.data.permissions).toHaveLength(13);
   expect(body.data.permissions).toContain('user.manage');
   // 並び順が安定していること（UI 側の比較を安定させるため）
   expect(body.data.permissions).toEqual([...body.data.permissions].sort());
@@ -26,7 +26,7 @@ test('管理者はロール一覧と権限一覧を見られる', async ({ reque
   const permissions = await request.get('/api/v1/permissions');
   expect(permissions.status()).toBe(200);
   const permissionBody = (await permissions.json()) as { data: unknown[] };
-  expect(permissionBody.data).toHaveLength(10);
+  expect(permissionBody.data).toHaveLength(13);
 });
 
 test('未認証では 401 になる', async ({ request }) => {

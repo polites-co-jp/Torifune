@@ -22,14 +22,15 @@ export interface NavigationItem {
  * 画面が無いうちから項目を置くと、権限を持つユーザーがクリックしたときに
  * 404 になる。行き先の画面があることは `ui-shell.test.ts` で検査している。
  *
- * 「設定」の中身（`06_画面設計.md` §16 の 一般 / ユーザー / 権限 / 認証 / API）は
- * `015-settings` で作る。いまは Plugin のタブを載せる器だけがある。
+ * 設定は誰でも開ける（一般・認証タブは認証だけで見える）。
+ * タブごとの権限は画面側で判定する（`015b-settings`）。
  */
 export const CORE_NAVIGATION: readonly NavigationItem[] = [
   { label: 'ダッシュボード', href: '/dashboard', permission: null },
   { label: 'Webサイト', href: '/sites', permission: 'site.read' },
+  { label: 'キャンペーン', href: '/campaigns', permission: 'campaign.read' },
   { label: 'SNS', href: '/social', permission: 'social.read' },
-  { label: '設定', href: '/settings', permission: 'user.manage' },
+  { label: '設定', href: '/settings', permission: null },
   { label: 'プラグイン', href: '/plugins', permission: 'plugin.manage' },
 ];
 

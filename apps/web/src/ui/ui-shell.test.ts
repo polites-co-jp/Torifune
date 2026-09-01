@@ -71,6 +71,7 @@ describe('ナビゲーション', () => {
     expect(CORE_NAVIGATION.map((item) => item.label)).toEqual([
       'ダッシュボード',
       'Webサイト',
+      'キャンペーン',
       'SNS',
       '設定',
       'プラグイン',
@@ -89,12 +90,13 @@ describe('ナビゲーション', () => {
 
   it('Permission を持つ項目だけを返す', () => {
     const visible = visibleNavigation(CORE_NAVIGATION, new Set(['site.read']));
-    expect(visible.map((item) => item.label)).toEqual(['ダッシュボード', 'Webサイト']);
+    // 設定は誰でも開ける（タブごとの権限は画面側で判定する）。
+    expect(visible.map((item) => item.label)).toEqual(['ダッシュボード', 'Webサイト', '設定']);
   });
 
   it('Permission を1つも持たなくても、誰でも見える項目は残る', () => {
     const visible = visibleNavigation(CORE_NAVIGATION, new Set());
-    expect(visible.map((item) => item.label)).toEqual(['ダッシュボード']);
+    expect(visible.map((item) => item.label)).toEqual(['ダッシュボード', '設定']);
   });
 
   it('すべての Permission を持てば全項目が見える', () => {

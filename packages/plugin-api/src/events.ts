@@ -20,9 +20,23 @@ export const CORE_EVENTS = [
   'social.account.disconnected',
   'social.post.created',
   'social.post.published',
+  'campaign.created',
+  'campaign.updated',
+  'campaign.deleted',
 ] as const;
 
 export type CoreEventName = (typeof CORE_EVENTS)[number];
+
+/** キャンペーン（017-campaigns）。 */
+export interface CampaignEventPayload {
+  readonly campaignId: string;
+  readonly name: string;
+  readonly status: string;
+  readonly startsOn: string;
+  readonly endsOn: string | null;
+  /** 対象の Webサイト。 */
+  readonly siteIds: readonly string[];
+}
 
 export interface SiteEventPayload {
   readonly siteId: string;
@@ -57,6 +71,9 @@ export interface CoreEventPayloads {
   readonly 'social.account.disconnected': SocialAccountEventPayload;
   readonly 'social.post.created': SocialPostEventPayload;
   readonly 'social.post.published': SocialPostEventPayload;
+  readonly 'campaign.created': CampaignEventPayload;
+  readonly 'campaign.updated': CampaignEventPayload;
+  readonly 'campaign.deleted': CampaignEventPayload;
 }
 
 export interface PluginEventApi {

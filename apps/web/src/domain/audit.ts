@@ -28,6 +28,7 @@ export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 /** 何に対してか。Core が持つリソースの種類。 */
 export const AUDIT_RESOURCE_TYPES = [
   'site',
+  'campaign',
   'social_account',
   'social_post',
   'plugin',

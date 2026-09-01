@@ -1,10 +1,18 @@
 import {
   PluginPermissionError,
   type PluginDataApi,
+  type CampaignView,
   type SiteView,
   type UserView,
 } from '@torifune/plugin-api';
 import type { AuthorizationContext } from '@/application/authorization/authorize';
+import {
+  createCampaign,
+  deleteCampaign,
+  getCampaign,
+  listCampaigns,
+  updateCampaign,
+} from '@/application/campaign/campaign-use-cases';
 import {
   createSite,
   deleteSite,
@@ -21,6 +29,7 @@ import {
 } from '@/application/social/social-use-cases';
 import { getUser, listUsers } from '@/application/user/user-use-cases';
 import { NotFoundError } from '@/domain/repository';
+import type { Campaign } from '@/domain/campaign/campaign';
 import type { Site } from '@/domain/site/site';
 import type { User } from '@/domain/user';
 
@@ -69,6 +78,20 @@ function toUserView(user: User): UserView {
     displayName: user.displayName,
     status: user.status,
     createdAt: user.createdAt.toISOString(),
+  };
+}
+
+function toCampaignView(campaign: Campaign): CampaignView {
+  return {
+    id: campaign.id,
+    name: campaign.name,
+    description: campaign.description,
+    status: campaign.status,
+    startsOn: campaign.startsOn,
+    endsOn: campaign.endsOn,
+    siteIds: campaign.siteIds,
+    createdAt: campaign.createdAt.toISOString(),
+    updatedAt: campaign.updatedAt.toISOString(),
   };
 }
 
@@ -141,6 +164,70 @@ export function createPluginDataApi(deps: PluginDataApiDeps): PluginDataApi {
       async delete(id) {
         requireDeclared('site.delete');
         await deleteSite(context, { id });
+      },
+    },
+
+    campaigns: {
+      async list(options) {
+        requireDeclared('campaign.read');
+        const page = options?.page ?? 1;
+        const perPage = options?.perPage ?? DEFAULT_PER_PAGE;
+
+        const result = await listCampaigns(context, {
+          page,
+          perPage,
+          status: null,
+          keyword: null,
+          activeOn: null,
+          siteId: options?.siteId ?? null,
+          sort: [{ field: 'starts_on', direction: 'desc' }],
+        });
+
+        return { items: result.items.map(toCampaignView), total: result.total, page, perPage };
+      },
+
+      async get(id) {
+        requireDeclared('campaign.read');
+        try {
+          return toCampaignView(await getCampaign(context, { id }));
+        } catch (error) {
+          if (error instanceof NotFoundError) {
+            return null;
+          }
+          throw error;
+        }
+      },
+
+      async create(input) {
+        requireDeclared('campaign.write');
+        const campaign = await createCampaign(context, {
+          name: input.name,
+          description: input.description ?? '',
+          status: (input.status ?? 'draft') as Campaign['status'],
+          startsOn: input.startsOn,
+          endsOn: input.endsOn ?? null,
+          siteIds: input.siteIds ?? [],
+        });
+        return toCampaignView(campaign);
+      },
+
+      async update(id, input) {
+        requireDeclared('campaign.write');
+        const campaign = await updateCampaign(context, {
+          id,
+          ...(input.name === undefined ? {} : { name: input.name }),
+          ...(input.description === undefined ? {} : { description: input.description }),
+          ...(input.status === undefined ? {} : { status: input.status as Campaign['status'] }),
+          ...(input.startsOn === undefined ? {} : { startsOn: input.startsOn }),
+          ...(input.endsOn === undefined ? {} : { endsOn: input.endsOn }),
+          ...(input.siteIds === undefined ? {} : { siteIds: input.siteIds }),
+        });
+        return toCampaignView(campaign);
+      },
+
+      async delete(id) {
+        requireDeclared('campaign.delete');
+        await deleteCampaign(context, { id });
       },
     },
 

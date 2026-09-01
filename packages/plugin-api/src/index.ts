@@ -42,6 +42,7 @@ export type {
 
 export { CORE_EVENTS } from './events';
 export type {
+  CampaignEventPayload,
   CoreEventName,
   CoreEventPayloads,
   EventHandler,
@@ -53,6 +54,8 @@ export type {
 
 export { PluginPermissionError } from './data';
 export type {
+  CampaignInput,
+  CampaignView,
   ListOptions,
   Page,
   PluginDataApi,

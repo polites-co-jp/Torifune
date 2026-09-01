@@ -128,6 +128,25 @@ export interface SitesTable {
   created_by: string | null;
 }
 
+/** キャンペーン（02_データベース設計.md §5.7）。設計は docs/設計/017-campaigns/。 */
+export interface CampaignsTable {
+  id: string;
+  name: string;
+  description: Generated<string>;
+  status: Generated<string>;
+  /** date 型。タイムゾーンで1日ずれないよう、文字列として扱う。 */
+  starts_on: ColumnType<Date | string, Date | string, Date | string>;
+  ends_on: ColumnType<Date | string | null, Date | string | null | undefined, Date | string | null>;
+  created_at: CreatedAt;
+  updated_at: UpdatedAt;
+  created_by: string | null;
+}
+
+export interface CampaignSitesTable {
+  campaign_id: string;
+  site_id: string;
+}
+
 export interface SocialAccountsTable {
   id: string;
   provider: string;
@@ -209,6 +228,8 @@ export interface SchemaMigrationsTable {
 export interface Schema {
   users: UsersTable;
   sites: SitesTable;
+  campaigns: CampaignsTable;
+  campaign_sites: CampaignSitesTable;
   social_accounts: SocialAccountsTable;
   social_posts: SocialPostsTable;
   plugins: PluginsTable;

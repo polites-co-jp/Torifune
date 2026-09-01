@@ -35,10 +35,15 @@ async function seedAdministrator(connectionString: string): Promise<void> {
 
   try {
     // 前回の実行の残骸を消す。専用のテストデータベースを使う前提。
+    // campaigns を先に消す。sites より後だと、残ったキャンペーンが
+    // 次の実行の一覧へ積み上がり、テストが実行回数に依存する。
+    await client.query('DELETE FROM campaigns');
     await client.query('DELETE FROM sites');
     await client.query('DELETE FROM social_accounts');
     await client.query('DELETE FROM users');
     await client.query('DELETE FROM login_attempts');
+    await client.query('DELETE FROM system_settings');
+    await client.query('DELETE FROM api_tokens');
 
     const id = uuidv7();
     const passwordHash = await hash(SEEDED_ADMIN.password);
