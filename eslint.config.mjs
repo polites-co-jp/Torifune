@@ -37,7 +37,18 @@ export default tseslint.config(
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
       ],
       eqeqeq: ['error', 'always', { null: 'ignore' }],
-      'no-console': ['error', { allow: ['warn', 'error'] }],
+      // ログは infrastructure/logging.ts の口だけを通す（07_開発者向けガイド.md §36）。
+      // 直接呼ぶと出力の形式が揃わず、機密を落とす処理も通らない。
+      // 出力口そのものと、コンソールを検査するテストだけが例外（下で 'off' にする）。
+      'no-console': 'error',
+    },
+  },
+
+  // テストはコンソール出力そのものを検査するため、直接触れてよい。
+  {
+    files: ['**/*.test.{ts,tsx}', '**/*.spec.{ts,tsx}'],
+    rules: {
+      'no-console': 'off',
     },
   },
 

@@ -6,6 +6,7 @@ import {
 import { buildAuthorizationContext } from '@/application/authorization/context';
 import type { PermissionName } from '@/domain/permission';
 import { ConflictError, NotFoundError, ValidationError } from '@/domain/repository';
+import { log } from '@/infrastructure/logging';
 import { authorizationErrorResponse } from './authorize';
 import { CSRF_COOKIE, readCookie, requestInfoOf, SESSION_COOKIE } from './cookies';
 import { corsHeaders } from './cors';
@@ -13,7 +14,7 @@ import { verifyCsrf } from './csrf';
 import { errorResponse } from './errors';
 import { UnknownSortFieldError } from './query';
 import { registerEndpoint, type EndpointSpec } from './registry';
-import { createRateLimiter, type RateLimitPolicy } from './rate-limit';
+import { createRateLimiter, DEFAULT_RATE_LIMIT, type RateLimitPolicy } from './rate-limit';
 import { validate } from './validation';
 
 /**
@@ -54,7 +55,16 @@ export interface RouteDefinition<TBodySchema extends z.ZodType, TQuerySchema ext
   readonly query?: TQuerySchema;
   /** 公開 API 仕様に載せるか。内部エンドポイントは false。 */
   readonly documented?: boolean;
-  readonly rateLimit?: RateLimitPolicy;
+  /**
+   * Rate Limit。
+   *
+   * **省略すると既定（`DEFAULT_RATE_LIMIT`）がかかる。**
+   * ルートごとに書かせると必ず抜ける（`05_API設計.md` §36 が挙げる
+   * 「大量データ取得」は、実際に一覧APIで抜けていた）。
+   *
+   * 厳しくしたいものは上書きする。外すときだけ `'none'` を書き、理由を添える。
+   */
+  readonly rateLimit?: RateLimitPolicy | 'none';
   readonly handler: (
     ctx: RouteContext<z.output<TBodySchema>, z.output<TQuerySchema>>,
   ) => Promise<Response>;
@@ -95,8 +105,11 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
   };
   registerEndpoint(spec);
 
+  // 省略したら既定がかかる。**書かなければ無制限、にしない。**
   const limiter =
-    definition.rateLimit === undefined ? null : createRateLimiter(definition.rateLimit);
+    definition.rateLimit === 'none'
+      ? null
+      : createRateLimiter(definition.rateLimit ?? DEFAULT_RATE_LIMIT);
 
   return async function handle(
     request: Request,
@@ -200,12 +213,10 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
 
       // 想定外の例外。**内容を応答へ出さない**（05_API設計.md §11）。
       // 原因の追跡はサーバー側のログで行う。
-      console.error(
-        JSON.stringify({
-          message: 'unhandled error in route',
-          operationId: definition.operationId,
-        }),
-      );
+      log.error('unhandled error in route', {
+        operationId: definition.operationId,
+        reason: error instanceof Error ? error.message : String(error),
+      });
       return errorResponse('INTERNAL_ERROR', undefined, cors);
     }
   };

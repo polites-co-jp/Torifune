@@ -1,3 +1,5 @@
+import { log } from '../infrastructure/logging';
+
 /**
  * 通知の抽象。
  *
@@ -26,14 +28,11 @@ export interface Notifier {
  */
 export const loggingNotifier: Notifier = {
   async send(notification: Notification): Promise<void> {
-    console.warn(
-      JSON.stringify({
-        message: 'notification (not actually sent)',
-        kind: notification.kind,
-        to: notification.to,
-        data: notification.data,
-      }),
-    );
+    log.warn('notification (not actually sent)', {
+      kind: notification.kind,
+      to: notification.to,
+      data: notification.data,
+    });
   },
 };
 

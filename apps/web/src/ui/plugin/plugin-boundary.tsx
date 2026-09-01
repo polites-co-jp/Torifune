@@ -1,6 +1,7 @@
 'use client';
 
 import { Component, Suspense, type ErrorInfo, type ReactNode } from 'react';
+import { log } from '@/infrastructure/logging';
 
 /**
  * Plugin の描画が例外を投げたときに、その枠だけを落とす
@@ -37,8 +38,12 @@ export class PluginBoundary extends Component<PluginBoundaryProps, PluginBoundar
   }
 
   override componentDidCatch(error: Error, info: ErrorInfo): void {
-    // **利用者には出さない。** 内部の詳細は開発者コンソールとサーバーログにだけ残す。
-    console.error(`[plugin:${this.props.pluginId}] 描画に失敗した`, error, info.componentStack);
+    // **利用者には出さない。** 内部の詳細はログにだけ残す。
+    log.error('plugin render failed', {
+      pluginId: this.props.pluginId,
+      reason: error.message,
+      componentStack: info.componentStack,
+    });
   }
 
   override render(): ReactNode {
