@@ -30,6 +30,11 @@ export { Pagination, Table, type Column, type PaginationProps, type TableProps }
 
 export { Tabs, type TabItem, type TabsProps } from './tabs';
 
+export { Chart, type ChartProps } from './chart';
+export type { ChartPoint } from './chart-geometry';
+
+export { DateField, type DateFieldProps } from './date-field';
+
 export {
   ConfirmDialog,
   EmptyState,

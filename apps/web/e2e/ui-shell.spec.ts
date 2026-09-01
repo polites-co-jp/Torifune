@@ -23,8 +23,9 @@ test('ログイン画面からログインしてダッシュボードへ行け�
 test('共通レイアウトにサービス名とユーザー名が出る', async ({ page }) => {
   await page.goto('/dashboard');
 
-  await expect(page.getByRole('link', { name: 'とりふね' })).toBeVisible();
-  await expect(page.getByText('E2E Admin')).toBeVisible();
+  await expect(page.getByRole('banner').getByRole('link', { name: 'とりふね' })).toBeVisible();
+  // 「最近の活動」にも操作者として出るので、ヘッダーへ限定する。
+  await expect(page.getByRole('banner').getByText('E2E Admin')).toBeVisible();
   await expect(page.getByRole('link', { name: 'ログアウト' })).toBeVisible();
 });
 

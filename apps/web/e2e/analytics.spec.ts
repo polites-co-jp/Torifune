@@ -117,7 +117,11 @@ test('未認証では 401', async ({ request }) => {
 
 test('ナビゲーションからアナリティクスへ行ける', async ({ page }) => {
   await page.goto('/dashboard');
-  await page.getByRole('link', { name: 'アナリティクス' }).click();
+  // ダッシュボードにも「アナリティクスで詳しく見る」があるので、ナビへ限定する。
+  await page
+    .getByRole('navigation', { name: 'メインナビゲーション' })
+    .getByRole('link', { name: 'アナリティクス' })
+    .click();
 
   await expect(page).toHaveURL(/\/analytics$/);
   await expect(page.getByRole('heading', { name: 'アナリティクス' })).toBeVisible();
