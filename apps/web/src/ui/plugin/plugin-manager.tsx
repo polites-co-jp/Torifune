@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { describePermission, isHighPrivilegePermission } from '@/domain/permission';
 import { apiRequest, apiUpload } from '@/ui/client/api-client';
 import {
   Alert,
@@ -442,14 +443,49 @@ function PermissionList({
     );
   }
 
+  const high = permissions.filter(isHighPrivilegePermission);
+
   return (
-    <ul style={{ margin: 'var(--tf-space-2) 0', paddingLeft: '1.25rem' }}>
-      {permissions.map((permission) => (
-        <li key={permission}>
-          <code>{permission}</code>
-        </li>
-      ))}
-    </ul>
+    <>
+      {high.length > 0 && (
+        <p
+          role="alert"
+          data-high-privilege="true"
+          style={{
+            margin: 'var(--tf-space-2) 0',
+            padding: 'var(--tf-space-3)',
+            border: '1px solid var(--tf-color-warning)',
+            borderRadius: 'var(--tf-radius-md)',
+            background: 'var(--tf-color-surface)',
+          }}
+        >
+          {/*
+            権限コードを並べるだけでは、読む人はどれが危険かを判断できない
+            （06_画面設計.md §39）。何を渡すことになるのかを言葉で出す。
+          */}
+          <strong>強い権限を要求しています。</strong>
+          このプラグインは Torifune 全体を操作できる権限を求めています。
+          配布元を信頼できる場合だけ導入してください。
+        </p>
+      )}
+
+      <ul style={{ margin: 'var(--tf-space-2) 0', paddingLeft: '1.25rem' }}>
+        {permissions.map((permission) => {
+          const description = describePermission(permission);
+          return (
+            <li key={permission}>
+              <code>{permission}</code>
+              {description !== null && (
+                <span style={{ color: 'var(--tf-color-text-muted)' }}> — {description}</span>
+              )}
+              {isHighPrivilegePermission(permission) && (
+                <strong style={{ color: 'var(--tf-color-warning)' }}>（強い権限）</strong>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </>
   );
 }
 

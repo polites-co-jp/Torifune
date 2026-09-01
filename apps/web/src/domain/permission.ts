@@ -64,3 +64,45 @@ export const CORE_PERMISSIONS = [
 ] as const;
 
 export type CorePermission = (typeof CORE_PERMISSIONS)[number];
+
+/**
+ * 高い権限を要求する Permission（06_画面設計.md §39）。
+ *
+ * **導入前に強調して警告する。** 権限コードを並べるだけでは、
+ * 読む人はどれが危険かを判断できない。
+ *
+ * この3つは、与えた時点で Torifune 全体を掌握しうる。
+ * 他のユーザーを作れれば管理者を作れ、Plugin を入れられれば任意のコードを
+ * 動かせ、システム設定を変えられれば認証方式ごと差し替えられる。
+ */
+export const HIGH_PRIVILEGE_PERMISSIONS: readonly CorePermission[] = [
+  'system.manage',
+  'user.manage',
+  'plugin.manage',
+];
+
+export function isHighPrivilegePermission(permission: string): boolean {
+  return (HIGH_PRIVILEGE_PERMISSIONS as readonly string[]).includes(permission);
+}
+
+/**
+ * Permission の説明。
+ *
+ * 画面へ出す言葉は「その権限で何ができるか」にする。
+ * `site.write` と書かれても、読む人は何を許すのか分からない。
+ */
+export const PERMISSION_DESCRIPTIONS: Readonly<Record<CorePermission, string>> = {
+  'site.read': 'Webサイトの一覧と詳細を見る',
+  'site.write': 'Webサイトを作成・変更する',
+  'site.delete': 'Webサイトを削除する',
+  'social.read': 'SNSアカウントと投稿を見る',
+  'social.write': 'SNSアカウントと投稿を作成・変更する',
+  'social.delete': 'SNSアカウントと投稿を削除する',
+  'user.manage': 'ユーザーとロールを管理する（管理者を作れる）',
+  'plugin.manage': 'プラグインを導入・有効化する（任意のコードを動かせる）',
+  'system.manage': 'システム全体の設定を変更する（認証方式を差し替えられる）',
+};
+
+export function describePermission(permission: string): string | null {
+  return (PERMISSION_DESCRIPTIONS as Record<string, string>)[permission] ?? null;
+}
