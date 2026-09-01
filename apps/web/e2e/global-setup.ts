@@ -102,11 +102,46 @@ async function saveLoggedInState(baseURL: string): Promise<void> {
   }
 }
 
+/**
+ * **E2E 用のデータベースであることを確かめる。**
+ *
+ * この setup は対象データベースの行を**全部消す**。開発用の `.env` を
+ * 読んだまま `pnpm test:e2e` を叩くと、開発中のデータが消える。
+ * 「気をつける」で防げる種類の事故ではないので、名前で断る。
+ *
+ * 名前に `test` / `e2e` を含まないデータベースは拒否する。
+ * どうしてもその名前で回す必要があるときだけ
+ * `TORIFUNE_E2E_ALLOW_ANY_DATABASE=1` を明示する。
+ */
+function assertTestDatabase(connectionString: string): void {
+  if (process.env['TORIFUNE_E2E_ALLOW_ANY_DATABASE'] === '1') {
+    return;
+  }
+
+  // 末尾のパス部分がデータベース名。解析できない形なら通さない。
+  let name: string;
+  try {
+    name = new URL(connectionString).pathname.replace(/^\//, '');
+  } catch {
+    throw new Error('E2E: DATABASE_URL の形式が読めない。');
+  }
+
+  if (!/test|e2e/i.test(name)) {
+    throw new Error(
+      `E2E はデータベースの中身を全部消す。'${name}' は名前に test / e2e を含まないため中止した。\n` +
+        'E2E 専用のデータベースを指すか、意図してその DB を消すなら ' +
+        'TORIFUNE_E2E_ALLOW_ANY_DATABASE=1 を付ける。',
+    );
+  }
+}
+
 export default async function globalSetup(config: FullConfig): Promise<void> {
   const connectionString = process.env['DATABASE_URL'];
   if (connectionString === undefined || connectionString === '') {
     throw new Error('E2E には DATABASE_URL が必要。');
   }
+
+  assertTestDatabase(connectionString);
 
   await seedAdministrator(connectionString);
 

@@ -102,6 +102,30 @@ pnpm test:e2e       # E2E（Playwright）
 pnpm migrate        # DB マイグレーション
 ```
 
+### テスト用データベース
+
+結合テストと E2E には PostgreSQL が要ります。
+
+```bash
+docker compose up -d postgres-test
+```
+
+* **結合テスト**（`pnpm test`）は `TORIFUNE_TEST_DATABASE_URL` を見ます。
+  テストごとに使い捨てのデータベースを作るので、既存のデータは触りません。
+* **E2E**（`pnpm test:e2e`）は `DATABASE_URL` を見て、**そのデータベースの行を
+  全部消してから**開始します。E2E 専用のデータベースを指してください。
+
+```bash
+# 初回だけ
+docker compose exec postgres-test psql -U torifune -d postgres -c 'CREATE DATABASE torifune_e2e;'
+
+DATABASE_URL=postgres://torifune:torifune@localhost:21701/torifune_e2e pnpm migrate
+DATABASE_URL=postgres://torifune:torifune@localhost:21701/torifune_e2e pnpm test:e2e
+```
+
+名前に `test` / `e2e` を含まないデータベースへ向けると E2E は中止します。
+開発用の `.env` を読んだまま実行して、開発中のデータを消さないためです。
+
 ### パスワードの復旧 / Password recovery
 
 画面からのパスワードリセットはメールでトークンを配ります。
