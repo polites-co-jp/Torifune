@@ -41,11 +41,14 @@ export async function AppShell({ displayName, permissions, children }: AppShellP
       }}
     >
       <header
+        className="tf-header"
         style={{
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
           padding: 'var(--tf-space-3) var(--tf-space-6)',
+          flexWrap: 'wrap',
+          gap: 'var(--tf-space-2)',
           background: 'var(--tf-color-bg)',
           borderBottom: '1px solid var(--tf-color-border)',
         }}
@@ -62,27 +65,13 @@ export async function AppShell({ displayName, permissions, children }: AppShellP
         </div>
       </header>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'var(--tf-size-nav) 1fr' }}>
-        <nav
-          aria-label="メインナビゲーション"
-          style={{
-            background: 'var(--tf-color-bg)',
-            borderRight: '1px solid var(--tf-color-border)',
-            padding: 'var(--tf-space-4)',
-          }}
-        >
-          <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+      {/* レイアウトは globals.css の .tf-* で切り替える（@media はインラインで書けない）。 */}
+      <div className="tf-shell">
+        <nav aria-label="メインナビゲーション" className="tf-nav">
+          <ul className="tf-nav-list">
             {items.map((item) => (
-              <li key={item.href} style={{ marginBottom: 'var(--tf-space-2)' }}>
-                <Link
-                  href={item.href}
-                  style={{
-                    display: 'block',
-                    padding: 'var(--tf-space-2) var(--tf-space-3)',
-                    borderRadius: 'var(--tf-radius-md)',
-                    color: 'var(--tf-color-text)',
-                  }}
-                >
+              <li key={item.href} className="tf-nav-item">
+                <Link href={item.href} className="tf-nav-link">
                   {item.label}
                 </Link>
               </li>
@@ -91,7 +80,7 @@ export async function AppShell({ displayName, permissions, children }: AppShellP
           {/* Plugin が追加した項目は上の一覧に含まれている（011-plugin-runtime）。 */}
         </nav>
 
-        <main style={{ padding: 'var(--tf-space-6)' }}>{children}</main>
+        <main className="tf-main">{children}</main>
       </div>
 
       <footer

@@ -1,7 +1,18 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import type { ReactNode } from 'react';
 import { loadSystemSettings } from '@/application/system-settings/system-settings-use-cases';
 import './globals.css';
+
+/**
+ * モバイルでの表示幅（06_画面設計.md §31）。
+ *
+ * **指定しないと、既定の980px幅として描かれてから縮小される。**
+ * 文字が読めない大きさになり、`@media` も意図した断点で効かない。
+ */
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+};
 
 /**
  * タイトルは設定のサービス表示名を使う（06_画面設計.md §16）。

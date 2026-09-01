@@ -6,3 +6,103 @@ body {
   color: var(--tf-color-text);
   font-family: var(--tf-font-sans);
 }
+
+/*
+ * レスポンシブ（06_画面設計.md §31、024-responsive）。
+ *
+ * **`@media` はインラインの style では書けない。** レイアウトに関わる箇所だけ
+ * クラスへ出し、ここで切り替える。既存のインラインスタイルを全部書き換えることは
+ * しない（差分が大きくなり、レビューできなくなる）。
+ *
+ * **断点は1つだけ。** 増やすほど、どの画面でどう見えるかを確かめる組み合わせが増える。
+ */
+
+/* 広い画面：ナビゲーションを左、本文を右。 */
+.tf-shell {
+  display: grid;
+  grid-template-columns: var(--tf-size-nav) 1fr;
+}
+
+.tf-nav {
+  background: var(--tf-color-bg);
+  border-right: 1px solid var(--tf-color-border);
+  padding: var(--tf-space-4);
+}
+
+.tf-nav-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.tf-nav-item {
+  margin-bottom: var(--tf-space-2);
+}
+
+.tf-nav-link {
+  display: block;
+  padding: var(--tf-space-2) var(--tf-space-3);
+  border-radius: var(--tf-radius-md);
+  color: var(--tf-color-text);
+}
+
+.tf-main {
+  padding: var(--tf-space-6);
+  /* 中身が広くても、本文の枠を超えて伸びない。 */
+  min-width: 0;
+}
+
+/*
+ * 狭い画面：ナビゲーションを本文の上へ移し、項目を横に並べて折り返す。
+ *
+ * **開閉するメニューにしない。** 開閉には状態と操作が要り、
+ * `app-shell.tsx` は Server Component のままでは作れない。
+ * 項目数が10に満たない今は、常に見えているほうが速い。
+ */
+@media (max-width: 768px) {
+  .tf-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .tf-nav {
+    border-right: none;
+    border-bottom: 1px solid var(--tf-color-border);
+    padding: var(--tf-space-2) var(--tf-space-3);
+  }
+
+  .tf-nav-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--tf-space-1);
+  }
+
+  .tf-nav-item {
+    margin-bottom: 0;
+  }
+
+  .tf-nav-link {
+    /* 指で押せる大きさにする。 */
+    padding: var(--tf-space-2) var(--tf-space-3);
+    border: 1px solid var(--tf-color-border);
+  }
+
+  .tf-main {
+    padding: var(--tf-space-4) var(--tf-space-3);
+  }
+
+  .tf-header {
+    padding: var(--tf-space-2) var(--tf-space-3);
+  }
+}
+
+/*
+ * 表は**その表の中で**横スクロールさせる。
+ * ページ全体が横に伸びると、縦に読むだけでも横へずれる。
+ *
+ * 共通コンポーネント側に置く。画面ごとに書くと、新しい表で忘れる。
+ */
+.tf-table-scroll {
+  overflow-x: auto;
+  /* スクロールできることが分かるよう、はみ出す側に余白を残さない。 */
+  max-width: 100%;
+}

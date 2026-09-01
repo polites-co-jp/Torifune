@@ -32,7 +32,8 @@ const CELL: React.CSSProperties = {
 export function Table<T>({ columns, rows, rowKey, caption }: TableProps<T>) {
   return (
     // 幅の広い表が画面全体を横スクロールさせないよう、表だけをスクロールさせる。
-    <div style={{ overflowX: 'auto' }}>
+    // クラスは globals.css（.tf-table-scroll）。**画面ごとに書くと新しい表で忘れる。**
+    <div className="tf-table-scroll">
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         {caption !== undefined && (
           <caption style={{ textAlign: 'left', marginBottom: 'var(--tf-space-2)' }}>
