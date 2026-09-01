@@ -118,6 +118,17 @@ export function resetDailySalts(): void {
  *
  * **最小にする。** Cookie を使わず、`sendBeacon` で1回叩くだけ
  * （設計 §3.4）。Cookie を使うと同意取得の話が乗ってきて、導入の敷居が上がる。
+ *
+ * **Content-Type を `text/plain` にする。** このスクリプトは他所のサイトへ貼られ、
+ * 受け口とは別オリジンになる。`application/json` は CORS のセーフリスト外なので、
+ * 送るたびにプリフライト（`OPTIONS`）が飛ぶ。CORS は既定で無効であり
+ * （`api/cors.ts`）、貼ったサイトのオリジンを `TORIFUNE_CORS_ORIGINS` へ
+ * 足さない限り、計測がまるごと落ちる。
+ *
+ * **計測のために CORS を開かせない。** 開かせると、そのオリジンから
+ * `/api/v1` の参照系まで開くことになり、計測の代償として広すぎる。
+ * セーフリストの `text/plain` なら単純リクエストになり、プリフライトが起きない。
+ * 受け口は Content-Type を見ずに本文を JSON として読むため、受け側の変更は要らない。
  */
 export function trackingScript(origin: string): string {
   return `(function(){
@@ -126,9 +137,9 @@ var s=document.currentScript;
 var k=s&&s.getAttribute('data-site');
 if(!k)return;
 var b=JSON.stringify({key:k,path:location.pathname,referrer:document.referrer||null});
-var u=${JSON.stringify(origin)}+'/api/v1/collect';
-if(navigator.sendBeacon){navigator.sendBeacon(u,new Blob([b],{type:'application/json'}));}
-else{var x=new XMLHttpRequest();x.open('POST',u,true);x.setRequestHeader('Content-Type','application/json');x.send(b);}
+var u=${JSON.stringify(`${origin}/api/v1/collect`)};
+if(navigator.sendBeacon){navigator.sendBeacon(u,new Blob([b],{type:'text/plain;charset=UTF-8'}));}
+else{var x=new XMLHttpRequest();x.open('POST',u,true);x.setRequestHeader('Content-Type','text/plain;charset=UTF-8');x.send(b);}
 }catch(e){}
 })();`;
 }
