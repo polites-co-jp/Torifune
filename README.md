@@ -56,6 +56,23 @@ pnpm test:e2e       # E2E（Playwright）
 pnpm migrate        # DB マイグレーション
 ```
 
+### パスワードの復旧 / Password recovery
+
+画面からのパスワードリセットはメールでトークンを配ります。
+メール送信を設定していない構成では使えないため、
+**サーバーへ入れる人だけが実行できる復旧経路**を CLI に用意しています。
+
+```bash
+# 新しいパスワードを標準入力から渡す
+printf %s "$NEW_PASSWORD" | torifune reset-password --login-id=admin
+
+# パスワードを生成して1度だけ表示する
+torifune reset-password --login-id=admin --generate
+```
+
+パスワードは引数では受け取りません。引数はシェルの履歴と `ps` に平文で残るためです。
+再設定すると、そのユーザーの有効なセッションはすべて失効します。
+
 ## プラグイン / Plugins
 
 プラグインは `plugins/<plugin-id>/` に配置します。
