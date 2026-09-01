@@ -1,4 +1,5 @@
 import { log } from '../infrastructure/logging';
+import { createSmtpNotifier, readSmtpConfig } from '../infrastructure/notification/smtp-notifier';
 
 /**
  * 通知の抽象。
@@ -36,12 +37,38 @@ export const loggingNotifier: Notifier = {
   },
 };
 
-let notifier: Notifier = loggingNotifier;
+let notifier: Notifier | null = null;
+
+/**
+ * 実際に使う通知手段を決める。
+ *
+ * **SMTP が設定されていなければ起動を失敗させない。** 自己ホスト型では
+ * SMTP を用意しない運用が普通にあり、そこで起動できなくなるのは過剰。
+ * 復旧手段は `torifune reset-password` にある。
+ *
+ * ただし黙って送らないのは不親切なので、一度だけ警告を出す。
+ */
+function resolveNotifier(): Notifier {
+  const config = readSmtpConfig();
+  if (config === null) {
+    log.warn('SMTP is not configured; password reset mail will not be sent', {
+      hint: 'TORIFUNE_SMTP_URL を設定するか、torifune reset-password で復旧する',
+    });
+    return loggingNotifier;
+  }
+  return createSmtpNotifier(config);
+}
 
 export function getNotifier(): Notifier {
+  notifier ??= resolveNotifier();
   return notifier;
 }
 
 export function setNotifier(next: Notifier): void {
   notifier = next;
+}
+
+/** テスト用。次回の `getNotifier()` で環境変数から選び直す。 */
+export function resetNotifier(): void {
+  notifier = null;
 }

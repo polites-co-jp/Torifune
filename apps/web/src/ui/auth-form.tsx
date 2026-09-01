@@ -26,6 +26,16 @@ export interface AuthFormProps {
   /** 成功時の遷移先。 */
   readonly redirectTo: string;
   readonly footer?: ReactNode;
+  /**
+   * 入力欄を持たずに一緒に送る値。
+   *
+   * パスワード再設定のトークンのように、**利用者に入力させるものではないが
+   * 本文に必要な値**を渡す。隠しフィールドにすると DOM から拾えてしまうため、
+   * 送信時にだけ組み立てる。
+   */
+  readonly extraValues?: Readonly<Record<string, string>>;
+  /** フォームの前に出す説明。 */
+  readonly description?: ReactNode;
 }
 
 export function AuthForm(props: AuthFormProps) {
@@ -40,7 +50,7 @@ export function AuthForm(props: AuthFormProps) {
     setBusy(true);
 
     const form = new FormData(event.currentTarget);
-    const payload: Record<string, string> = {};
+    const payload: Record<string, string> = { ...props.extraValues };
     for (const field of props.fields) {
       payload[field.name] = String(form.get(field.name) ?? '');
     }
@@ -76,6 +86,12 @@ export function AuthForm(props: AuthFormProps) {
       >
         {props.title}
       </h2>
+
+      {props.description !== undefined && (
+        <div style={{ marginBottom: 'var(--tf-space-4)', color: 'var(--tf-color-text-muted)' }}>
+          {props.description}
+        </div>
+      )}
 
       {message !== null && (
         <div style={{ marginBottom: 'var(--tf-space-4)' }}>

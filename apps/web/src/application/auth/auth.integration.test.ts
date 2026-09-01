@@ -4,6 +4,7 @@ import { hashPassword } from '../../authentication/password';
 import { hashSessionToken } from '../../authentication/session-token';
 import type { Connection } from '../../database/provider';
 import { setAuthenticationProvider } from '../../authentication/registry';
+import { buildPasswordResetMessage } from '../../infrastructure/notification/message';
 import { useScratchDatabase, type ScratchDatabase } from '../../test-support/database';
 import { setNotifier, type Notification } from '../notification';
 import { withConnection } from '../transaction';
@@ -637,5 +638,62 @@ describe('パスワードリセット', () => {
     expect(JSON.stringify(sentNotifications[0]?.data)).not.toContain(
       sentNotifications[0]?.secret ?? 'x',
     );
+  });
+
+  /**
+   * 019-notification の受け入れ条件 #1。
+   *
+   * 要求 → 通知の受け取り → **メール本文のリンク** → 再設定 → 旧セッション全失効。
+   * トークンを直接渡すのではなく、実際に配られる URL から取り出して使う。
+   * ここが繋がっていないと、画面もメールも個別には正しいのにフローが完結しない
+   * （それが S-8 #1 で起きていたこと）。
+   */
+  it('配られたリンクから再設定まで通る', async () => {
+    const user = await createUser();
+    const before = await login({
+      loginId: user.loginId,
+      password: user.password,
+      request,
+    });
+    expect(before.ok).toBe(true);
+
+    await requestPasswordReset({ email: user.email, request });
+
+    const secret = sentNotifications[0]?.secret as string;
+    const message = buildPasswordResetMessage('https://torifune.example.com', secret);
+
+    // 本文から実際のリンクを取り出す。利用者が踏むのはこれ。
+    const link = /https:\/\/\S+/.exec(message.text)?.[0] as string;
+    const tokenFromLink = new URL(link).searchParams.get('token') as string;
+
+    expect(new URL(link).pathname).toBe('/password-reset/confirm');
+
+    const outcome = await confirmPasswordReset({
+      token: tokenFromLink,
+      newPassword: 'a brand new passphrase',
+      request,
+    });
+    expect(outcome.ok).toBe(true);
+
+    // 新しいパスワードで入れる。
+    const after = await login({
+      loginId: user.loginId,
+      password: 'a brand new passphrase',
+      request,
+    });
+    expect(after.ok).toBe(true);
+
+    // 古いセッションは失効している。
+    if (before.ok) {
+      await expect(getCurrentUser(before.sessionToken, request)).resolves.toBeNull();
+    }
+
+    // 同じリンクは二度使えない。
+    const again = await confirmPasswordReset({
+      token: tokenFromLink,
+      newPassword: 'yet another passphrase',
+      request,
+    });
+    expect(again.ok).toBe(false);
   });
 });

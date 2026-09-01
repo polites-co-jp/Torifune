@@ -28,15 +28,24 @@ export function middleware(request: NextRequest): NextResponse {
   }
 
   const nonce = generateNonce();
+  const headers = buildSecurityHeaders(request, nonce);
 
-  // Next.js は CSP ヘッダの nonce を自分の inline script へ引き継ぐ。
-  // 引き継がせるにはリクエスト側にも載せる必要がある。
+  // **リクエスト側にも CSP を載せる。** Next.js はここから nonce を取り出して
+  // 自分の script タグへ付ける。
+  //
+  // 載せないと、**静的に生成されたページだけが壊れる**。
+  // 生成時のHTMLには nonce が入らないのに、応答ヘッダには毎回新しい nonce が載るため、
+  // そのページのスクリプトが全部ブロックされる（画面は出るが操作できない）。
+  //
+  // なお、これによりすべてのページが動的描画になる。管理画面はもともと
+  // ほぼ全ページが動的なので、失うものは小さい。
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set('x-nonce', nonce);
+  requestHeaders.set('Content-Security-Policy', headers['Content-Security-Policy'] as string);
 
   const response = NextResponse.next({ request: { headers: requestHeaders } });
 
-  for (const [key, value] of Object.entries(buildSecurityHeaders(request, nonce))) {
+  for (const [key, value] of Object.entries(headers)) {
     response.headers.set(key, value);
   }
 

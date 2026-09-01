@@ -1,4 +1,5 @@
 import { uuidv7 } from 'uuidv7';
+import { RESET_TOKEN_LIFETIME_MS } from '../../domain/password-reset';
 import { hashPassword } from '../../authentication/password';
 import { generateSessionToken, hashSessionToken } from '../../authentication/session-token';
 import { authAuditRepository } from '../../infrastructure/auth-audit-repository';
@@ -9,8 +10,8 @@ import { getNotifier } from '../notification';
 import { withTransaction } from '../transaction';
 import type { RequestInfo } from './context';
 
-/** リセットトークンの有効期限。短くしすぎると使えず、長すぎると盗まれたときに危ない。 */
-export const RESET_TOKEN_LIFETIME_MS = 60 * 60 * 1000;
+// 有効期限は Domain 層にある。リセットURLを作る Infrastructure 側も同じ値を要るため。
+export { RESET_TOKEN_LIFETIME_MS };
 
 export interface RequestResetInput {
   readonly email: string;
