@@ -52,7 +52,16 @@ export class PluginBoundary extends Component<PluginBoundaryProps, PluginBoundar
       // ページ全体の描画が中断され、500 になる（枠だけ落ちない）。
       // Suspense があると、本体の骨組みを先に送ってから Plugin の枠を流し込むため、
       // 失敗をこの枠の中で受け取れる。
-      return <Suspense fallback={null}>{this.props.children}</Suspense>;
+      return (
+        // 名前空間の囲い（07_開発者向けガイド.md §31）。
+        // Plugin の CSS はこの属性へ閉じたセレクタで書く（`pluginScope()`）。
+        // **隔離ではない。** Plugin は本体と同じ React ツリーで動くことが前提で、
+        // iframe や Shadow DOM で隔離すると共通コンポーネントも拡張点も使えなくなる。
+        // 事故を減らす仕組みであって、悪意を止める仕組みではない。
+        <div data-torifune-plugin={this.props.pluginId} style={{ display: 'contents' }}>
+          <Suspense fallback={null}>{this.props.children}</Suspense>
+        </div>
+      );
     }
 
     return (

@@ -79,3 +79,5 @@ export type {
 } from './database';
 
 export type { Plugin, PluginContext, PluginLogger } from './context';
+
+export { PluginScopeError, pluginClassName, pluginScope } from './scope';
