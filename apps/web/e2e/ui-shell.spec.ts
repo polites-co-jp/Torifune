@@ -10,13 +10,13 @@ async function loginViaUi(page: Page): Promise<void> {
   await page.getByLabel('ログインID').fill(SEEDED_ADMIN.loginId);
   await page.getByLabel('パスワード').fill(SEEDED_ADMIN.password);
   await page.getByRole('button', { name: 'ログイン' }).click();
-  await page.waitForURL('**/');
+  // ログイン後は `/` へ戻り、`/` が状態を見て `/dashboard` へ送る（016-home-routing）。
+  await page.waitForURL('**/dashboard');
 }
 
 test('ログイン画面からログインしてダッシュボードへ行ける', async ({ page }) => {
   await loginViaUi(page);
 
-  await page.goto('/dashboard');
   await expect(page.getByRole('heading', { name: 'ダッシュボード' })).toBeVisible();
 });
 

@@ -21,7 +21,23 @@ test('Readiness のレスポンスに接続情報が含まれない', async ({ r
   expect(body).not.toContain('torifune:torifune');
 });
 
-test('トップページが「とりふね」を表示する', async ({ page }) => {
+/**
+ * トップページは表示を持たず、状態に応じて振り分ける（016-home-routing）。
+ *
+ * 「管理者が0人のとき /setup へ送る」は、E2E の開始状態が管理者1人であるため
+ * ここでは確かめられない。結合テスト（`home-destination.integration.test.ts`）で見る。
+ */
+test('未ログインでトップページを開くとログイン画面へ送られる', async ({ page }) => {
+  await page.context().clearCookies();
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'とりふね' })).toBeVisible();
+
+  await expect(page).toHaveURL(/\/login$/);
+  await expect(page.getByLabel('ログインID')).toBeVisible();
+});
+
+test('ログイン済みでトップページを開くとダッシュボードへ送られる', async ({ page }) => {
+  await page.goto('/');
+
+  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page.getByRole('heading', { name: 'ダッシュボード' })).toBeVisible();
 });
