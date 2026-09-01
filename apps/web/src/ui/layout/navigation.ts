@@ -30,6 +30,7 @@ export const CORE_NAVIGATION: readonly NavigationItem[] = [
   { label: 'Webサイト', href: '/sites', permission: 'site.read' },
   { label: 'キャンペーン', href: '/campaigns', permission: 'campaign.read' },
   { label: 'SNS', href: '/social', permission: 'social.read' },
+  { label: 'アナリティクス', href: '/analytics', permission: 'analytics.read' },
   { label: '設定', href: '/settings', permission: null },
   { label: 'プラグイン', href: '/plugins', permission: 'plugin.manage' },
 ];

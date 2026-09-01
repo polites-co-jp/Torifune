@@ -94,9 +94,9 @@ describe('isReservedPermissionNamespace', () => {
 });
 
 describe('CORE_PERMISSIONS', () => {
-  it('13 種ある', () => {
+  it('14 種ある', () => {
     // コンテンツは Core の責務ではない（改訂履歴.md 2026-08-24）。
-    expect(CORE_PERMISSIONS).toHaveLength(13);
+    expect(CORE_PERMISSIONS).toHaveLength(14);
   });
 
   it('すべて形式が正しい', () => {

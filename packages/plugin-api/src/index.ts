@@ -54,6 +54,9 @@ export type {
 
 export { PluginPermissionError } from './data';
 export type {
+  AnalyticsInput,
+  AnalyticsPointView,
+  AnalyticsQuery,
   CampaignInput,
   CampaignView,
   ListOptions,

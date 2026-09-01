@@ -121,6 +121,8 @@ export interface SitesTable {
   id: string;
   name: string;
   url: string;
+  /** 計測タグがサイトを識別する公開キー（018-analytics）。 */
+  public_key: Generated<string>;
   description: Generated<string>;
   status: Generated<string>;
   created_at: CreatedAt;
@@ -145,6 +147,28 @@ export interface CampaignsTable {
 export interface CampaignSitesTable {
   campaign_id: string;
   site_id: string;
+}
+
+/** アクセスの生ログ（02_データベース設計.md §5.8）。設計は docs/設計/018-analytics/。 */
+export interface AccessLogsTable {
+  id: string;
+  site_id: string;
+  occurred_at: CreatedAt;
+  path: string;
+  referrer_host: string | null;
+  /** IP と User-Agent の生値は保存しない。日ごとのソルト付きハッシュ。 */
+  visitor_hash: string;
+  device: Generated<string>;
+}
+
+/** 日次の集計値。Core の集計と Plugin が取り込んだ値の両方が入る。 */
+export interface AnalyticsTable {
+  site_id: string;
+  metric_date: ColumnType<Date | string, Date | string, Date | string>;
+  source: Generated<string>;
+  metric: string;
+  value: Generated<number | bigint | string>;
+  updated_at: UpdatedAt;
 }
 
 export interface SocialAccountsTable {
@@ -230,6 +254,8 @@ export interface Schema {
   sites: SitesTable;
   campaigns: CampaignsTable;
   campaign_sites: CampaignSitesTable;
+  access_logs: AccessLogsTable;
+  analytics: AnalyticsTable;
   social_accounts: SocialAccountsTable;
   social_posts: SocialPostsTable;
   plugins: PluginsTable;

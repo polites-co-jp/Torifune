@@ -37,6 +37,8 @@ async function seedAdministrator(connectionString: string): Promise<void> {
     // 前回の実行の残骸を消す。専用のテストデータベースを使う前提。
     // campaigns を先に消す。sites より後だと、残ったキャンペーンが
     // 次の実行の一覧へ積み上がり、テストが実行回数に依存する。
+    await client.query('DELETE FROM access_logs');
+    await client.query('DELETE FROM analytics');
     await client.query('DELETE FROM campaigns');
     await client.query('DELETE FROM sites');
     await client.query('DELETE FROM social_accounts');

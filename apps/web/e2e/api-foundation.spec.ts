@@ -32,12 +32,18 @@ test('OpenAPI に登録済みエンドポイントが含まれる', async ({ req
   };
 
   expect(Object.keys(document.paths).sort()).toEqual([
+    '/analytics',
+    '/analytics/rollup',
+    '/api-tokens',
+    '/api-tokens/{id}',
     '/auth/csrf',
     '/auth/login',
     '/auth/logout',
     '/auth/me',
     '/auth/password-reset/confirm',
     '/auth/password-reset/request',
+    '/campaigns',
+    '/campaigns/{id}',
     '/permissions',
     '/plugins',
     '/plugins/operations/{id}',
@@ -48,6 +54,7 @@ test('OpenAPI に登録済みエンドポイントが含まれる', async ({ req
     '/plugins/{id}/enable',
     '/plugins/{id}/settings',
     '/roles',
+    '/settings',
     '/setup',
     '/sites',
     '/sites/{id}',

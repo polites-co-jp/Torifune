@@ -67,6 +67,19 @@ export interface RouteDefinition<TBodySchema extends z.ZodType, TQuerySchema ext
    */
   readonly sessionOnly?: boolean;
   /**
+   * CSRF 検証を行わない理由。
+   *
+   * **書いた時点で例外扱いになる。** 空にはできない。
+   *
+   * CSRF は「ブラウザが Cookie を自動送信すること」への対策であり、
+   * セッションに紐づく特権操作を守るためのもの。
+   * **他所のサイトから叩かれることが前提の口**（計測ビーコンなど）では、
+   * 検証しても守るものが無く、正しい要求を落とすだけになる。
+   *
+   * 外すときは「セッションに紐づく操作を一切していない」ことを確かめること。
+   */
+  readonly csrfExemptReason?: string;
+  /**
    * Rate Limit。
    *
    * **省略すると既定（`DEFAULT_RATE_LIMIT`）がかかる。**
@@ -97,6 +110,11 @@ function rateLimitKey(request: Request, operationId: string): string {
 export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends z.ZodType>(
   definition: RouteDefinition<TBodySchema, TQuerySchema>,
 ): (request: Request, args?: { params?: Promise<Record<string, string>> }) => Promise<Response> {
+  if (definition.csrfExemptReason !== undefined && definition.csrfExemptReason.trim() === '') {
+    // 「理由を書けないなら外さない」を構造で守る。
+    throw new RouteDefinitionError(`${definition.operationId}: csrfExemptReason は空にできない`);
+  }
+
   if (definition.permission === null && (definition.reason ?? '') === '') {
     // 「認可が要らない」は必ず説明を伴わせる。説明を書けないなら、たいてい認可が要る。
     throw new RouteDefinitionError(
@@ -158,7 +176,8 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
             .catch(() => undefined);
         }
 
-        if (bearer === null) {
+        // csrfExemptReason が書かれている口は検証しない（理由は定義側に書く）。
+        if (bearer === null && definition.csrfExemptReason === undefined) {
           const bodyToken =
             typeof rawBody === 'object' && rawBody !== null && 'csrfToken' in rawBody
               ? String((rawBody as Record<string, unknown>)['csrfToken'])

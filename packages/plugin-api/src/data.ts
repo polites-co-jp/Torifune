@@ -84,6 +84,29 @@ export interface CampaignInput {
   readonly siteIds?: readonly string[];
 }
 
+export interface AnalyticsPointView {
+  readonly siteId: string;
+  readonly metricDate: string;
+  readonly source: string;
+  readonly metric: string;
+  readonly value: number;
+}
+
+export interface AnalyticsQuery {
+  readonly siteId?: string;
+  readonly from: string;
+  readonly to: string;
+  /** 出所で絞る。省略すると全部。 */
+  readonly source?: string;
+}
+
+export interface AnalyticsInput {
+  readonly siteId: string;
+  readonly metricDate: string;
+  readonly metric: string;
+  readonly value: number;
+}
+
 export interface PluginDataApi {
   readonly sites: {
     list(options?: ListOptions): Promise<Page<SiteView>>;
@@ -100,6 +123,18 @@ export interface PluginDataApi {
     create(input: CampaignInput): Promise<CampaignView>;
     update(id: string, input: Partial<CampaignInput>): Promise<CampaignView>;
     delete(id: string): Promise<void>;
+  };
+
+  /**
+   * アクセス・分析データ（05_API設計.md §22、018-analytics）。
+   *
+   * **生ログは出さない。** 個人の行動に近く、出す理由が「一覧したい」しか
+   * 無い割に危険が大きい。集計値の読み書きだけを許す。
+   */
+  readonly analytics: {
+    list(query: AnalyticsQuery): Promise<readonly AnalyticsPointView[]>;
+    /** 外部サービスから取り込んだ値を入れる。**出所は自分の Plugin ID になる。** */
+    record(point: AnalyticsInput): Promise<void>;
   };
 
   readonly socialAccounts: {

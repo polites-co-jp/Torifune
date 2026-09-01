@@ -1,0 +1,86 @@
+import { listAnalytics, listTopPaths } from '@/application/analytics/analytics-use-cases';
+import { withConnection } from '@/application/transaction';
+import { AnalyticsView } from '@/ui/analytics/analytics-view';
+import { AppShell } from '@/ui/layout/app-shell';
+import { requirePageSession } from '@/ui/server/page-session';
+import { AsyncState } from '@/ui/states/async-state';
+
+export const dynamic = 'force-dynamic';
+
+/** ローカルの `YYYY-MM-DD` を日数だけ戻して返す。 */
+function daysAgo(days: number): string {
+  const date = new Date();
+  date.setDate(date.getDate() - days);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function asString(value: string | string[] | undefined): string | null {
+  return typeof value === 'string' && value !== '' ? value : null;
+}
+
+/**
+ * アナリティクス画面（06_画面設計.md §15）。
+ *
+ * **読み取りは Server Component から UseCase を直接呼ぶ**（決定事項 D-06）。
+ */
+export default async function AnalyticsPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const params = await searchParams;
+  const { context, displayName, permissions } = await requirePageSession();
+
+  if (!permissions.has('analytics.read')) {
+    return (
+      <AppShell displayName={displayName} permissions={permissions}>
+        <AsyncState status="forbidden">{null}</AsyncState>
+      </AppShell>
+    );
+  }
+
+  // 既定は直近30日。広すぎる期間は UseCase 側が拒否する。
+  const from = asString(params['from']) ?? daysAgo(29);
+  const to = asString(params['to']) ?? daysAgo(0);
+  const siteId = asString(params['siteId']);
+
+  const range = { siteId, from, to, source: null };
+
+  const [points, topPaths] = await Promise.all([
+    listAnalytics(context, range),
+    listTopPaths(context, { ...range, limit: 20 }),
+  ]);
+
+  // 計測タグを出すために公開キーが要る。Site の一覧 API は公開キーを返さないので、
+  // ここで直接引く（画面でしか使わない値をレスポンスへ載せない）。
+  const sites = permissions.has('site.read')
+    ? await withConnection((connection) =>
+        connection.db
+          .selectFrom('sites')
+          .select(['id', 'name', 'public_key'])
+          .orderBy('name')
+          .limit(200)
+          .execute(),
+      )
+    : [];
+
+  return (
+    <AppShell displayName={displayName} permissions={permissions}>
+      <AnalyticsView
+        points={points}
+        topPaths={topPaths}
+        sites={sites.map((site) => ({
+          id: site.id,
+          name: site.name,
+          publicKey: site.public_key,
+        }))}
+        selectedSiteId={siteId}
+        from={from}
+        to={to}
+      />
+    </AppShell>
+  );
+}

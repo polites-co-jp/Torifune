@@ -13,6 +13,7 @@ import {
   listCampaigns,
   updateCampaign,
 } from '@/application/campaign/campaign-use-cases';
+import { listAnalytics, recordAnalytics } from '@/application/analytics/analytics-use-cases';
 import {
   createSite,
   deleteSite,
@@ -228,6 +229,31 @@ export function createPluginDataApi(deps: PluginDataApiDeps): PluginDataApi {
       async delete(id) {
         requireDeclared('campaign.delete');
         await deleteCampaign(context, { id });
+      },
+    },
+
+    analytics: {
+      async list(query) {
+        requireDeclared('analytics.read');
+        return listAnalytics(context, {
+          siteId: query.siteId ?? null,
+          from: query.from,
+          to: query.to,
+          source: query.source ?? null,
+        });
+      },
+
+      async record(point) {
+        requireDeclared('analytics.read');
+        // **出所は Plugin ID に固定する。** Plugin に名乗らせると、
+        // 外部から取り込んだ値を本体の集計として表示させられる。
+        await recordAnalytics(context, {
+          siteId: point.siteId,
+          metricDate: point.metricDate,
+          source: pluginId,
+          metric: point.metric,
+          value: point.value,
+        });
       },
     },
 
