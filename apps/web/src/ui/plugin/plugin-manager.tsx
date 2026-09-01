@@ -293,6 +293,7 @@ export function PluginManager(props: PluginManagerProps) {
                   {plugin.status === 'enabled' && !plugin.loaded ? '（再起動待ち）' : ''}
                 </p>
                 <PermissionList permissions={plugin.permissions} />
+                <DependencyList dependencies={plugin.dependencies} />
                 <div
                   style={{
                     display: 'flex',
@@ -341,6 +342,7 @@ export function PluginManager(props: PluginManagerProps) {
             {detected.map((plugin) => (
               <Card key={plugin.id} title={`${plugin.name}  ${plugin.version}`}>
                 <PermissionList permissions={plugin.permissions} />
+                <DependencyList dependencies={plugin.dependencies} />
                 <div style={{ marginTop: 'var(--tf-space-3)' }}>
                   <Button
                     variant="primary"
@@ -427,6 +429,37 @@ export function PluginManager(props: PluginManagerProps) {
 
       {toast !== null && <Toast message={toast} onDismiss={() => setToast(null)} />}
     </div>
+  );
+}
+
+/**
+ * 依存関係（03_プラグイン設計.md §13）。
+ *
+ * **返しているのに描いていなかった。** 依存先が分からないと、
+ * 無効化したときに何が巻き添えになるのかを事前に判断できない。
+ */
+function DependencyList({
+  dependencies,
+}: {
+  readonly dependencies: Readonly<Record<string, string>>;
+}) {
+  const entries = Object.entries(dependencies);
+  if (entries.length === 0) {
+    return null;
+  }
+
+  return (
+    <p style={{ margin: 'var(--tf-space-2) 0', color: 'var(--tf-color-text-muted)' }}>
+      依存:{' '}
+      {entries.map(([id, range], index) => (
+        <span key={id}>
+          {index > 0 ? ', ' : ''}
+          <code>
+            {id} {range}
+          </code>
+        </span>
+      ))}
+    </p>
   );
 }
 

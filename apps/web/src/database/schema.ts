@@ -200,6 +200,12 @@ export interface PluginsTable {
   version: string;
   status: Generated<string>;
   installed_at: CreatedAt;
+  /** install() フックを呼んだ時刻。null なら未実行（020-plugin-registry 設計 §2.5）。 */
+  installed_hook_at: ColumnType<
+    Date | null,
+    Date | string | null | undefined,
+    Date | string | null
+  >;
   enabled_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   updated_at: UpdatedAt;
 }

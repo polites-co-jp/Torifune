@@ -49,6 +49,7 @@ test('OpenAPI に登録済みエンドポイントが含まれる', async ({ req
     '/plugins/operations/{id}',
     '/plugins/package/inspect',
     '/plugins/package/install',
+    '/plugins/registry',
     '/plugins/{id}',
     '/plugins/{id}/disable',
     '/plugins/{id}/enable',

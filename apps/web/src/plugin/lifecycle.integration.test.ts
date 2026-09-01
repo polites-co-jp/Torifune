@@ -798,3 +798,127 @@ describe('セキュリティ監査', () => {
     expect(await eventsFor('plain-audit-plugin')).toEqual([]);
   });
 });
+
+/**
+ * install() / uninstall() フック（03_プラグイン設計.md §12、S-8 #3）。
+ *
+ * 契約にありながら呼ばれていなかった。
+ * `install()` は**導入後の最初の有効化の直前に1度だけ**呼ぶ
+ * （020-plugin-registry 設計 §2.5）。導入の瞬間には再ビルド前で、
+ * Plugin のコードをまだ読み込めないため。
+ */
+describe('install / uninstall フック', () => {
+  function hookPlugin(calls: string[], options: { failInstall?: boolean } = {}): Plugin {
+    return {
+      async install() {
+        calls.push('install');
+        if (options.failInstall === true) {
+          throw new Error('初期化に失敗');
+        }
+      },
+      async activate() {
+        calls.push('activate');
+      },
+      async deactivate() {
+        calls.push('deactivate');
+      },
+      async uninstall() {
+        calls.push('uninstall');
+      },
+    };
+  }
+
+  it('最初の有効化で install() を1度だけ呼ぶ', async () => {
+    const calls: string[] = [];
+    const m = manifest('hook-plugin');
+    await withConnection((connection) => installPlugin(connection, m));
+
+    await enable(m, hookPlugin(calls));
+
+    // 無効化してから有効化し直しても、install() は増えない。
+    await withConnection((connection) =>
+      disablePlugin({
+        connection,
+        manifest: m,
+        plugin: hookPlugin(calls),
+        authorization: admin,
+        candidates: candidatesOf([m, true]),
+      }),
+    );
+    await enable(m, hookPlugin(calls));
+
+    expect(calls.filter((call) => call === 'install')).toHaveLength(1);
+    expect(calls[0]).toBe('install');
+    expect(calls[1]).toBe('activate');
+  });
+
+  /** 初期化に失敗した Plugin を動かすと、あとで分かりにくい失敗をする。 */
+  it('install() が失敗したら有効化しない', async () => {
+    const calls: string[] = [];
+    const m = manifest('failing-install-plugin');
+    await withConnection((connection) => installPlugin(connection, m));
+
+    const outcome = await enable(m, hookPlugin(calls, { failInstall: true }));
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.reason).toContain('初期化に失敗');
+    // activate まで進まない。
+    expect(calls).toEqual(['install']);
+
+    const record = await withConnection((connection) =>
+      findPluginRecord(connection, 'failing-install-plugin'),
+    );
+    expect(record?.status).toBe('disabled');
+    // 失敗したので「呼んだ」ことにしない。直して入れ直せば、また呼ばれる。
+    expect(record?.installedHookAt).toBeNull();
+  });
+
+  it('削除で uninstall() を呼ぶ', async () => {
+    const calls: string[] = [];
+    const m = manifest('uninstall-hook-plugin');
+    const plugin = hookPlugin(calls);
+    await withConnection((connection) => installPlugin(connection, m));
+    await enable(m, plugin);
+
+    await withConnection((connection) =>
+      uninstallPlugin(connection, m.id, {
+        deleteData: true,
+        hook: { manifest: m, plugin, authorization: admin },
+      }),
+    );
+
+    expect(calls).toContain('uninstall');
+  });
+
+  /** 止めると、壊れた Plugin を外せなくなる。 */
+  it('uninstall() が失敗しても削除は進む', async () => {
+    const m = manifest('broken-uninstall-plugin');
+    const plugin: Plugin = {
+      async activate() {},
+      async uninstall() {
+        throw new Error('後始末に失敗');
+      },
+    };
+    await withConnection((connection) => installPlugin(connection, m));
+    await enable(m, plugin);
+
+    await withConnection((connection) =>
+      uninstallPlugin(connection, m.id, {
+        deleteData: true,
+        hook: { manifest: m, plugin, authorization: admin },
+      }),
+    );
+
+    expect(await withConnection((connection) => findPluginRecord(connection, m.id))).toBeNull();
+  });
+
+  /** フックを持たない Plugin でも壊れない（どちらも任意）。 */
+  it('フックを持たない Plugin でも動く', async () => {
+    const m = manifest('no-hook-plugin');
+    await withConnection((connection) => installPlugin(connection, m));
+
+    const outcome = await enable(m, testPlugin({}));
+
+    expect(outcome.ok).toBe(true);
+  });
+});

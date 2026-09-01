@@ -32,6 +32,8 @@ export interface PluginRecord {
   readonly id: string;
   readonly version: string;
   readonly status: PluginStatus;
+  /** `install()` を呼んだ時刻。null なら未実行（020-plugin-registry 設計 §2.5）。 */
+  readonly installedHookAt: Date | null;
 }
 
 export type EnableOutcome = { readonly ok: true } | { readonly ok: false; readonly reason: string };
@@ -39,7 +41,7 @@ export type EnableOutcome = { readonly ok: true } | { readonly ok: false; readon
 export async function listPluginRecords(connection: Connection): Promise<readonly PluginRecord[]> {
   const rows = await connection.db
     .selectFrom('plugins')
-    .select(['id', 'version', 'status'])
+    .select(['id', 'version', 'status', 'installed_hook_at'])
     .orderBy('id')
     .execute();
 
@@ -47,6 +49,7 @@ export async function listPluginRecords(connection: Connection): Promise<readonl
     id: row.id,
     version: row.version,
     status: row.status as PluginStatus,
+    installedHookAt: row.installed_hook_at,
   }));
 }
 
@@ -56,13 +59,18 @@ export async function findPluginRecord(
 ): Promise<PluginRecord | null> {
   const row = await connection.db
     .selectFrom('plugins')
-    .select(['id', 'version', 'status'])
+    .select(['id', 'version', 'status', 'installed_hook_at'])
     .where('id', '=', pluginId)
     .executeTakeFirst();
 
   return row === undefined
     ? null
-    : { id: row.id, version: row.version, status: row.status as PluginStatus };
+    : {
+        id: row.id,
+        version: row.version,
+        status: row.status as PluginStatus,
+        installedHookAt: row.installed_hook_at,
+      };
 }
 
 /** 導入する。既に導入済みなら版だけ更新する。 */
@@ -159,6 +167,33 @@ export async function enablePlugin(deps: EnableDeps): Promise<EnableOutcome> {
         }）`,
       };
     }
+  }
+
+  // **`install()` は導入後の最初の有効化の直前に1度だけ呼ぶ**（設計 §2.5）。
+  //
+  // 導入は再ビルドを伴うため、導入の瞬間には Plugin のコードをまだ読み込めない。
+  // 読み込めるようになるのは再ビルド後の起動から。
+  const record = await findPluginRecord(connection, manifest.id);
+  if (record !== null && record.installedHookAt === null) {
+    try {
+      await plugin.install?.(buildPluginContext({ manifest, connection, authorization }));
+    } catch (error) {
+      // **初期化に失敗した Plugin を動かさない。** 動かすと、あとで
+      // 分かりにくい失敗をする。
+      unregisterPlugin(manifest.id);
+      unregisterPermissionsOf(manifest.id);
+      await setStatus(connection, manifest.id, 'disabled');
+      return {
+        ok: false,
+        reason: `初期化に失敗した: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+
+    await connection.db
+      .updateTable('plugins')
+      .set({ installed_hook_at: new Date() })
+      .where('id', '=', manifest.id)
+      .execute();
   }
 
   try {
@@ -279,12 +314,45 @@ export async function disablePlugin(deps: DisableDeps): Promise<readonly string[
   return disabled;
 }
 
-/** 削除する。**Plugin のデータを消すかは呼び出し側が決める**（03 §12.5）。 */
+/**
+ * 削除する。**Plugin のデータを消すかは呼び出し側が決める**（03 §12.5）。
+ *
+ * `uninstall()` フックはここで呼ぶ。削除の時点では Plugin のコードが
+ * 読み込まれている（有効化されていたか、少なくとも読み込み済み）ので、
+ * `install()` と違って先送りする必要が無い。
+ */
 export async function uninstallPlugin(
   connection: Connection,
   pluginId: string,
-  options: { readonly deleteData: boolean },
+  options: {
+    readonly deleteData: boolean;
+    /** 後始末のための文脈。読み込まれていない Plugin では省略される。 */
+    readonly hook?: {
+      readonly manifest: PluginManifest;
+      readonly plugin: Plugin;
+      readonly authorization: AuthorizationContext;
+    };
+  },
 ): Promise<void> {
+  if (options.hook !== undefined) {
+    try {
+      await options.hook.plugin.uninstall?.(
+        buildPluginContext({
+          manifest: options.hook.manifest,
+          connection,
+          authorization: options.hook.authorization,
+        }),
+      );
+    } catch (error) {
+      // **後始末の失敗で削除そのものを止めない。**
+      // 止めると、壊れた Plugin を外せなくなる（disable と同じ扱い）。
+      log.warn('plugin uninstall hook failed', {
+        pluginId,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   unregisterPlugin(pluginId);
   unregisterPermissionsOf(pluginId);
 
