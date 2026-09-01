@@ -74,6 +74,12 @@ export interface CreateSiteInput {
 export const createSite = defineUseCase<CreateSiteInput, Site>({
   name: 'site.create',
   permission: 'site.write',
+  audit: {
+    action: 'created',
+    resourceType: 'site',
+    resourceId: (_input, site) => site.id,
+    detail: (_input, site) => ({ name: site.name, url: site.url }),
+  },
   handler: async (context, input) => {
     assertValid(input.name, input.url);
 
@@ -107,6 +113,15 @@ export interface UpdateSiteInput {
 export const updateSite = defineUseCase<UpdateSiteInput, Site>({
   name: 'site.update',
   permission: 'site.write',
+  audit: {
+    action: 'updated',
+    resourceType: 'site',
+    resourceId: (input) => input.id,
+    // 何を変えようとしたかを残す。値そのものは残さない（変更後は site 側で追える）。
+    detail: (input) => ({
+      changed: Object.keys(input).filter((key) => key !== 'id'),
+    }),
+  },
   handler: async (context, input) => {
     if (input.name !== undefined && !isValidSiteName(input.name)) {
       throw new ValidationError('Site', 'name', '名前を入力してください（200文字以内）。');
@@ -140,6 +155,8 @@ export const updateSite = defineUseCase<UpdateSiteInput, Site>({
 export const deleteSite = defineUseCase<{ id: string }, void>({
   name: 'site.delete',
   permission: 'site.delete',
+  // 消えたあとで何が消えたかを追えなければ、監査にならない。
+  audit: { action: 'deleted', resourceType: 'site', resourceId: (input) => input.id },
   handler: async (context, input) => {
     const site = await siteRepository.findById(context.connection, input.id);
     if (site === null) {

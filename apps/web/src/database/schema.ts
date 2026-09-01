@@ -75,6 +75,24 @@ export interface AuthAuditLogsTable {
   occurred_at: CreatedAt;
 }
 
+/**
+ * 一般API操作の監査ログ（05_API設計.md §42）。
+ *
+ * `auth_audit_logs` とは別にする。理由は docs/設計/022-hardening/設計.md §3.1。
+ */
+export interface AuditLogsTable {
+  id: string;
+  actor_user_id: string | null;
+  action: string;
+  resource_type: string;
+  resource_id: string | null;
+  /** パスワード・トークン・Cookie を入れてはならない。 */
+  detail: JSONColumnType<Record<string, unknown>, string | undefined, string>;
+  ip_address: string | null;
+  user_agent: string | null;
+  occurred_at: CreatedAt;
+}
+
 export interface SitesTable {
   id: string;
   name: string;
@@ -178,6 +196,7 @@ export interface Schema {
   role_permissions: RolePermissionsTable;
   sessions: SessionsTable;
   auth_audit_logs: AuthAuditLogsTable;
+  audit_logs: AuditLogsTable;
   password_reset_tokens: PasswordResetTokensTable;
   login_attempts: LoginAttemptsTable;
   schema_migrations: SchemaMigrationsTable;

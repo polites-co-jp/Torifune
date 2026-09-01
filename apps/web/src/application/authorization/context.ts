@@ -38,12 +38,13 @@ export async function buildAuthorizationContext(
 
   return withConnection(async (connection) => {
     if (identity === null) {
-      return { identity: null, permissions: new Set<PermissionName>(), connection };
+      return { identity: null, permissions: new Set<PermissionName>(), connection, request };
     }
     return {
       identity,
       permissions: await effectivePermissions(connection, identity.userId),
       connection,
+      request,
     };
   });
 }

@@ -69,6 +69,13 @@ export interface CreateAccountInput {
 export const createSocialAccount = defineUseCase<CreateAccountInput, SocialAccount>({
   name: 'social.account.create',
   permission: 'social.write',
+  audit: {
+    action: 'created',
+    resourceType: 'social_account',
+    resourceId: (_input, account) => account.id,
+    // 認証情報は残さない。どのSNSのアカウントかが分かれば追跡できる。
+    detail: (_input, account) => ({ provider: account.provider }),
+  },
   handler: async (context, input) => {
     if (!isValidProvider(input.provider)) {
       throw new ValidationError(
@@ -123,6 +130,12 @@ export interface UpdateAccountInput {
 export const updateSocialAccount = defineUseCase<UpdateAccountInput, SocialAccount>({
   name: 'social.account.update',
   permission: 'social.write',
+  audit: {
+    action: 'updated',
+    resourceType: 'social_account',
+    resourceId: (input) => input.id,
+    detail: (input) => ({ changed: Object.keys(input).filter((key) => key !== 'id') }),
+  },
   handler: async (context, input) => {
     if (input.displayName !== undefined && !isValidDisplayName(input.displayName)) {
       throw new ValidationError('SocialAccount', 'displayName', '表示名を入力してください。');
@@ -154,6 +167,7 @@ export const updateSocialAccount = defineUseCase<UpdateAccountInput, SocialAccou
 export const deleteSocialAccount = defineUseCase<{ id: string }, void>({
   name: 'social.account.delete',
   permission: 'social.delete',
+  audit: { action: 'deleted', resourceType: 'social_account', resourceId: (input) => input.id },
   handler: async (context, input) => {
     const deleted = await context.connection.transaction((tx) =>
       socialRepository.deleteAccount(tx, input.id),
@@ -230,6 +244,13 @@ export interface CreatePostInput {
 export const createSocialPost = defineUseCase<CreatePostInput, SocialPost>({
   name: 'social.post.create',
   permission: 'social.write',
+  audit: {
+    action: 'created',
+    resourceType: 'social_post',
+    resourceId: (_input, post) => post.id,
+    // 本文は残さない。監査は「誰がいつ何をしたか」であって、内容の複製ではない。
+    detail: (_input, post) => ({ socialAccountId: post.socialAccountId, status: post.status }),
+  },
   handler: async (context, input) => {
     if (!isValidPostBody(input.body)) {
       throw new ValidationError('SocialPost', 'body', '本文を入力してください（10000文字以内）。');
@@ -274,6 +295,12 @@ export interface UpdatePostInput {
 export const updateSocialPost = defineUseCase<UpdatePostInput, SocialPost>({
   name: 'social.post.update',
   permission: 'social.write',
+  audit: {
+    action: 'updated',
+    resourceType: 'social_post',
+    resourceId: (input) => input.id,
+    detail: (input) => ({ changed: Object.keys(input).filter((key) => key !== 'id') }),
+  },
   handler: async (context, input) => {
     if (input.body !== undefined && !isValidPostBody(input.body)) {
       throw new ValidationError('SocialPost', 'body', '本文を入力してください（10000文字以内）。');
@@ -318,6 +345,7 @@ export const updateSocialPost = defineUseCase<UpdatePostInput, SocialPost>({
 export const deleteSocialPost = defineUseCase<{ id: string }, void>({
   name: 'social.post.delete',
   permission: 'social.delete',
+  audit: { action: 'deleted', resourceType: 'social_post', resourceId: (input) => input.id },
   handler: async (context, input) => {
     const deleted = await context.connection.transaction((tx) =>
       socialRepository.deletePost(tx, input.id),

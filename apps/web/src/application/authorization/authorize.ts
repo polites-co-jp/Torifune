@@ -1,6 +1,7 @@
 import type { UserIdentity } from '../../authentication/identity';
 import type { Connection } from '../../database/provider';
 import type { PermissionName } from '../../domain/permission';
+import type { RequestInfo } from '../auth/context';
 import { assertRegisteredPermission } from './permission-registry';
 
 /**
@@ -45,6 +46,14 @@ export interface AuthorizationContext {
   readonly identity: UserIdentity | null;
   readonly permissions: ReadonlySet<PermissionName>;
   readonly connection: Connection;
+  /**
+   * リクエストの発信元。監査ログに残す（05_API設計.md §42）。
+   *
+   * HTTP を経由しない呼び出し（CLI・内部処理・テスト）では無い。
+   * **認可の判断には使わない。** クライアントが自由に変えられる値であり、
+   * 権限の判断に混ぜると詐称の余地を作る。
+   */
+  readonly request?: RequestInfo;
 }
 
 /** その文脈が Permission を持つか。 */

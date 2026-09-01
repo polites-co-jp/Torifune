@@ -1,4 +1,6 @@
+import type { AuditAction, AuditResourceType } from '../../domain/audit';
 import type { PermissionName } from '../../domain/permission';
+import { recordAudit } from '../audit';
 import { requirePermission, type AuthorizationContext } from './authorize';
 
 /**
@@ -12,6 +14,21 @@ import { requirePermission, type AuthorizationContext } from './authorize';
  * 明示されたものは一覧として検査できるので、意図しない `null` が増えたら気づける。
  */
 
+/**
+ * 監査ログの残し方（05_API設計.md §42）。
+ *
+ * **状態を変える UseCase には付ける。** 参照系には付けない
+ * （記録すると量が跳ね上がり、肝心の変更が埋もれる）。
+ */
+export interface UseCaseAudit<TInput, TOutput> {
+  readonly action: AuditAction;
+  readonly resourceType: AuditResourceType;
+  /** 対象の識別子。作成では出力からしか取れないため、両方を渡す。 */
+  readonly resourceId: (input: TInput, output: TOutput) => string | null;
+  /** 追加で残す情報。**機密は入れない**（入っても保存の直前で落ちる）。 */
+  readonly detail?: (input: TInput, output: TOutput) => Record<string, unknown>;
+}
+
 export interface UseCaseDefinition<TInput, TOutput> {
   /** 一意な名前。検査とログに使う。 */
   readonly name: string;
@@ -22,6 +39,8 @@ export interface UseCaseDefinition<TInput, TOutput> {
   readonly permission: PermissionName | null;
   /** `permission` が null のときに必須。なぜ認可が要らないのか。 */
   readonly reason?: string;
+  /** 監査ログ。状態を変える UseCase には付ける。 */
+  readonly audit?: UseCaseAudit<TInput, TOutput>;
   readonly handler: (context: AuthorizationContext, input: TInput) => Promise<TOutput>;
 }
 
@@ -60,7 +79,22 @@ export function defineUseCase<TInput, TOutput>(
     if (definition.permission !== null) {
       requirePermission(context, definition.permission);
     }
-    return definition.handler(context, input);
+
+    const output = await definition.handler(context, input);
+
+    // **成功したものだけを記録する。** 起きなかったことを監査ログに残さない。
+    // 例外が出たらここへ来ないので、失敗した操作は記録されない。
+    if (definition.audit !== undefined) {
+      const { action, resourceType, resourceId, detail } = definition.audit;
+      await recordAudit(context, {
+        action,
+        resourceType,
+        resourceId: resourceId(input, output),
+        ...(detail === undefined ? {} : { detail: detail(input, output) }),
+      });
+    }
+
+    return output;
   }) as UseCase<TInput, TOutput>;
 
   Object.defineProperties(useCase, {

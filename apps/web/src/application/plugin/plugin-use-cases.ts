@@ -156,6 +156,7 @@ export interface EnableResult {
 export const enablePluginUseCase = defineUseCase<{ pluginId: string }, EnableResult>({
   name: 'plugin.enable',
   permission: 'plugin.manage',
+  audit: { action: 'enabled', resourceType: 'plugin', resourceId: (input) => input.pluginId },
   handler: async (context, input) => {
     const entry = requireDiscovered(input.pluginId);
     const record = await findPluginRecord(context.connection, input.pluginId);
@@ -182,6 +183,13 @@ export const disablePluginUseCase = defineUseCase<
 >({
   name: 'plugin.disable',
   permission: 'plugin.manage',
+  audit: {
+    action: 'disabled',
+    resourceType: 'plugin',
+    resourceId: (input) => input.pluginId,
+    // 依存元も連鎖して無効化される。何が巻き添えになったかを残す。
+    detail: (_input, result) => ({ disabled: result.disabled }),
+  },
   handler: async (context, input) => {
     const entry = requireDiscovered(input.pluginId);
     const record = await findPluginRecord(context.connection, input.pluginId);
@@ -215,6 +223,9 @@ export interface InstallResult {
 export const installPluginUseCase = defineUseCase<{ pluginId: string }, InstallResult>({
   name: 'plugin.install',
   permission: 'plugin.manage',
+  // Plugin の導入は実質的にアプリへコードを入れる操作（CLAUDE.md）。
+  // 最も記録が要る操作のひとつ。
+  audit: { action: 'installed', resourceType: 'plugin', resourceId: (input) => input.pluginId },
   handler: async (context, input) => {
     const identity = requireAuthenticated(context);
     const entry = requireDiscovered(input.pluginId);
@@ -308,6 +319,13 @@ export const installPluginPackage = defineUseCase<
 >({
   name: 'plugin.package.install',
   permission: 'plugin.manage',
+  audit: {
+    action: 'installed',
+    resourceType: 'plugin',
+    resourceId: (input) => input.expectedPluginId,
+    // アップロード経由であることを区別する。配置済みの導入とは経路が違う。
+    detail: () => ({ via: 'package' }),
+  },
   handler: async (context, input) => {
     const identity = requireAuthenticated(context);
 
@@ -384,6 +402,13 @@ export interface UninstallInput {
 export const uninstallPluginUseCase = defineUseCase<UninstallInput, InstallResult>({
   name: 'plugin.uninstall',
   permission: 'plugin.manage',
+  audit: {
+    action: 'uninstalled',
+    resourceType: 'plugin',
+    resourceId: (input) => input.pluginId,
+    // データを消したかどうかは、後から復旧できるかを左右する。必ず残す。
+    detail: (input) => ({ deleteData: input.deleteData, deleteFiles: input.deleteFiles }),
+  },
   handler: async (context, input) => {
     const identity = requireAuthenticated(context);
 
