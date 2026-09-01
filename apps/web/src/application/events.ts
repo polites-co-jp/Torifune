@@ -43,6 +43,9 @@ export async function emit(eventName: string, payload: unknown): Promise<void> {
       // 落ち続けていても誰も気づけず、「なぜか連携されない」だけが残る。
       log.error('event handler failed', {
         event: eventName,
+        // **どの Plugin か**を出す。出さないと、複数の Plugin が同じ
+        // イベントを購読しているとき、どれが落ちたか切り分けられない。
+        pluginId: (handler as { torifunePluginId?: string }).torifunePluginId ?? null,
         reason: error instanceof Error ? error.message : String(error),
       });
     }

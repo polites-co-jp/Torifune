@@ -85,3 +85,33 @@ export function absoluteUrl(request: Request, path: string): string {
   }
   return `${scheme(request)}://${found}${path}`;
 }
+
+/**
+ * **設定された `APP_URL` からだけ**絶対 URL を作る。
+ *
+ * リダイレクト型認証の `redirect_uri` はこちらを使う。
+ * `absoluteUrl` はホストが分からなければ `x-forwarded-host` / `host` へ落ちるが、
+ * **そのヘッダは要求元が自由に付けられる。** 外部 Provider へ渡す値を
+ * 要求元に左右させると、Provider 側のホワイトリストが緩い構成で
+ * 認可コードを別のホストへ飛ばされうる。
+ *
+ * 「設定し忘れたら動かない」ほうが、「設定し忘れたまま動いてしまう」より安全。
+ */
+export function configuredAbsoluteUrl(path: string): string {
+  const appUrl = process.env['APP_URL'];
+  if (appUrl === undefined || appUrl === '') {
+    throw new AbsoluteUrlError(
+      'リダイレクト型認証には APP_URL が必要。' +
+        'ヘッダから組み立てると、外部へ渡す redirect_uri を要求元が左右できる。',
+    );
+  }
+
+  let base: URL;
+  try {
+    base = new URL(appUrl);
+  } catch {
+    throw new AbsoluteUrlError(`APP_URL の形式が不正: ${appUrl}`);
+  }
+
+  return `${base.protocol}//${base.host}${path}`;
+}

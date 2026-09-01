@@ -1,7 +1,9 @@
 import { z } from 'zod';
 import { AUTHORIZATION_CALLBACK_PATH } from '@torifune/plugin-api';
 import { startRedirectLogin } from '@/application/auth/redirect-login';
-import { absoluteUrl, AbsoluteUrlError } from '@/api/absolute-url';
+import { AbsoluteUrlError, configuredAbsoluteUrl } from '@/api/absolute-url';
+import { supportsRedirectAuthentication } from '@/authentication/provider';
+import { getAuthenticationProvider } from '@/authentication/registry';
 import { requestInfoOf } from '@/api/cookies';
 import { errorResponse } from '@/api/errors';
 import { defineRoute } from '@/api/route';
@@ -57,12 +59,23 @@ export const GET = defineRoute({
     // 差し替えたはずの Provider を誰も通らない（`04_認証設計.md` §15）。
     await ensurePluginsStartedAnonymously();
 
+    // **往復型の Provider が居るかを先に見る。**
+    // 居ないのは異常ではなく「この環境は外部認証を使っていない」だけなので、
+    // `APP_URL` の有無より前に判定する。順序を逆にすると、
+    // 外部認証を使わない環境で `APP_URL` 未設定が 500 として現れる。
+    if (!supportsRedirectAuthentication(getAuthenticationProvider())) {
+      return errorResponse('BAD_REQUEST');
+    }
+
     let redirectUri: string;
     try {
-      // **`request.url` からは組み立てない。** Next.js が localhost へ正規化する。
-      redirectUri = absoluteUrl(request, AUTHORIZATION_CALLBACK_PATH);
+      // **ヘッダからは組み立てない。** `x-forwarded-host` / `host` は要求元が
+      // 付けられるため、外部へ渡す redirect_uri を左右されうる。APP_URL だけを使う。
+      redirectUri = configuredAbsoluteUrl(AUTHORIZATION_CALLBACK_PATH);
     } catch (error) {
       if (error instanceof AbsoluteUrlError) {
+        // ここへ来るのは**往復型の Provider が居るのに `APP_URL` が無い**とき。
+        // 構成の誤りなので 500 でよい。
         log.error('failed to build redirect_uri', { reason: error.message });
         return errorResponse('INTERNAL_ERROR');
       }

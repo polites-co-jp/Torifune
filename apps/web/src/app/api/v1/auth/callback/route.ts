@@ -1,6 +1,6 @@
 import { AUTHORIZATION_CALLBACK_PATH } from '@torifune/plugin-api';
 import { completeRedirectLogin } from '@/application/auth/redirect-login';
-import { absoluteUrl, AbsoluteUrlError } from '@/api/absolute-url';
+import { AbsoluteUrlError, configuredAbsoluteUrl } from '@/api/absolute-url';
 import { requestInfoOf, sessionCookie } from '@/api/cookies';
 import { defineRoute } from '@/api/route';
 import { log } from '@/infrastructure/logging';
@@ -77,7 +77,7 @@ export const GET = defineRoute({
     let redirectUri: string;
     try {
       // 発行時と同じ組み立て方をする。ここが揃わないと Redirect URI 検証が通らない。
-      redirectUri = absoluteUrl(request, AUTHORIZATION_CALLBACK_PATH);
+      redirectUri = configuredAbsoluteUrl(AUTHORIZATION_CALLBACK_PATH);
     } catch (error) {
       if (error instanceof AbsoluteUrlError) {
         log.error('failed to build redirect_uri', { reason: error.message });

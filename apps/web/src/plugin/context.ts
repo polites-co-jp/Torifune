@@ -77,7 +77,14 @@ export function buildPluginContext(deps: BuildContextDeps): PluginContext {
     subscribe(eventName: string, handler: (payload: never) => void | Promise<void>) {
       // 解除関数を控えておく。無効化時にまとめて外す。
       // 外さないと、無効化したはずの Plugin がイベントに反応し続ける。
-      const unsubscribe = subscribe(eventName, handler as (payload: unknown) => void);
+      //
+      // **どの Plugin のハンドラかを名前で残す。** `events.ts` は失敗を
+      // ログへ出すが、素の関数を渡すと「どれが落ちたか」が分からず、
+      // 複数の Plugin が同じイベントを購読していると切り分けられない。
+      const named = handler as (payload: unknown) => void;
+      Object.defineProperty(named, 'torifunePluginId', { value: pluginId });
+
+      const unsubscribe = subscribe(eventName, named);
       registrations.unsubscribers.push(unsubscribe);
       return unsubscribe;
     },

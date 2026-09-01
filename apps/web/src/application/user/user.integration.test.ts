@@ -145,6 +145,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await withConnection(async (connection) => {
     await connection.db.deleteFrom('sessions').execute();
+    await connection.db.deleteFrom('audit_logs').execute();
   });
 });
 
@@ -451,5 +452,60 @@ describe('権限', () => {
     await expect(listUsers(editor, listInput())).rejects.toThrow(ForbiddenError);
     await expect(createUser(editor, newUserInput())).rejects.toThrow(ForbiddenError);
     await expect(deleteUser(editor, { id: spareAdmin.userId })).rejects.toThrow(ForbiddenError);
+  });
+});
+
+/**
+ * 操作の監査ログ（05_API設計.md §42）。
+ *
+ * **`auth_audit_logs` を見るだけでは足りない。** あちらは認証の記録で、
+ * 「誰がこのユーザーを作ったか」は操作の追跡（`audit_logs`）の側にも要る。
+ *
+ * この検査が無い間、`user-use-cases.ts` の `audit:` を消しても
+ * 落ちるテストが1件も無かった。
+ */
+describe('操作の監査ログ', () => {
+  async function auditRows(): Promise<{ action: string; resource_type: string }[]> {
+    return withConnection((connection) =>
+      connection.db
+        .selectFrom('audit_logs')
+        .select(['action', 'resource_type'])
+        .orderBy('occurred_at')
+        .execute(),
+    );
+  }
+
+  it('作成・更新・削除が audit_logs に残る', async () => {
+    const created = await createUser(admin, newUserInput());
+    await updateUser(admin, { id: created.user.id, displayName: '改名', request: null });
+    await deleteUser(admin, { id: created.user.id });
+
+    expect(await auditRows()).toEqual([
+      { action: 'created', resource_type: 'user' },
+      { action: 'updated', resource_type: 'user' },
+      { action: 'deleted', resource_type: 'user' },
+    ]);
+  });
+
+  /** **パスワードを detail へ入れない。** 監査ログは残り続ける。 */
+  it('パスワードが detail に入らない', async () => {
+    const password = 'zzz unique password for audit check';
+    const created = await createUser(admin, newUserInput({ password }));
+    await updateUser(admin, { id: created.user.id, password, request: null });
+
+    const rows = await withConnection((connection) =>
+      connection.db.selectFrom('audit_logs').select(['detail']).execute(),
+    );
+
+    expect(JSON.stringify(rows)).not.toContain(password);
+  });
+
+  /** 失敗した操作は記録しない（成功した操作だけが監査の対象）。 */
+  it('権限が無くて失敗した操作は残らない', async () => {
+    const viewer = await contextFor(['viewer']);
+
+    await expect(createUser(viewer, newUserInput())).rejects.toThrow(ForbiddenError);
+
+    expect(await auditRows()).toEqual([]);
   });
 });
