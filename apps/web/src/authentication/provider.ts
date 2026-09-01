@@ -37,6 +37,31 @@ export type AuthenticationResult =
   | { readonly ok: true; readonly identity: UserIdentity }
   | { readonly ok: false; readonly reason: 'invalid_credentials' | 'too_many_attempts' };
 
+/**
+ * 認可開始のときに Core が Provider へ渡すもの（リダイレクト型認証）。
+ *
+ * **State・Nonce・Redirect URI は Core が発行する。**
+ * `025-redirect-authentication` 設計 §2。
+ */
+export interface AuthorizationStartContext extends AuthenticationContext {
+  readonly state: string;
+  readonly nonce: string;
+  /** Core が受け付けるコールバック URL（絶対 URL）。 */
+  readonly redirectUri: string;
+}
+
+/** 認可開始の結果。**失敗の理由を細かく返さない。** */
+export type AuthorizationStart =
+  | { readonly ok: true; readonly authorizationUrl: string }
+  | { readonly ok: false; readonly reason: 'unavailable' };
+
+/** コールバックで戻ってきたもの。**state の照合は Core が済ませてある。** */
+export interface AuthorizationCallback {
+  readonly params: Readonly<Record<string, string>>;
+  readonly redirectUri: string;
+  readonly nonce: string;
+}
+
 export interface AuthenticationProvider {
   /** Provider の識別子。`UserIdentity.providerId` に入る。 */
   readonly id: string;
@@ -64,6 +89,32 @@ export interface AuthenticationProvider {
    * 外部認証では、Refresh Token による更新にあたる。
    */
   refresh(sessionToken: string, context: AuthenticationContext): Promise<void>;
+
+  /**
+   * 認可エンドポイントへの誘導を始める（**任意実装**）。
+   *
+   * 標準認証はリダイレクト往復を持たないため実装しない。
+   * **実装していないことをもって「この環境ではリダイレクト型ログインを使えない」と判定する。**
+   */
+  startAuthorization?(context: AuthorizationStartContext): Promise<AuthorizationStart>;
+
+  /**
+   * コールバックを受けて利用者を確定する（**任意実装**）。
+   *
+   * **セッションは発行しない。** 発行するのは Core（`SessionIssuer`）。
+   */
+  completeAuthorization?(
+    callback: AuthorizationCallback,
+    context: AuthenticationContext,
+  ): Promise<AuthenticationResult>;
+}
+
+/** その Provider がリダイレクト往復に対応しているか。**両方揃って初めて往復が閉じる。** */
+export function supportsRedirectAuthentication(provider: AuthenticationProvider): boolean {
+  return (
+    typeof provider.startAuthorization === 'function' &&
+    typeof provider.completeAuthorization === 'function'
+  );
 }
 
 /** セッション発行時の指定。 */

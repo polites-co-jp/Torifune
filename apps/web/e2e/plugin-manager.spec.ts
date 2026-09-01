@@ -29,6 +29,26 @@ test('Plugin が無ければ、追加への導線が出る', async ({ page }) =>
   await expect(page.getByText('plugins/ へ置いてください')).toBeVisible();
 });
 
+/**
+ * Registry タブ（020-plugin-registry 設計 §2.7）。
+ *
+ * E2E の環境では Registry を設定していない。
+ * **設定していないことと、何を設定すればよいかが画面に出る**ことを見る。
+ */
+test('Registry タブが開き、未設定なら設定の仕方が出る', async ({ page }) => {
+  await page.goto('/plugins?tab=registry');
+
+  await expect(page.getByRole('heading', { name: 'Registry' })).toBeVisible();
+  await expect(page.getByText('TORIFUNE_PLUGIN_REGISTRY_URL')).toBeVisible();
+});
+
+test('Registry タブからでも zip の導線は残る', async ({ page }) => {
+  // 署名を求めないローカル導入（設計 §2.2）を塞がない。
+  await page.goto('/plugins?tab=registry');
+
+  await expect(page.getByRole('button', { name: 'Pluginを追加' })).toBeVisible();
+});
+
 test('自動で再起動しない環境ではその旨が出る', async ({ page }) => {
   // 押したあとに何も起きないように見えると、壊れたと思われる。
   await page.goto('/plugins');

@@ -3,7 +3,7 @@ import { listPermissions } from '@/application/authorization/permission-registry
 import { getSystemSettings } from '@/application/system-settings/system-settings-use-cases';
 import { authenticationProviderId } from '@/authentication/registry';
 import { listUsers } from '@/application/user/user-use-cases';
-import { roleRepository } from '@/infrastructure/role-repository';
+import { listRoleGrants, listRoles } from '@/application/authorization/role-use-cases';
 import { Tabs } from '@/ui/components';
 import { AppShell } from '@/ui/layout/app-shell';
 import { ExtensionPoint } from '@/ui/plugin/plugin-slot';
@@ -75,7 +75,7 @@ export default async function SettingsPage({
   const page = Math.max(1, Number(params['page'] ?? 1) || 1);
   const perPage = 20;
 
-  const roles = canManageUsers ? await roleRepository.list(context.connection) : [];
+  const roles = canManageUsers ? await listRoles(context, {}) : [];
   const settings = await getSystemSettings(context, {});
 
   return (
@@ -123,7 +123,7 @@ export default async function SettingsPage({
 }
 
 type PageContext = Awaited<ReturnType<typeof requirePageSession>>['context'];
-type RoleList = Awaited<ReturnType<typeof roleRepository.list>>;
+type RoleList = Awaited<ReturnType<typeof listRoles>>;
 
 async function UsersTab({
   context,
@@ -169,10 +169,8 @@ async function UsersTab({
 }
 
 async function PermissionsTab({ context, roles }: { context: PageContext; roles: RoleList }) {
-  const grants: Record<string, readonly string[]> = {};
-  for (const role of roles) {
-    grants[role.name] = await roleRepository.permissionsOf(context.connection, role.id);
-  }
+  // ロールの数だけ問い合わせない（N+1）。1クエリでまとめて引く。
+  const grants = await listRoleGrants(context, {});
 
   return (
     <PermissionMatrix

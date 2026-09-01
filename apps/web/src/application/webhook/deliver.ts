@@ -1,14 +1,17 @@
-import { sql } from 'kysely';
 import type { Connection } from '@/database/provider';
 import { isRetryable, retryDelayMs, signPayload } from '@/domain/webhook/webhook';
 import { decryptSecret } from '@/infrastructure/crypto/cipher';
 import { log } from '@/infrastructure/logging';
+import { webhookRepository } from '@/infrastructure/webhook-repository';
 
 /**
  * 予約された配信を送る（05_API設計.md §39、023-webhook 設計 §3.4）。
  *
  * **発火の場では送らない。** ここは cron から叩かれる想定で、
  * `018-analytics` のロールアップと同じ形にそろえている。
+ *
+ * SQL は `infrastructure/webhook-repository.ts` に置く
+ * （02_データベース設計.md §7）。
  */
 
 /** 受け手が遅いと送信の処理が詰まる。短くして、非同期処理を促す（設計 §3.6）。 */
@@ -23,54 +26,24 @@ export interface DeliverResult {
   readonly failed: number;
 }
 
-interface PendingRow {
-  id: string;
-  webhook_id: string;
-  event: string;
-  payload: Record<string, unknown>;
-  attempts: number;
-  url: string;
-  secret: string;
-}
-
 export async function deliverPendingWebhooks(connection: Connection): Promise<DeliverResult> {
-  const rows = (await connection.db
-    .selectFrom('webhook_deliveries')
-    .innerJoin('webhooks', 'webhooks.id', 'webhook_deliveries.webhook_id')
-    .select([
-      'webhook_deliveries.id',
-      'webhook_deliveries.webhook_id',
-      'webhook_deliveries.event',
-      'webhook_deliveries.payload',
-      'webhook_deliveries.attempts',
-      'webhooks.url',
-      'webhooks.secret',
-    ])
-    .where('webhook_deliveries.status', '=', 'pending')
-    // **DB の時計で比べる。** 既定値も再試行の予約も DB の now() で入るため、
-    // アプリ側の時計と突き合わせると、わずかなずれで「まだ送らない」になる。
-    .where(sql<boolean>`webhook_deliveries.next_attempt_at <= now()`)
-    // 送り先が止められていれば送らない。
-    .where('webhooks.status', '=', 'active')
-    .orderBy('webhook_deliveries.next_attempt_at', 'asc')
-    .limit(BATCH_SIZE)
-    .execute()) as unknown as PendingRow[];
+  const pending = await webhookRepository.listDue(connection, BATCH_SIZE);
 
   let delivered = 0;
   let failed = 0;
 
-  for (const row of rows) {
+  for (const row of pending) {
     const attempts = row.attempts + 1;
     const body = JSON.stringify({ event: row.event, data: row.payload });
     const timestamp = Math.floor(Date.now() / 1000);
 
-    const decrypted = decryptSecret(row.secret);
+    const decrypted = decryptSecret(row.encryptedSecret);
     if (!decrypted.ok) {
       // 鍵が変わったなどで復号できない。**再試行しても直らないので諦める。**
-      await markFailed(connection, row.id, attempts, '署名鍵を復号できない');
+      await webhookRepository.markFailed(connection, row.id, attempts, '署名鍵を復号できない');
       failed += 1;
       log.error('webhook secret cannot be decrypted', {
-        webhookId: row.webhook_id,
+        webhookId: row.webhookId,
         reason: decrypted.reason,
       });
       continue;
@@ -97,49 +70,28 @@ export async function deliverPendingWebhooks(connection: Connection): Promise<De
         throw new Error(`受け手が ${response.status} を返した`);
       }
 
-      await connection.db
-        .updateTable('webhook_deliveries')
-        .set({ status: 'delivered', attempts, delivered_at: new Date(), last_error: null })
-        .where('id', '=', row.id)
-        .execute();
+      await webhookRepository.markDelivered(connection, row.id, attempts);
       delivered += 1;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
 
       if (isRetryable(attempts)) {
-        await connection.db
-          .updateTable('webhook_deliveries')
-          .set({
-            attempts,
-            last_error: message,
-            // 落ちている受け手を叩き続けない。DB の時計で先へずらす。
-            next_attempt_at: sql`now() + make_interval(secs => ${
-              retryDelayMs(attempts) / 1000
-            })` as unknown as Date,
-          })
-          .where('id', '=', row.id)
-          .execute();
+        // 落ちている受け手を叩き続けない。
+        await webhookRepository.rescheduleAfter(
+          connection,
+          row.id,
+          attempts,
+          message,
+          retryDelayMs(attempts) / 1000,
+        );
       } else {
-        await markFailed(connection, row.id, attempts, message);
+        await webhookRepository.markFailed(connection, row.id, attempts, message);
         failed += 1;
       }
     }
   }
 
-  log.info('webhook delivery finished', { attempted: rows.length, delivered, failed });
+  log.info('webhook delivery finished', { attempted: pending.length, delivered, failed });
 
-  return { attempted: rows.length, delivered, failed };
-}
-
-async function markFailed(
-  connection: Connection,
-  deliveryId: string,
-  attempts: number,
-  message: string,
-): Promise<void> {
-  await connection.db
-    .updateTable('webhook_deliveries')
-    .set({ status: 'failed', attempts, last_error: message })
-    .where('id', '=', deliveryId)
-    .execute();
+  return { attempted: pending.length, delivered, failed };
 }

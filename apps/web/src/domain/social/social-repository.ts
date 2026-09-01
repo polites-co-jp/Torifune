@@ -52,6 +52,7 @@ export interface SocialPostUpdate {
   readonly scheduledAt?: Date | null | undefined;
   readonly status?: PostStatus | undefined;
   readonly publishedAt?: Date | null | undefined;
+  readonly failedAt?: Date | null | undefined;
   readonly failureReason?: string | null | undefined;
 }
 
@@ -59,7 +60,20 @@ export interface SocialPostListQuery {
   readonly page: number;
   readonly perPage: number;
   readonly socialAccountId: string | null;
-  readonly status: PostStatus | null;
+  /**
+   * 絞り込む状態。空なら全部。
+   *
+   * **単一指定と配列指定の2通りを残さない。** `CampaignListQuery.statuses` と
+   * 同じ形にそろえ、UseCase 側で「単一 → 配列」に畳む。
+   */
+  readonly statuses: readonly PostStatus[];
+  /**
+   * 並び順。
+   *
+   * `delivered` は配信結果が確定した順（`published_at` / `failed_at`）。
+   * 履歴画面が使う。作成順とは一致しない。
+   */
+  readonly orderBy: 'created' | 'delivered';
 }
 
 export interface SocialPostPage {
@@ -89,6 +103,13 @@ export interface SocialRepository {
 
   listPosts(connection: Connection, query: SocialPostListQuery): Promise<SocialPostPage>;
   findPostById(connection: Connection, id: string): Promise<SocialPost | null>;
+  /**
+   * IDでまとめて引く。
+   *
+   * キャンペーンに紐づく投稿のように「IDは判っている」場面で使う。
+   * 1件ずつ引くと件数分の往復になる。
+   */
+  findPostsByIds(connection: Connection, ids: readonly string[]): Promise<readonly SocialPost[]>;
   insertPost(connection: Connection, post: NewSocialPost): Promise<SocialPost>;
   updatePost(
     connection: Connection,

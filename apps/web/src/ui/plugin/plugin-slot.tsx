@@ -97,6 +97,19 @@ export interface ExtensionPointProps extends PluginSlotProps {
   readonly point: string;
 }
 
+/**
+ * その枠に描くものがあるか。
+ *
+ * **枠の有無で画面の骨格が変わる場所で使う。** 編集画面の脇の欄は、
+ * 中身が無いのに列を確保すると、Plugin を何も入れていない環境でも
+ * フォームがその幅だけ狭くなる。`ExtensionPoint` は中身が無ければ
+ * `null` を返すが、**要素そのものは渡されてしまう**ため、
+ * 呼び出し側は「渡すかどうか」をここで決める。
+ */
+export function hasExtensions(point: string, permissions: ReadonlySet<string>): boolean {
+  return collectExtensions(point, permissions).length > 0;
+}
+
 export function ExtensionPoint({ point, permissions, context, props = {} }: ExtensionPointProps) {
   const extensions = collectExtensions(point, permissions);
 

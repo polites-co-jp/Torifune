@@ -1,7 +1,7 @@
 import { requestInfoOf } from '@/api/cookies';
 import { dataResponse, noContentResponse } from '@/api/response';
 import { defineRoute } from '@/api/route';
-import { toUserResponse, updateUserSchema } from '@/api/schemas/user';
+import { toUserResponse, updateUserSchema, userEnvelopeSchema } from '@/api/schemas/user';
 import { deleteUser, getUser, updateUser } from '@/application/user/user-use-cases';
 
 export const GET = defineRoute({
@@ -10,6 +10,7 @@ export const GET = defineRoute({
   path: '/users/{id}',
   summary: 'ユーザーを取得する',
   permission: 'user.manage',
+  response: userEnvelopeSchema,
   handler: async ({ context, params }) => {
     return dataResponse(toUserResponse(await getUser(context, { id: params['id'] ?? '' })));
   },
@@ -22,6 +23,7 @@ export const PATCH = defineRoute({
   summary: 'ユーザーを更新する',
   permission: 'user.manage',
   body: updateUserSchema,
+  response: userEnvelopeSchema,
   handler: async ({ context, body, params, request }) => {
     const updated = await updateUser(context, {
       id: params['id'] ?? '',
@@ -43,6 +45,7 @@ export const DELETE = defineRoute({
   path: '/users/{id}',
   summary: 'ユーザーを削除する',
   permission: 'user.manage',
+  successStatus: 204,
   handler: async ({ context, params }) => {
     await deleteUser(context, { id: params['id'] ?? '' });
     return noContentResponse();

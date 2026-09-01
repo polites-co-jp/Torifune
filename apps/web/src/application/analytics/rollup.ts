@@ -1,4 +1,4 @@
-import { sql } from 'kysely';
+import { emit } from '@/application/events';
 import type { Connection } from '@/database/provider';
 import { CORE_SOURCE } from '@/domain/analytics/analytics';
 import { analyticsRepository } from '@/infrastructure/analytics-repository';
@@ -12,6 +12,9 @@ import { log } from '@/infrastructure/logging';
  *
  * **再実行できる。** 同じ日を何度集計しても結果が同じ（upsert）。
  * 一度きりの処理にすると、失敗したときに手で直すことになる。
+ *
+ * SQL は `infrastructure/analytics-repository.ts` に置く
+ * （02_データベース設計.md §7）。
  */
 
 export interface RollupResult {
@@ -19,13 +22,10 @@ export interface RollupResult {
   readonly points: number;
 }
 
-interface AggregateRow {
-  site_id: string;
-  day: Date | string;
-  pageviews: string | number;
-  visitors: string | number;
-}
-
+/**
+ * node-postgres は `date` を**ローカルタイムゾーンの0時**として `Date` にする。
+ * `toISOString()` は UTC へ直すので、UTC より東では**1日前になる**。
+ */
 function toDateOnly(value: Date | string): string {
   if (typeof value === 'string') {
     return value.slice(0, 10);
@@ -49,36 +49,21 @@ export async function rollupAnalytics(
   connection: Connection,
   range: { readonly from: string; readonly to: string },
 ): Promise<RollupResult> {
-  const rows = (
-    await sql<AggregateRow>`
-    SELECT
-      site_id,
-      (occurred_at AT TIME ZONE 'UTC')::date AS day,
-      count(*) AS pageviews,
-      count(DISTINCT visitor_hash) AS visitors
-    FROM access_logs
-    WHERE device <> 'bot'
-      AND occurred_at >= ${range.from}::date
-      AND occurred_at < (${range.to}::date + interval '1 day')
-    GROUP BY site_id, day
-  `.execute(connection.db)
-  ).rows;
+  const aggregates = await analyticsRepository.aggregateDaily(connection, range);
 
   let points = 0;
 
-  for (const row of rows) {
+  for (const row of aggregates) {
     const metricDate = toDateOnly(row.day);
-    const pageviews = Number(row.pageviews);
-    const visitors = Number(row.visitors);
 
     for (const [metric, value] of [
-      ['pageviews', pageviews],
-      ['visitors', visitors],
+      ['pageviews', row.pageviews],
+      ['visitors', row.visitors],
       // いまの定義では visitors と同じ値になる。指標として別に出しておく。
-      ['sessions', visitors],
+      ['sessions', row.visitors],
     ] as const) {
       await analyticsRepository.putPoint(connection, {
-        siteId: row.site_id,
+        siteId: row.siteId,
         metricDate,
         source: CORE_SOURCE,
         metric,
@@ -90,7 +75,11 @@ export async function rollupAnalytics(
 
   log.info('analytics rollup finished', { from: range.from, to: range.to, points });
 
-  return { days: rows.length, points };
+  // **1アクセスごとではなく、集計が済んだ単位で1回だけ知らせる**（01 §10.3）。
+  // アクセスの発生ごとに発火すると、遅い Plugin が計測そのものを詰まらせる。
+  await emit('analytics.rolledUp', { from: range.from, to: range.to, points });
+
+  return { days: aggregates.length, points };
 }
 
 /**
@@ -102,12 +91,8 @@ export async function pruneAccessLogs(
   connection: Connection,
   olderThanDays: number,
 ): Promise<number> {
-  const result = await connection.db
-    .deleteFrom('access_logs')
-    .where(sql<boolean>`occurred_at < now() - (${olderThanDays} || ' days')::interval`)
-    .executeTakeFirst();
+  const deleted = await analyticsRepository.deleteAccessLogsOlderThan(connection, olderThanDays);
 
-  const deleted = Number(result.numDeletedRows ?? 0);
   log.info('access logs pruned', { olderThanDays, deleted });
   return deleted;
 }

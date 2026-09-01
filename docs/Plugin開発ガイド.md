@@ -135,6 +135,10 @@ context.ui.registerAction({
   location: 'site.list.actions',
   label: '同期',
   component: MyAction,
+  // 対象リソース（06_画面設計.md §26）。任意。
+  // 書かない Action は「リソースを問わない」として扱われ、
+  // リソースで絞り込む場面でも消えない。
+  resource: 'site',
 });
 
 // 既存画面の決められた差し込み口
@@ -146,6 +150,7 @@ context.ui.defineExtensionPoint('my-plugin.page.footer');
 
 Core の拡張点は `CORE_EXTENSION_POINTS` にある。
 ここに無い名前も使ってよい（Plugin が定義したもの）。
+Core が扱うリソース名は `CORE_ACTION_RESOURCES` にあるが、これも閉じた集合ではない。
 
 **ここにあるものはすべて実際に描画される。** 登録すれば必ずどこかに出る。
 
@@ -373,12 +378,81 @@ context.authentication.registerProvider({
 まだ提供していない。新規ユーザーへどのロールを与えるかが決まっていないため。
 必要な場合は Issue で用途を挙げてほしい。
 
-実物の例は `plugins/example-plugin/authentication.ts`（合言葉を照合するだけのダミー）。
+実物の例は `plugins/example-plugin/authentication.ts`。
 `EXAMPLE_PLUGIN_AUTH_USER_ID` に実在するユーザーの ID を渡したときだけ差し替わる。
 
 > 差し替えは**元へ戻らない**。戻すには再起動が要る。
 > 認証中のセッションを持つ利用者が居るところへ差し戻すと、
 > 誰が認証済みなのかの判定が途中で変わる。
+
+#### リダイレクト往復（OIDC / SAML / SNS ログイン）
+
+`authenticate()` は「ID とパスワードを受け取って照合する」形しか表せない。
+**ブラウザを外部の認可エンドポイントへ送り出して戻ってくる**方式では、
+次の2つを**任意実装**として足す。
+
+```ts
+context.authentication.registerProvider({
+  id: 'my-plugin.oidc',
+  // authenticate / getIdentity / logout / refresh は同じ
+
+  async startAuthorization(context) {
+    // **state / nonce / redirect_uri は自分で作らない。** Torifune が渡す。
+    const url = new URL('https://idp.example/authorize');
+    url.searchParams.set('response_type', 'code');
+    url.searchParams.set('client_id', clientId);
+    url.searchParams.set('scope', 'openid profile email');
+    url.searchParams.set('redirect_uri', context.redirectUri);
+    url.searchParams.set('state', context.state);
+    url.searchParams.set('nonce', context.nonce);
+    return { ok: true, authorizationUrl: url.toString() };
+  },
+
+  async completeAuthorization(callback) {
+    // 1. callback.params.code を Token Exchange する（callback.redirectUri を使う）
+    // 2. ID Token の iss / aud / exp / 署名 / Claim を検証する
+    // 3. ID Token の nonce Claim が callback.nonce と一致することを確かめる
+    // **state の照合は Torifune が済ませてある。** ここでやり直さない
+    return { ok: true, identity: { /* … */ } };
+  },
+});
+```
+
+**両方を実装するか、両方とも実装しないか。** 片方だけでは往復が閉じず、
+「認可画面へは飛ぶがログインは決して成立しない」という気づきにくい壊れ方になる。
+
+ログイン画面へボタンを出すには、`login.methods` 拡張点へリンクを1つ差し込む。
+
+```tsx
+import { AUTHORIZATION_START_PATH } from '@torifune/plugin-api';
+
+ui.registerExtension({
+  point: 'login.methods',
+  component: () => <a href={AUTHORIZATION_START_PATH}>SSOでログイン</a>,
+});
+```
+
+**パスを直書きしない。** 外部 Provider へ登録する Redirect URI は
+`AUTHORIZATION_CALLBACK_PATH`（`/api/v1/auth/callback`）である。
+
+Torifune 側が受け持つのは次のとおり（`04_認証設計.md` §27 の表）。
+
+* State の発行・保管・照合・有効期限（10分）・**使い捨て**
+* Nonce の発行と State への束縛（**Claim との照合は Plugin**）
+* Redirect URI の決定と、コールバック時の照合
+* コールバックの正当性（通常の CSRF 検証は外部からのリダイレクトに効かないため、
+  State 検証がその役目を担う）
+* ログイン後の遷移先の検証（Open Redirect 対策）
+* セッションの発行と監査ログ
+
+Plugin が受け持つのは、認可要求の組み立て・Token Exchange・Token 検証・
+外部の識別子から Torifune のユーザーを引くところまで。
+
+実物の例は `plugins/example-plugin/authentication.ts` の
+`startAuthorization` / `completeAuthorization`。
+**外部サービスへ繋がず、コールバックへそのまま戻る**（0ホップの IdP）。
+短絡しているのは「外部 Provider が居るかどうか」だけで、
+State の発行と照合・使い捨て・セッション発行は本番と同じ経路を通る。
 
 ---
 

@@ -393,8 +393,31 @@ DELETE /api/v1/sites/{id}
 
 コンテンツ管理はPluginの責務とする（2026-08-24 改訂。`改訂履歴.md` を参照）。
 
-コンテンツを扱うPluginは、自身のAPIを `/api/v1/plugins/<plugin-id>/...` の
+コンテンツを扱うPluginは、自身のAPIを `/api/v1/plugins/<plugin-id>/api/...` の
 名前空間で提供する。Coreは `/api/v1/contents` を持たない。
+
+### Core と Plugin の境界
+
+`/api/v1/plugins/<plugin-id>/` の直下は**Coreのもの**である（`enable` / `disable` / `settings` 等）。
+Plugin が使えるのはさらにその下の `api/` 以下で、**ここはまるごとPluginのものとする。**
+
+1段挟むのは、Coreが将来 `/api/v1/plugins/<plugin-id>/` へ操作を足しても
+Plugin側の経路と衝突しないようにするため。挟まないと、
+`enable` という名前の経路を持ちたいPluginが永久に作れない。
+
+Plugin の経路であっても、認証・認可・CSRF・Rate Limit・例外の整形は**Coreが受け持つ**。
+Pluginは経路とPermissionを宣言し、要求を処理して応答を返すところだけを担う。
+Manifestで宣言していないPermissionを要求する経路は登録できない。
+
+### Plugin ID の予約語
+
+Coreが `/api/v1/plugins/` の直下で使っている名前（`registry` / `package` / `operations`）は
+**Plugin IDにできない。** Plugin IDは1語の英小文字でも成立するため、
+これらを許すと、その Plugin の管理経路がCoreの静的ルートに食われ、
+**導入したあと有効化も設定も削除もできなくなる。** Manifestの検証で断る。
+
+Plugin の経路はCoreのOpenAPIに載せない。
+導入されたPluginによって中身が変わる文書は、Coreの契約を表す仕様として使えないため。
 
 ---
 
@@ -440,7 +463,6 @@ DELETE /api/v1/campaigns/{id}
 
 ```text
 GET /api/v1/analytics
-GET /api/v1/analytics/{id}
 ```
 
 大量データを扱う可能性があるため、Pagination、Filtering、期間指定等を提供する。
@@ -448,8 +470,39 @@ GET /api/v1/analytics/{id}
 例：
 
 ```text
-GET /api/v1/analytics?siteId=site_123&from=2026-08-01&to=2026-08-31
+GET /api/v1/analytics?siteId=site_123&from=2026-08-01&to=2026-08-31&page=1&perPage=20
 ```
+
+Responseは他の一覧APIと同じ `{ data, meta }` の形とし、`meta` に
+`page` / `perPage` / `total` を持つ（§33）。
+
+### 20.1 単一リソース取得（`GET /{id}`）を提供しない理由
+
+**AnalyticsにはリソースIDが存在しない。**
+
+Analyticsが保持するのは個々のレコードではなく、
+**「どのサイトの・いつの・どの出所の・どの指標か」で一意に定まる集計値**である。
+保存の単位は `(siteId, metricDate, source, metric)` の組であり、
+これ以外に1件を指す識別子を持たない。
+
+ここへ人工的なIDを与えると、次のどちらかになる。
+
+1. 集計をやり直すたびにIDが変わる。
+   Analyticsの集計は**再実行できること**（同じ期間を何度集計しても同じ結果になること）を
+   前提としており、再集計でIDが変わるならIDを保持する意味が無い。
+2. 集計値とIDの対応表を別に持つ。
+   集計値そのものより大きな管理対象が増え、参照する側に何の利点も無い。
+
+したがってAnalyticsは**集合として参照する**。
+1件だけが必要な場合も、期間・サイト・出所・指標による絞り込みで表現する。
+
+```text
+GET /api/v1/analytics?siteId=site_123&from=2026-08-01&to=2026-08-01&source=core
+```
+
+この決定は 2026-09-01 の改訂による（`改訂履歴.md` を参照）。
+Analytics以外の資源（Site / User / Campaign / SNS 等）は、
+これまでどおり `GET /{id}` を提供する。
 
 ---
 

@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import type { AnalyticsPoint } from '@/domain/analytics/analytics';
-import type { TopPath } from '@/infrastructure/analytics-repository';
+import type { TopPath } from '@/domain/analytics/analytics';
 import { Alert, Card, EmptyState, Table, type Column } from '@/ui/components';
 
 /**

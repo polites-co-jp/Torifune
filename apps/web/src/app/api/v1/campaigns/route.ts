@@ -4,7 +4,9 @@ import { createdResponse, pageResponse } from '@/api/response';
 import { defineRoute } from '@/api/route';
 import {
   CAMPAIGN_SORT_FIELDS,
+  campaignEnvelopeSchema,
   campaignListQuerySchema,
+  campaignPageSchema,
   createCampaignSchema,
   toCampaignResponse,
 } from '@/api/schemas/campaign';
@@ -18,6 +20,7 @@ export const GET = defineRoute({
   summary: 'キャンペーンの一覧を取得する',
   permission: 'campaign.read',
   query: campaignListQuerySchema,
+  response: campaignPageSchema,
   handler: async ({ context, query }) => {
     // 未許可の並び替えは例外になり、route.ts が 422 へ変換する。
     const sort = parseSort(query.sort, CAMPAIGN_SORT_FIELDS, DEFAULT_SORT);
@@ -47,6 +50,8 @@ export const POST = defineRoute({
   summary: 'キャンペーンを作成する',
   permission: 'campaign.write',
   body: createCampaignSchema,
+  response: campaignEnvelopeSchema,
+  successStatus: 201,
   handler: async ({ context, body }) => {
     const campaign = await createCampaign(context, {
       name: body.name,
@@ -55,6 +60,7 @@ export const POST = defineRoute({
       startsOn: body.startsOn,
       endsOn: body.endsOn ?? null,
       siteIds: body.siteIds,
+      socialPostIds: body.socialPostIds,
     });
     return createdResponse(toCampaignResponse(campaign));
   },

@@ -8,6 +8,7 @@
  * 独自の色や余白を持ち込むと、画面全体の統一感が崩れる
  * （`docs/仕様書/06_画面設計.md` §32）。
  */
+import { AUTHORIZATION_START_PATH } from '@torifune/plugin-api';
 
 /** Torifune の Card に寄せた枠。 */
 export function Panel({
@@ -86,12 +87,35 @@ export function ExampleSettingsTab() {
   );
 }
 
-/** ログイン画面へ差し込む追加のログイン手段（`login.methods`）。 */
+/**
+ * ログイン画面へ差し込む追加のログイン手段（`login.methods`）。
+ *
+ * `06_画面設計.md` §5 の `[ Googleでログイン ] [ SSOでログイン ]` にあたる。
+ *
+ * **リンク1つでよい。** 押すと Torifune の認可開始の口へ入り、
+ * そこから Provider の `startAuthorization()` が呼ばれる。
+ * **パスを直書きしない。** `AUTHORIZATION_START_PATH` を使う。
+ *
+ * この部品は認証前の画面に描かれるため、**Data API は渡らない**
+ * （`docs/Plugin開発ガイド.md` §3）。
+ */
 export function ExampleLoginMethod() {
   return (
-    <p style={{ margin: 0 }} data-testid="example-login-method">
-      サンプルPluginのログイン手段（実際には何もしません）
-    </p>
+    <a
+      href={AUTHORIZATION_START_PATH}
+      data-testid="example-login-method"
+      style={{
+        display: 'block',
+        padding: 'var(--tf-space-2) var(--tf-space-3)',
+        border: '1px solid var(--tf-color-border)',
+        borderRadius: 'var(--tf-radius-md)',
+        color: 'var(--tf-color-primary)',
+        textAlign: 'center',
+        textDecoration: 'none',
+      }}
+    >
+      サンプルPluginでログイン
+    </a>
   );
 }
 

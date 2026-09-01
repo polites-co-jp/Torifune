@@ -2,6 +2,7 @@ import { toPublicUser } from '@/authentication/identity';
 import { requireAuthenticated } from '@/application/authorization/authorize';
 import { defineRoute } from '@/api/route';
 import { dataResponse } from '@/api/response';
+import { currentUserEnvelopeSchema } from '@/api/schemas/auth';
 
 export const GET = defineRoute({
   operationId: 'getCurrentUser',
@@ -10,6 +11,7 @@ export const GET = defineRoute({
   summary: '現在ログインしているユーザーを取得する',
   permission: null,
   reason: '認証状態そのものを返す処理。未認証なら 401 を返す',
+  response: currentUserEnvelopeSchema,
   handler: async ({ context }) => {
     const identity = requireAuthenticated(context);
 

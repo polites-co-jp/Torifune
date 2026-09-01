@@ -148,5 +148,20 @@ export function buildPluginContext(deps: BuildContextDeps): PluginContext {
     ui,
     events,
     logger: createPluginLogger(pluginId),
+
+    // **認証前は null。** `login.methods` はログイン画面で描かれるため、
+    // ここを null にできないとログイン画面が落ちる。
+    //
+    // **メールアドレスを渡さない。** 表示に要らず、出せば漏洩の面が増える
+    // （`PluginUserView` と同じ方針）。
+    currentUser:
+      authorization.identity === null
+        ? null
+        : {
+            userId: authorization.identity.userId,
+            loginId: authorization.identity.loginId,
+            displayName: authorization.identity.displayName,
+            permissions: [...authorization.permissions],
+          },
   };
 }

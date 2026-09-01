@@ -1,13 +1,14 @@
 /**
  * イベントの発火（03_プラグイン設計.md §6）。
  *
- * 購読側は `011-plugin-runtime` で繋ぐ。ここでは**発火の口だけ**を用意する。
+ * 購読側は `plugin/context.ts` が繋ぐ。ここは**発火の口**。
  *
  * **ハンドラの失敗が発火元を巻き込まない。**
  * Plugin の不具合で本体の処理が失敗すると、Plugin を入れた瞬間に
  * サイトが作れなくなる、という壊れ方をする。
  */
 
+import { log } from '@/infrastructure/logging';
 import { processState } from '@/infrastructure/process-state';
 import { enqueueWebhookDeliveries } from './webhook/webhook-use-cases';
 
@@ -35,9 +36,15 @@ export async function emit(eventName: string, payload: unknown): Promise<void> {
   for (const handler of handlers.get(eventName) ?? []) {
     try {
       await handler(payload);
-    } catch {
+    } catch (error) {
       // 購読側の失敗は握る。発火元の処理を巻き込まない。
-      // 記録は 011-plugin-runtime で Plugin ごとのログへ回す。
+      //
+      // **ただし黙って捨てない。** 記録が無いと、Plugin のハンドラが
+      // 落ち続けていても誰も気づけず、「なぜか連携されない」だけが残る。
+      log.error('event handler failed', {
+        event: eventName,
+        reason: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 

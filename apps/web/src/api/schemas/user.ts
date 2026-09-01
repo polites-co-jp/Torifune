@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { UserWithRoles } from '@/application/user/user-use-cases';
 import { USER_STATUSES } from '@/domain/user';
+import { dataEnvelope, pageEnvelope } from './envelope';
 
 /**
  * User API の Zod スキーマ（05_API設計.md §15）。
@@ -57,6 +58,26 @@ export const updateUserSchema = z.object({
   roles: rolesSchema.optional(),
   csrfToken: z.string().optional(),
 });
+
+/**
+ * API が返す形（OpenAPI 用）。
+ *
+ * **`UserResponse` と同じ形にしておく。** `passwordHash` はどちらにも無い。
+ */
+export const userResponseSchema = z.object({
+  id: z.string(),
+  loginId: z.string(),
+  displayName: z.string(),
+  email: z.string(),
+  status: userStatusSchema,
+  roles: z.array(z.string()),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  lastLoginAt: z.string().nullable(),
+});
+
+export const userEnvelopeSchema = dataEnvelope(userResponseSchema);
+export const userPageSchema = pageEnvelope(userResponseSchema);
 
 /**
  * API が返す形。

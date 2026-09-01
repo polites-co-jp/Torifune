@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { SITE_NAME_MAX_LENGTH, SITE_STATUSES } from '@/domain/site/site';
+import { dataEnvelope, pageEnvelope } from './envelope';
 
 /**
  * Webサイト API の Zod スキーマ。
@@ -48,6 +49,24 @@ export const updateSiteSchema = z.object({
   status: siteStatusSchema.optional(),
   csrfToken: z.string().optional(),
 });
+
+/**
+ * API が返す形（OpenAPI 用）。
+ *
+ * **`SiteResponse` と同じ形にしておく。** 片方だけ増やすと仕様と実装がずれる。
+ */
+export const siteResponseSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  url: z.string(),
+  description: z.string(),
+  status: siteStatusSchema,
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+export const siteEnvelopeSchema = dataEnvelope(siteResponseSchema);
+export const sitePageSchema = pageEnvelope(siteResponseSchema);
 
 /** API が返す形。内部の項目をそのまま返さず、明示的に選ぶ。 */
 export interface SiteResponse {

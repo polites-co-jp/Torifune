@@ -5,6 +5,8 @@
  * 各ルートモジュールが評価されている必要がある。
  * Next.js は要求されたルートしか読み込まないので、ここでまとめて import する。
  */
+import '@/app/api/v1/auth/authorize/route';
+import '@/app/api/v1/auth/callback/route';
 import '@/app/api/v1/auth/csrf/route';
 import '@/app/api/v1/auth/login/route';
 import '@/app/api/v1/auth/logout/route';

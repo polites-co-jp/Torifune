@@ -210,6 +210,25 @@ describe('一覧', () => {
     expect(result.detected[0]?.permissions).toEqual(['site.read', 'seo-plugin.report.read']);
   });
 
+  /**
+   * 作者（03_プラグイン設計.md §11 §13）。
+   *
+   * **誰が作ったものかが分からないまま導入させない。**
+   * Manifest の任意項目なので、無ければ null を返す（後方互換）。
+   */
+  it('作者を返す。宣言が無ければ null', async () => {
+    discovery = discovered(
+      manifest('authored-plugin', { author: 'example.com' }),
+      manifest('anonymous-plugin'),
+    );
+
+    const result = await listPlugins(admin, undefined);
+
+    const byId = new Map(result.detected.map((plugin) => [plugin.id, plugin]));
+    expect(byId.get('authored-plugin')?.author).toBe('example.com');
+    expect(byId.get('anonymous-plugin')?.author).toBeNull();
+  });
+
   it('読み込めなかったものを黙って消さない', async () => {
     discovery = { plugins: [], problems: [{ pluginId: 'broken', message: 'id: 形式が不正' }] };
 

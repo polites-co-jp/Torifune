@@ -1,6 +1,6 @@
 import { defineRoute } from '@/api/route';
 import { dataResponse } from '@/api/response';
-import { roleRepository } from '@/infrastructure/role-repository';
+import { listRoles } from '@/application/authorization/role-use-cases';
 
 export const GET = defineRoute({
   operationId: 'listRoles',
@@ -9,7 +9,7 @@ export const GET = defineRoute({
   summary: 'ロール一覧を取得する',
   permission: 'user.manage',
   handler: async ({ context }) => {
-    const roles = await roleRepository.list(context.connection);
+    const roles = await listRoles(context, {});
     return dataResponse(roles);
   },
 });

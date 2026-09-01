@@ -79,12 +79,37 @@ export interface SocialPost {
   readonly scheduledAt: Date | null;
   readonly status: PostStatus;
   readonly publishedAt: Date | null;
+  /**
+   * 配信に失敗した時刻。
+   *
+   * **`updatedAt` で代用しない。** あれは「最後に触った時刻」であって
+   * 「失敗した時刻」ではない。履歴を結果の時系列で並べるには別に要る。
+   */
+  readonly failedAt: Date | null;
   readonly failureReason: string | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }
 
+/**
+ * 配信結果が確定した状態（06_画面設計.md §13「履歴」）。
+ *
+ * **試行履歴のテーブルは作らない。** この2つは終端で、
+ * 1つの投稿が持つ配信結果は高々1つ。履歴とは
+ * 「結果が確定した投稿の一覧」である（026-screen-completion 設計 §4.3）。
+ */
+export const DELIVERED_STATUSES: readonly PostStatus[] = ['published', 'failed'];
+
 export const POST_BODY_MAX_LENGTH = 10_000;
+
+/**
+ * 失敗理由の長さの上限。
+ *
+ * 外部サービスの応答をそのまま渡す使い方が想定されるため、
+ * **長さで弾かずに切り詰める**（`normalizeFailureReason`）。
+ * 長かっただけで失敗の記録が残らないほうが困る。
+ */
+export const FAILURE_REASON_MAX_LENGTH = 2000;
 
 export function isValidPostBody(value: string): boolean {
   return value.trim() !== '' && value.length <= POST_BODY_MAX_LENGTH;

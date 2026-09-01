@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
+import { useState, type FormEvent, type ReactNode } from 'react';
 import { apiRequest } from '@/ui/client/api-client';
 import { Alert, Button, FormField, Input, Select, Textarea } from '@/ui/components';
 
@@ -22,9 +22,17 @@ export interface SiteFormProps {
   readonly initial: SiteFormValues;
   /** 新規なら undefined。 */
   readonly siteId?: string;
+  /**
+   * フォームの脇に出すもの（`site.edit.sidebar` の描画結果）。
+   *
+   * **ここは Client Component なので、拡張点を自分で描けない。**
+   * Server Component 側で描いたものを受け取る。
+   * 渡されなければ脇の欄そのものを作らず、フォームを全幅にする。
+   */
+  readonly sidebar?: ReactNode;
 }
 
-export function SiteForm({ title, initial, siteId }: SiteFormProps) {
+export function SiteForm({ title, initial, siteId, sidebar }: SiteFormProps) {
   const [message, setMessage] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, readonly string[]>>({});
   const [busy, setBusy] = useState(false);
@@ -71,7 +79,10 @@ export function SiteForm({ title, initial, siteId }: SiteFormProps) {
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: '1fr var(--tf-size-form)',
+          // **脇に出すものが無ければ2カラムにしない。**
+          // 常に2カラムにしていたため、Plugin が何も足していない環境でも
+          // フォームが半分の幅に押し込まれ、右は空のままだった。
+          gridTemplateColumns: sidebar === undefined ? '1fr' : '1fr var(--tf-size-form)',
           gap: 'var(--tf-space-6)',
         }}
       >
@@ -124,13 +135,8 @@ export function SiteForm({ title, initial, siteId }: SiteFormProps) {
           </div>
         </form>
 
-        <aside>
-          {/*
-            Plugin の Extension Point（site.edit.sidebar）用の位置を確保しておく。
-            デザインを詰めるときに消えないよう、先に枠を置く。
-            実装は 011-plugin-runtime。
-          */}
-        </aside>
+        {/* Plugin が編集画面の脇に足した欄（06_画面設計.md §26）。 */}
+        {sidebar !== undefined && <aside>{sidebar}</aside>}
       </div>
     </>
   );

@@ -6,7 +6,7 @@ import type { PermissionName } from '@/domain/permission';
  * 各項目に必要な Permission を持たせる。持たないユーザーには表示しない。
  * **ただしそれは認可ではない。** サーバー側で必ず検証する（同 §29-30）。
  *
- * Plugin からの項目追加は `011-plugin-runtime` でここへ繋ぐ。
+ * Plugin からの項目追加は `app-shell.tsx` が `collectMenus` を呼んで合流させる。
  */
 
 export interface NavigationItem {

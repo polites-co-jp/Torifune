@@ -13,6 +13,7 @@ export type { PluginApiVersion } from './version';
 
 export {
   PLUGIN_EXTENSION_KINDS,
+  RESERVED_PLUGIN_IDS,
   isValidPluginId,
   isValidPluginVersion,
   validateManifest,
@@ -27,7 +28,7 @@ export type {
 export { MAX_VALUE_BYTES, PluginStoreError, STORE_KEY_PATTERN, isValidStoreKey } from './store';
 export type { PluginStore } from './store';
 
-export { CORE_EXTENSION_POINTS } from './ui';
+export { CORE_ACTION_RESOURCES, CORE_EXTENSION_POINTS } from './ui';
 export type {
   ActionRegistration,
   ExtensionPointRegistration,
@@ -69,11 +70,15 @@ export type {
   UserView,
 } from './data';
 
+export { AUTHORIZATION_CALLBACK_PATH, AUTHORIZATION_START_PATH } from './authentication';
 export type {
   PluginAuthenticationApi,
   PluginAuthenticationContext,
   PluginAuthenticationProvider,
   PluginAuthenticationResult,
+  PluginAuthorizationCallback,
+  PluginAuthorizationStart,
+  PluginAuthorizationStartContext,
   PluginCredentials,
   PluginUserIdentity,
 } from './authentication';
@@ -85,6 +90,6 @@ export type {
   PluginDatabaseProvider,
 } from './database';
 
-export type { Plugin, PluginContext, PluginLogger } from './context';
+export type { Plugin, PluginContext, PluginCurrentUser, PluginLogger } from './context';
 
 export { PluginScopeError, pluginClassName, pluginScope } from './scope';

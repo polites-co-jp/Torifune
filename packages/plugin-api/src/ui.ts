@@ -4,7 +4,7 @@
  * **Plugin は Torifune の共通 Component を利用する**（同 §32）。
  * 独自の見た目を持ち込むと、画面全体の統一感が崩れる。
  *
- * 型だけをここに置く。実装は `011-plugin-runtime`。
+ * 型だけをここに置く。描画は本体側（`apps/web/src/ui/plugin/`）。
  */
 
 /** React のコンポーネントを、React に依存せずに表す。 */
@@ -46,7 +46,28 @@ export interface ActionRegistration {
   readonly label: string;
   readonly component: PluginComponent;
   readonly permission?: string;
+  /**
+   * 対象リソース（06_画面設計.md §26「Actionは、対象リソースとPermissionを定義する」）。
+   *
+   * `'site'` `'campaign'` `'social_post'` など。Core が扱う名前は
+   * `CORE_ACTION_RESOURCES` にあるが、**閉じた集合ではない。**
+   * Plugin は自分のリソースに対する Action を登録できる。
+   *
+   * **任意項目。** 必須にすると既存の登録がすべて壊れる。
+   * 省略した Action は「リソースを問わない」として扱い、
+   * リソースで絞り込む場面でも落とさない。
+   */
+  readonly resource?: string;
 }
+
+/**
+ * Core が扱うリソース名（`ActionRegistration.resource` の参考値）。
+ *
+ * **列挙で縛らない。** `CORE_EXTENSION_POINTS` と同じ理由で、
+ * Plugin は自分のリソース名を使える。ここにあるのは
+ * 「本体の画面で描かれる Action が対象にするもの」の一覧。
+ */
+export const CORE_ACTION_RESOURCES = ['site', 'campaign', 'social_account', 'social_post'] as const;
 
 export interface ExtensionPointRegistration {
   /** 差し込む先の Extension Point 名。 */
@@ -78,6 +99,8 @@ export const CORE_EXTENSION_POINTS = [
   'site.list.actions',
   'social.edit.sidebar',
   'social.list.actions',
+  'campaign.edit.sidebar',
+  'campaign.list.actions',
   'settings.tabs',
   'login.methods',
 ] as const;

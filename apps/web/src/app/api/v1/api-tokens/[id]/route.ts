@@ -10,6 +10,7 @@ export const DELETE = defineRoute({
   summary: 'API Token を失効させる',
   permission: 'token.manage',
   body: z.object({ csrfToken: z.string().optional() }).optional(),
+  successStatus: 204,
   // 失効も Token 経由では許さない。自分自身を延命・整理できると、
   // 盗まれた Token で「別の Token を消して痕跡を減らす」ことができてしまう。
   sessionOnly: true,

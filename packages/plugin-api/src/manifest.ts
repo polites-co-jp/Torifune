@@ -43,12 +43,27 @@ export type PluginExtensionKind = (typeof PLUGIN_EXTENSION_KINDS)[number];
  */
 const PLUGIN_ID_PATTERN = /^[a-z][a-z0-9-]{1,63}$/;
 
+/**
+ * Core が `/api/v1/plugins/` の直下で使っている名前。**Plugin ID にできない。**
+ *
+ * Next.js は静的なセグメントを動的なセグメント（`[id]`）より先に解決する。
+ * そのため、ここにある名前を ID に持つ Plugin を入れると、
+ * その Plugin に対する有効化・無効化・設定・削除の経路が
+ * **すべて Core のルートに食われ、導入後に操作できなくなる。**
+ *
+ * 導入してから壊れるのではなく、導入しようとした時点で断る。
+ *
+ * **Core が `app/api/v1/plugins/` 直下へ静的ルートを足したら、ここへも足す。**
+ * 対応が破れていないことは `plugin-route-namespace.test.ts` が固定している。
+ */
+export const RESERVED_PLUGIN_IDS: readonly string[] = ['registry', 'package', 'operations'];
+
 /** Semantic Versioning（プレリリース・ビルドメタデータを含む）。 */
 const SEMVER_PATTERN =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
 export function isValidPluginId(value: string): boolean {
-  return PLUGIN_ID_PATTERN.test(value);
+  return PLUGIN_ID_PATTERN.test(value) && !RESERVED_PLUGIN_IDS.includes(value);
 }
 
 export function isValidPluginVersion(value: string): boolean {
@@ -86,7 +101,14 @@ export function validateManifest(
   const raw = input as Record<string, unknown>;
 
   const id = raw['id'];
-  if (typeof id !== 'string' || !isValidPluginId(id)) {
+  if (typeof id === 'string' && RESERVED_PLUGIN_IDS.includes(id)) {
+    // **形式の話にしない。** 形は正しいのに弾かれるので、
+    // 「英小文字・数字・ハイフンで」と返されても作者は直しようがない。
+    problems.push({
+      field: 'id',
+      message: `\`${id}\` は Core が使っている名前のため Plugin ID にできない（予約語: ${RESERVED_PLUGIN_IDS.join(', ')}）`,
+    });
+  } else if (typeof id !== 'string' || !isValidPluginId(id)) {
     problems.push({
       field: 'id',
       message: '英小文字・数字・ハイフンで、2〜64文字。先頭は英小文字',

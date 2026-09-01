@@ -103,6 +103,62 @@ test('アクセスを集めて集計し、画面で見られる', async ({ page,
   await expect(page.getByText('/pricing')).toBeVisible();
 });
 
+/**
+ * Pagination（05_API設計.md §20・§33）。
+ *
+ * **`GET /analytics/{id}` は無い。** analytics は
+ * `(site_id, metric_date, source, metric)` の複合キーで保存する集計値の集合で、
+ * 単一リソースを指す id が存在しない（仕様書 §20 / `改訂履歴.md` 2026-09-01）。
+ */
+test('一覧が他の一覧 API と同じ meta を返す', async ({ request }) => {
+  const response = await request.get(`/api/v1/analytics?from=${today()}&to=${today()}`);
+  expect(response.status()).toBe(200);
+
+  const body = (await response.json()) as {
+    data: unknown[];
+    meta: { page: number; perPage: number; total: number };
+  };
+
+  expect(Object.keys(body).sort()).toEqual(['data', 'meta']);
+  expect(body.meta.page).toBe(1);
+  expect(body.meta.perPage).toBe(20);
+  expect(typeof body.meta.total).toBe('number');
+});
+
+test('page と perPage を指定できる', async ({ request }) => {
+  const response = await request.get(
+    `/api/v1/analytics?from=${today()}&to=${today()}&page=2&perPage=5`,
+  );
+
+  const body = (await response.json()) as { meta: { page: number; perPage: number } };
+  expect(body.meta).toMatchObject({ page: 2, perPage: 5 });
+});
+
+test('perPage は上限で丸める', async ({ request }) => {
+  const response = await request.get(
+    `/api/v1/analytics?from=${today()}&to=${today()}&perPage=10000`,
+  );
+
+  const body = (await response.json()) as { meta: { perPage: number } };
+  expect(body.meta.perPage).toBe(100);
+});
+
+test('旧名の limit も受け付ける', async ({ request }) => {
+  // §41（後方互換）。既に limit を送っているクライアントを黙って壊さない。
+  const response = await request.get(
+    `/api/v1/analytics?from=${today()}&to=${today()}&kind=topPaths&limit=5`,
+  );
+
+  const body = (await response.json()) as { meta: { perPage: number } };
+  expect(body.meta.perPage).toBe(5);
+});
+
+test('存在しない ID での取得は用意していない', async ({ request }) => {
+  // 単一リソースの id が無いので、この経路は Next.js のルートとして存在しない。
+  const response = await request.get('/api/v1/analytics/anything');
+  expect(response.status()).toBe(404);
+});
+
 test('期間が逆転していれば 422', async ({ request }) => {
   const response = await request.get('/api/v1/analytics?from=2026-05-01&to=2026-04-01');
   expect(response.status()).toBe(422);

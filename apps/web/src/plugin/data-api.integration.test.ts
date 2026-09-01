@@ -79,6 +79,8 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await withConnection(async (connection) => {
+    await connection.db.deleteFrom('campaigns').execute();
+    await connection.db.deleteFrom('analytics').execute();
     await connection.db.deleteFrom('sites').execute();
     await connection.db.deleteFrom('social_accounts').execute();
     await connection.db.deleteFrom('users').execute();
@@ -229,6 +231,160 @@ describe('SNS', () => {
     const api = apiFor([]);
 
     await expect(api.socialAccounts.list()).rejects.toThrowError(PluginPermissionError);
+  });
+});
+
+describe('Campaigns', () => {
+  it('作成・取得・更新・削除ができる', async () => {
+    const api = apiFor(['campaign.read', 'campaign.write', 'campaign.delete']);
+
+    const created = await api.campaigns.create({
+      name: '春の施策',
+      startsOn: '2026-03-01',
+      endsOn: '2026-03-31',
+    });
+    expect(created.name).toBe('春の施策');
+
+    expect(await api.campaigns.get(created.id)).toMatchObject({ id: created.id });
+
+    const updated = await api.campaigns.update(created.id, { name: '春の施策（改）' });
+    expect(updated.name).toBe('春の施策（改）');
+
+    await api.campaigns.delete(created.id);
+    expect(await api.campaigns.get(created.id)).toBeNull();
+  });
+
+  it('宣言していなければ読めない', async () => {
+    await expect(apiFor([]).campaigns.list()).rejects.toThrowError(PluginPermissionError);
+  });
+
+  it('読み取りを宣言しても書き込みはできない', async () => {
+    const api = apiFor(['campaign.read']);
+
+    await expect(
+      api.campaigns.create({ name: 'x', startsOn: '2026-03-01', endsOn: '2026-03-31' }),
+    ).rejects.toThrowError(PluginPermissionError);
+  });
+
+  it('無い ID は null（例外にしない）', async () => {
+    const api = apiFor(['campaign.read']);
+
+    expect(await api.campaigns.get(uuidv7())).toBeNull();
+  });
+});
+
+describe('Analytics', () => {
+  it('取り込んだ値を書き、読み返せる', async () => {
+    const api = apiFor(['site.read', 'site.write', 'analytics.read']);
+    const site = await api.sites.create({ name: 'x', url: 'https://example.com' });
+
+    await api.analytics.record({
+      siteId: site.id,
+      metricDate: '2026-03-01',
+      metric: 'pageviews',
+      value: 42,
+    });
+
+    const points = await api.analytics.list({
+      siteId: site.id,
+      from: '2026-03-01',
+      to: '2026-03-01',
+    });
+
+    expect(points).toHaveLength(1);
+    expect(points[0]).toMatchObject({ metric: 'pageviews', value: 42 });
+  });
+
+  /**
+   * **出所を名乗らせない。** 名乗れると、Plugin が外部から取り込んだ値を
+   * 本体自身の集計として画面に出せてしまう。
+   */
+  it('書き込んだ値の出所は Plugin ID になり、core を名乗れない', async () => {
+    const api = apiFor(['site.read', 'site.write', 'analytics.read']);
+    const site = await api.sites.create({ name: 'x', url: 'https://example.com' });
+
+    // **出所を指定する口が型に無い。** 型で塞いだうえで、
+    // 実行時に渡しても無視されることを確かめる（型は実行時には残らない）。
+    const forged = {
+      siteId: site.id,
+      metricDate: '2026-03-02',
+      metric: 'pageviews',
+      value: 7,
+      source: 'core',
+    } as unknown as Parameters<typeof api.analytics.record>[0];
+
+    await api.analytics.record(forged);
+
+    const points = await api.analytics.list({
+      siteId: site.id,
+      from: '2026-03-02',
+      to: '2026-03-02',
+    });
+
+    expect(points[0]).toMatchObject({ source: 'seo-plugin' });
+    expect(points.some((point) => point.source === 'core')).toBe(false);
+  });
+
+  it('宣言していなければ読めない', async () => {
+    await expect(
+      apiFor([]).analytics.list({ from: '2026-03-01', to: '2026-03-01' }),
+    ).rejects.toThrowError(PluginPermissionError);
+  });
+
+  it('宣言していなければ書けない', async () => {
+    await expect(
+      apiFor([]).analytics.record({
+        siteId: uuidv7(),
+        metricDate: '2026-03-01',
+        metric: 'pageviews',
+        value: 1,
+      }),
+    ).rejects.toThrowError(PluginPermissionError);
+  });
+});
+
+describe('Users', () => {
+  it('user.manage を宣言していれば読める', async () => {
+    const api = apiFor(['user.manage']);
+
+    const page = await api.users.list();
+    expect(page.total).toBeGreaterThan(0);
+  });
+
+  it('宣言していなければ読めない', async () => {
+    await expect(apiFor([]).users.list()).rejects.toThrowError(PluginPermissionError);
+  });
+
+  /**
+   * **Plugin へ渡す型に `passwordHash` と `email` を入れていない**（`data.ts` の注記）。
+   * 型で防いでいても、実装が生の行をそのまま返せば漏れる。実際の値で確かめる。
+   */
+  it('パスワードハッシュとメールアドレスを渡さない', async () => {
+    const api = apiFor(['user.manage']);
+
+    const page = await api.users.list();
+    const json = JSON.stringify(page);
+
+    expect(json).not.toContain('passwordHash');
+    expect(json).not.toContain('password_hash');
+    expect(json).not.toContain('@example.com');
+    // 表示に要るものは残っている。
+    expect(Object.keys(page.items[0] ?? {})).toContain('displayName');
+  });
+
+  it('ユーザーを作る・消す口が無い', () => {
+    const api = apiFor(['user.manage']);
+
+    // Plugin の導入がそのまま管理者の追加になりうるため、読み取りだけにしている。
+    expect((api.users as Record<string, unknown>)['create']).toBeUndefined();
+    expect((api.users as Record<string, unknown>)['delete']).toBeUndefined();
+    expect((api.users as Record<string, unknown>)['update']).toBeUndefined();
+  });
+
+  it('無い ID は null（例外にしない）', async () => {
+    const api = apiFor(['user.manage']);
+
+    expect(await api.users.get(uuidv7())).toBeNull();
   });
 });
 

@@ -1,6 +1,9 @@
 import type {
   PluginAuthenticationProvider,
   PluginAuthenticationResult,
+  PluginAuthorizationCallback,
+  PluginAuthorizationStart,
+  PluginAuthorizationStartContext,
   PluginCredentials,
   PluginLogger,
 } from '@torifune/plugin-api';
@@ -16,7 +19,26 @@ import type {
  * **セッションは Torifune が発行する。** Provider が返すのは「誰か」まで。
  * `userId` は Torifune に実在するユーザーの ID でなければならず、
  * 実在しなければログインは資格情報の誤りとして扱われる。
+ *
+ * この Provider は2つの方式を同時に見せている。
+ *
+ * 1. `authenticate()` — 合言葉による直接認証（往復なし）
+ * 2. `startAuthorization()` / `completeAuthorization()` — リダイレクト往復
+ *
+ * **2 は外部サービスへ繋がない。** 認可エンドポイントの代わりに
+ * Torifune のコールバックへそのまま戻る URL を返す（0ホップの IdP）。
+ * 短絡しているのは「外部 Provider が居るかどうか」だけで、
+ * ブラウザの往復・State の発行と照合と使い捨て・セッション発行は
+ * **本番と同じ経路を通る。**
  */
+
+/**
+ * ダミーの Authorization Code。
+ *
+ * 本物ではここが外部 Provider の発行した使い捨てコードになり、
+ * `completeAuthorization` で Token Exchange に使う。
+ */
+const DUMMY_AUTHORIZATION_CODE = 'example-authorization-code';
 
 export interface DummyAuthenticationOptions {
   readonly logger: PluginLogger;
@@ -51,6 +73,57 @@ export function createDummyAuthenticationProvider(
           email: '',
           providerId: 'example-plugin.dummy',
           externalUserId: `external:${credentials.loginId}`,
+        },
+      };
+    },
+
+    async startAuthorization(
+      context: PluginAuthorizationStartContext,
+    ): Promise<PluginAuthorizationStart> {
+      // 本物はここで認可エンドポイントの URL を組み立てる。
+      //
+      //   https://idp.example/authorize
+      //     ?response_type=code&client_id=…&scope=openid%20profile
+      //     &redirect_uri=<context.redirectUri>
+      //     &state=<context.state>&nonce=<context.nonce>
+      //
+      // **state / nonce / redirect_uri は自分で作らない。** Torifune が渡したものを使う。
+      // ここではその外部 Provider を省き、コールバックへ直接戻る URL を返す。
+      const url = new URL(context.redirectUri);
+      url.searchParams.set('state', context.state);
+      url.searchParams.set('code', DUMMY_AUTHORIZATION_CODE);
+
+      logger.info('認可へ誘導した');
+      return { ok: true, authorizationUrl: url.toString() };
+    },
+
+    async completeAuthorization(
+      callback: PluginAuthorizationCallback,
+    ): Promise<PluginAuthenticationResult> {
+      // 本物はここで
+      //   1. Authorization Code を Token Exchange して ID Token を得る
+      //   2. iss / aud / exp / 署名 / 必要な Claim を検証する（04_認証設計.md §23）
+      //   3. ID Token の nonce Claim が callback.nonce と一致することを確かめる
+      //   4. sub（外部ユーザーID）から Torifune のユーザーを引く
+      // を行う。
+      //
+      // **state の照合は Torifune が済ませてある。** ここでやり直さない。
+      if (callback.params['code'] !== DUMMY_AUTHORIZATION_CODE) {
+        // **失敗の理由を分けない。** authenticate() と同じ扱い。
+        logger.info('コールバックの検証に失敗した');
+        return { ok: false, reason: 'invalid_credentials' };
+      }
+
+      logger.info('コールバックの検証に成功した');
+      return {
+        ok: true,
+        identity: {
+          userId,
+          loginId: 'example-sso',
+          displayName: 'example-sso',
+          email: '',
+          providerId: 'example-plugin.dummy',
+          externalUserId: 'external:example-sso',
         },
       };
     },

@@ -54,6 +54,7 @@ export default async function CampaignsPage({
           startsOn: campaign.startsOn,
           endsOn: campaign.endsOn,
           siteCount: campaign.siteIds.length,
+          postCount: campaign.socialPostIds.length,
         }))}
         total={result.total}
         page={page}

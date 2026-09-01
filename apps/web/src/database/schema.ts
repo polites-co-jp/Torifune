@@ -149,6 +149,12 @@ export interface CampaignSitesTable {
   site_id: string;
 }
 
+/** キャンペーンとSNS投稿の関連（06_画面設計.md §14）。設計は docs/設計/026-screen-completion/。 */
+export interface CampaignSocialPostsTable {
+  campaign_id: string;
+  social_post_id: string;
+}
+
 /** アクセスの生ログ（02_データベース設計.md §5.8）。設計は docs/設計/018-analytics/。 */
 export interface AccessLogsTable {
   id: string;
@@ -191,6 +197,8 @@ export interface SocialPostsTable {
   status: Generated<string>;
   published_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   failure_reason: string | null;
+  /** 配信に失敗した時刻。`updated_at` は「最後に触った時刻」で代わりにならない。 */
+  failed_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   created_at: CreatedAt;
   updated_at: UpdatedAt;
 }
@@ -266,6 +274,19 @@ export interface PasswordResetTokensTable {
   created_at: CreatedAt;
 }
 
+/** リダイレクト型認証の State（`migrations/017_authorization_states.sql`）。 */
+export interface AuthAuthorizationStatesTable {
+  id: string;
+  state_hash: string;
+  nonce: string;
+  provider_id: string;
+  redirect_uri: string;
+  return_to: Generated<string>;
+  expires_at: ColumnType<Date, Date | string, Date | string>;
+  used_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  created_at: CreatedAt;
+}
+
 export interface LoginAttemptsTable {
   id: string;
   /** 'ip:1.2.3.4' / 'login:alice' の形式。 */
@@ -286,6 +307,7 @@ export interface Schema {
   sites: SitesTable;
   campaigns: CampaignsTable;
   campaign_sites: CampaignSitesTable;
+  campaign_social_posts: CampaignSocialPostsTable;
   access_logs: AccessLogsTable;
   analytics: AnalyticsTable;
   social_accounts: SocialAccountsTable;
@@ -305,6 +327,7 @@ export interface Schema {
   webhooks: WebhooksTable;
   webhook_deliveries: WebhookDeliveriesTable;
   password_reset_tokens: PasswordResetTokensTable;
+  auth_authorization_states: AuthAuthorizationStatesTable;
   login_attempts: LoginAttemptsTable;
   schema_migrations: SchemaMigrationsTable;
 }

@@ -9,6 +9,7 @@ export interface NewCampaign {
   readonly startsOn: string;
   readonly endsOn: string | null;
   readonly siteIds: readonly string[];
+  readonly socialPostIds: readonly string[];
   readonly createdBy: string | null;
 }
 
@@ -24,6 +25,8 @@ export interface CampaignUpdate {
    * 差分で受け取ると「消す」を表現できない。
    */
   readonly siteIds?: readonly string[] | undefined;
+  /** 紐づくSNS投稿。**指定したら丸ごと置き換える**（`siteIds` と同じ）。 */
+  readonly socialPostIds?: readonly string[] | undefined;
 }
 
 export interface CampaignListQuery {

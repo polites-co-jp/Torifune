@@ -1,4 +1,4 @@
-import type { Expression, ExpressionBuilder, SqlBool } from 'kysely';
+import { sql, type Expression, type ExpressionBuilder, type SqlBool } from 'kysely';
 import type { Connection } from '../database/provider';
 import type { Schema } from '../database/schema';
 import { decryptSecret } from './crypto/cipher';
@@ -71,6 +71,7 @@ interface PostRow {
   scheduled_at: Date | null;
   status: string;
   published_at: Date | null;
+  failed_at: Date | null;
   failure_reason: string | null;
   created_at: Date;
   updated_at: Date;
@@ -84,6 +85,7 @@ function toPost(row: PostRow): SocialPost {
     scheduledAt: row.scheduled_at,
     status: row.status as PostStatus,
     publishedAt: row.published_at,
+    failedAt: row.failed_at,
     failureReason: row.failure_reason,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -97,10 +99,20 @@ const POST_COLUMNS = [
   'scheduled_at',
   'status',
   'published_at',
+  'failed_at',
   'failure_reason',
   'created_at',
   'updated_at',
 ] as const;
+
+/**
+ * 配信結果が確定した時刻。
+ *
+ * `failed_at` はこの列を足す前の行では空。**遡って埋めない**（無かった記録を
+ * 後から作らない）ので、読み出し側で `updated_at` まで落とす。
+ * `018_campaign_social_posts.sql` の部分索引と同じ式にそろえてある。
+ */
+const DELIVERED_AT = sql<Date>`COALESCE(published_at, failed_at, updated_at)`;
 
 export const socialRepository: SocialRepository = {
   async listAccounts(
@@ -226,17 +238,24 @@ export const socialRepository: SocialRepository = {
       if (query.socialAccountId !== null && UUID_PATTERN.test(query.socialAccountId)) {
         list.push(eb('social_account_id', '=', query.socialAccountId));
       }
-      if (query.status !== null) {
-        list.push(eb('status', '=', query.status));
+      if (query.statuses.length > 0) {
+        list.push(eb('status', 'in', [...query.statuses]));
       }
       return list;
     };
 
-    const rows = await connection.db
+    let rowsQuery = connection.db
       .selectFrom('social_posts')
       .select(POST_COLUMNS)
-      .where((eb) => eb.and(conditions(eb)))
-      .orderBy('created_at', 'desc')
+      .where((eb) => eb.and(conditions(eb)));
+
+    rowsQuery =
+      query.orderBy === 'delivered'
+        ? rowsQuery.orderBy(DELIVERED_AT, 'desc')
+        : rowsQuery.orderBy('created_at', 'desc');
+
+    const rows = await rowsQuery
+      // 並び順が同値のとき順序が揺れないよう、最後に id を足す。
       .orderBy('id', 'asc')
       .limit(query.perPage)
       .offset((query.page - 1) * query.perPage)
@@ -259,6 +278,27 @@ export const socialRepository: SocialRepository = {
       .where('id', '=', id)
       .executeTakeFirst();
     return row === undefined ? null : toPost(row as PostRow);
+  },
+
+  async findPostsByIds(
+    connection: Connection,
+    ids: readonly string[],
+  ): Promise<readonly SocialPost[]> {
+    // 形の壊れたIDは問い合わせる前に落とす。uuid 列との比較で例外になる。
+    const valid = [...new Set(ids)].filter((id) => UUID_PATTERN.test(id));
+    if (valid.length === 0) {
+      return [];
+    }
+
+    const rows = await connection.db
+      .selectFrom('social_posts')
+      .select(POST_COLUMNS)
+      .where('id', 'in', valid)
+      .orderBy('created_at', 'desc')
+      .orderBy('id', 'asc')
+      .execute();
+
+    return rows.map((row) => toPost(row as PostRow));
   },
 
   async insertPost(connection: Connection, post: NewSocialPost): Promise<SocialPost> {
@@ -288,6 +328,7 @@ export const socialRepository: SocialRepository = {
     if (patch.scheduledAt !== undefined) values['scheduled_at'] = patch.scheduledAt;
     if (patch.status !== undefined) values['status'] = patch.status;
     if (patch.publishedAt !== undefined) values['published_at'] = patch.publishedAt;
+    if (patch.failedAt !== undefined) values['failed_at'] = patch.failedAt;
     if (patch.failureReason !== undefined) values['failure_reason'] = patch.failureReason;
 
     const row = await connection.db

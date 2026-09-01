@@ -52,6 +52,36 @@ export interface PluginContext {
 
   /** ログ。**Secret を渡しても平文は出ない。** */
   readonly logger: PluginLogger;
+
+  /**
+   * いま操作している利用者（00_システム概要.md §8）。
+   *
+   * **認証前は `null`。** `login.methods` 拡張点はログイン画面で描かれるため、
+   * ここを `null` にできないとログイン画面が落ちる。
+   *
+   * **`data.users` では代わりにならない。** あちらは「誰が居るか」を引く口で、
+   * 「いま見ているのが誰か」は分からない。「誰がやったか」を出す Plugin に要る。
+   */
+  readonly currentUser: PluginCurrentUser | null;
+}
+
+/**
+ * Plugin へ渡す、いまの利用者。
+ *
+ * **メールアドレスとパスワードハッシュを型として持たせない。**
+ * 存在しなければ、うっかり足すこともできない（`PluginUserView` と同じ方針）。
+ */
+export interface PluginCurrentUser {
+  readonly userId: string;
+  readonly loginId: string;
+  readonly displayName: string;
+  /**
+   * この利用者が持つ Permission。
+   *
+   * **見せてよい。** Plugin が呼ぶ Data API はどのみちこの権限で絞られる。
+   * 先に分かれば、押しても 403 になるボタンを出さずに済む。
+   */
+  readonly permissions: readonly string[];
 }
 
 /**

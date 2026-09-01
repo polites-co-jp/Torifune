@@ -1,7 +1,9 @@
 import { listSites } from '@/application/site/site-use-cases';
+import { listSocialPosts } from '@/application/social/social-use-cases';
 import { CampaignForm } from '@/ui/campaign/campaign-form';
 import { AppShell } from '@/ui/layout/app-shell';
 import { requirePageSession } from '@/ui/server/page-session';
+import { postOptions } from '@/ui/campaign/post-options';
 import { AsyncState } from '@/ui/states/async-state';
 
 export const dynamic = 'force-dynamic';
@@ -33,11 +35,22 @@ export default async function NewCampaignPage() {
       })
     : { items: [], total: 0 };
 
+  // SNS投稿も同じ扱い。**social.read が無ければ選択肢を出さない。**
+  const posts = permissions.has('social.read')
+    ? await listSocialPosts(context, {
+        page: 1,
+        perPage: 100,
+        socialAccountId: null,
+        status: null,
+      })
+    : { items: [], total: 0 };
+
   return (
     <AppShell displayName={displayName} permissions={permissions}>
       <CampaignForm
         title="キャンペーンの新規作成"
         sites={sites.items.map((site) => ({ id: site.id, name: site.name }))}
+        socialPosts={postOptions(posts.items)}
         initial={{
           name: '',
           description: '',
@@ -45,6 +58,7 @@ export default async function NewCampaignPage() {
           startsOn: today(),
           endsOn: null,
           siteIds: [],
+          socialPostIds: [],
         }}
       />
     </AppShell>

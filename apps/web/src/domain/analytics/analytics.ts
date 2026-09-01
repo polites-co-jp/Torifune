@@ -63,3 +63,24 @@ export function rangeDays(from: string, to: string): number {
   const end = Date.parse(`${to}T00:00:00Z`);
   return Math.floor((end - start) / (24 * 60 * 60 * 1000)) + 1;
 }
+
+/**
+ * 参照用の読み取りモデル。
+ *
+ * **Infrastructure ではなく Domain に置く。** 画面が使う型なので、
+ * Infrastructure に置くと UI から Infrastructure を import することになり、
+ * レイヤの向きが崩れる（06_画面設計.md §3）。
+ */
+
+/** よく見られている経路。 */
+export interface TopPath {
+  readonly path: string;
+  readonly pageviews: number;
+}
+
+/** 計測タグを出すためのサイト。 */
+export interface TrackedSite {
+  readonly id: string;
+  readonly name: string;
+  readonly publicKey: string;
+}

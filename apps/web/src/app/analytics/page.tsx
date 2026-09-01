@@ -1,5 +1,8 @@
-import { listAnalytics, listTopPaths } from '@/application/analytics/analytics-use-cases';
-import { withConnection } from '@/application/transaction';
+import {
+  listAnalytics,
+  listTopPaths,
+  listTrackedSites,
+} from '@/application/analytics/analytics-use-cases';
 import { AnalyticsView } from '@/ui/analytics/analytics-view';
 import { AppShell } from '@/ui/layout/app-shell';
 import { requirePageSession } from '@/ui/server/page-session';
@@ -54,29 +57,15 @@ export default async function AnalyticsPage({
     listTopPaths(context, { ...range, limit: 20 }),
   ]);
 
-  // 計測タグを出すために公開キーが要る。Site の一覧 API は公開キーを返さないので、
-  // ここで直接引く（画面でしか使わない値をレスポンスへ載せない）。
-  const sites = permissions.has('site.read')
-    ? await withConnection((connection) =>
-        connection.db
-          .selectFrom('sites')
-          .select(['id', 'name', 'public_key'])
-          .orderBy('name')
-          .limit(200)
-          .execute(),
-      )
-    : [];
+  // 計測タグを出すために公開キーが要る（Site の一覧 API は公開キーを返さない）。
+  const sites = permissions.has('site.read') ? await listTrackedSites(context, {}) : [];
 
   return (
     <AppShell displayName={displayName} permissions={permissions}>
       <AnalyticsView
         points={points}
         topPaths={topPaths}
-        sites={sites.map((site) => ({
-          id: site.id,
-          name: site.name,
-          publicKey: site.public_key,
-        }))}
+        sites={sites}
         selectedSiteId={siteId}
         from={from}
         to={to}

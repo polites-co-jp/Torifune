@@ -5,6 +5,8 @@ import { NotFoundError, ValidationError } from '@/domain/repository';
 import type { Secret } from '@/domain/secret';
 import {
   canTransition,
+  DELIVERED_STATUSES,
+  FAILURE_REASON_MAX_LENGTH,
   isValidDisplayName,
   isValidPostBody,
   isValidProvider,
@@ -218,8 +220,57 @@ export const listSocialPosts = defineUseCase<ListPostsInput, SocialPostPage>({
       page: input.page,
       perPage: input.perPage,
       socialAccountId: input.socialAccountId,
-      status: input.status,
+      // 単一指定を配列へ畳む。`listCampaigns` と同じ形。
+      statuses: input.status === null ? [] : [input.status],
+      orderBy: 'created',
     }),
+});
+
+export interface ListPostHistoryInput {
+  readonly page: number;
+  readonly perPage: number;
+  /** 結果で絞る。null なら配信済みと失敗の両方。 */
+  readonly status: 'published' | 'failed' | null;
+}
+
+/**
+ * 配信履歴（06_画面設計.md §13「履歴」）。
+ *
+ * **試行履歴のテーブルは無い。** `published` / `failed` は終端状態で、
+ * 1つの投稿が持つ配信結果は高々1つ。「履歴」とは
+ * **配信結果が確定した投稿の一覧**である（026-screen-completion 設計 §4.3）。
+ *
+ * 並びは結果が確定した順。作成順ではない。
+ * 「いつ配信され、いつ失敗したか」を追うための画面なので、
+ * 作成順に並べると、古い投稿がいま失敗したことが下の方に埋もれる。
+ */
+export const listSocialPostHistory = defineUseCase<ListPostHistoryInput, SocialPostPage>({
+  name: 'social.post.history',
+  permission: 'social.read',
+  handler: async (context, input) =>
+    socialRepository.listPosts(context.connection, {
+      page: input.page,
+      perPage: input.perPage,
+      socialAccountId: null,
+      statuses: input.status === null ? DELIVERED_STATUSES : [input.status],
+      orderBy: 'delivered',
+    }),
+});
+
+/**
+ * IDでまとめて引く。
+ *
+ * キャンペーンに紐づく投稿のように「IDは判っている」場面で使う
+ * （026-screen-completion 設計 §3.3）。1件ずつ `getSocialPost` を呼ぶと
+ * 件数分の往復になる。
+ */
+export const listSocialPostsByIds = defineUseCase<
+  { ids: readonly string[] },
+  readonly SocialPost[]
+>({
+  name: 'social.post.listByIds',
+  permission: 'social.read',
+  handler: async (context, input) => socialRepository.findPostsByIds(context.connection, input.ids),
 });
 
 export const getSocialPost = defineUseCase<{ id: string }, SocialPost>({
@@ -290,6 +341,32 @@ export interface UpdatePostInput {
   readonly body?: string | undefined;
   readonly scheduledAt?: Date | null | undefined;
   readonly status?: PostStatus | undefined;
+  /**
+   * 配信に失敗した理由。
+   *
+   * **これが無かったため、`data.socialPosts.markFailed(id, reason)` が
+   * 受け取った理由はどこにも保存されていなかった。**
+   * 画面に「失敗」とだけ出て、理由が分からない状態になっていた。
+   */
+  readonly failureReason?: string | null | undefined;
+}
+
+/**
+ * 失敗理由を保存できる形にそろえる。
+ *
+ * **長さで例外にしない。** 外部サービスの応答をそのまま渡す使い方が
+ * 想定される場所であり、長かっただけで「失敗の記録が残らない」ほうが困る。
+ * 空文字は「理由なし」として null に倒す。
+ */
+function normalizeFailureReason(value: string | null): string | null {
+  if (value === null) {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (trimmed === '') {
+    return null;
+  }
+  return trimmed.slice(0, FAILURE_REASON_MAX_LENGTH);
 }
 
 export const updateSocialPost = defineUseCase<UpdatePostInput, SocialPost>({
@@ -327,6 +404,12 @@ export const updateSocialPost = defineUseCase<UpdatePostInput, SocialPost>({
         ...(input.status === undefined ? {} : { status: input.status }),
         // published へ移すときだけ配信時刻を記録する。
         ...(input.status === 'published' ? { publishedAt: new Date() } : {}),
+        // failed も同じ扱い。**updated_at で代用しない。**
+        // あれは「最後に触った時刻」であって「失敗した時刻」ではない。
+        ...(input.status === 'failed' ? { failedAt: new Date() } : {}),
+        ...(input.failureReason === undefined
+          ? {}
+          : { failureReason: normalizeFailureReason(input.failureReason) }),
       }),
     );
 

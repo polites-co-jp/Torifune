@@ -7,6 +7,14 @@ export interface RoleRepository {
   findByName(connection: Connection, name: string): Promise<Role | null>;
   /** そのロールが持つ Permission。 */
   permissionsOf(connection: Connection, roleId: string): Promise<readonly PermissionName[]>;
+
+  /**
+   * すべてのロールの Permission を一度に引く。
+   *
+   * **権限マトリクスはロールの数だけ問い合わせない。** ロール1件ずつ引くと
+   * ロールが増えるほど画面が遅くなる（N+1）。
+   */
+  allGrants(connection: Connection): Promise<Readonly<Record<string, readonly PermissionName[]>>>;
   /**
    * ユーザーの実効 Permission。
    *

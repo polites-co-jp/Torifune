@@ -12,6 +12,7 @@ export const POST = defineRoute({
   permission: null,
   reason: 'セッションを失効させるだけ。冪等で、他人に害が無い',
   body: z.object({ csrfToken: z.string().optional() }),
+  successStatus: 204,
   handler: async ({ request }) => {
     const token = readCookie(request, SESSION_COOKIE);
     if (token !== undefined && token !== '') {

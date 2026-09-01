@@ -1,6 +1,6 @@
 import { listAnalytics } from '@/application/analytics/analytics-use-cases';
+import { listRecentActivities } from '@/application/audit-use-cases';
 import { listSocialPosts } from '@/application/social/social-use-cases';
-import { withConnection } from '@/application/transaction';
 import { Card } from '@/ui/components';
 import {
   AccessSummary,
@@ -64,21 +64,11 @@ export default async function DashboardPage() {
     : { items: [], total: 0 };
 
   // 監査ログから「最近の活動」を作る。専用のテーブルを作らない（設計 §3.4）。
-  const activities = await withConnection((connection) =>
-    connection.db
-      .selectFrom('audit_logs')
-      .leftJoin('users', 'users.id', 'audit_logs.actor_user_id')
-      .select([
-        'audit_logs.id',
-        'audit_logs.action',
-        'audit_logs.resource_type',
-        'audit_logs.occurred_at',
-        'users.display_name',
-      ])
-      .orderBy('audit_logs.occurred_at', 'desc')
-      .limit(10)
-      .execute(),
-  );
+  //
+  // **`system.manage` を持つ人にだけ見せる。** 「誰が何を消したか」まで含むため、
+  // 閲覧権限しか無い利用者に管理者の操作を見せてしまわないようにする。
+  const canReadAudit = permissions.has('system.manage');
+  const activities = canReadAudit ? await listRecentActivities(context, { limit: 10 }) : [];
 
   return (
     <AppShell displayName={displayName} permissions={permissions}>
@@ -111,16 +101,18 @@ export default async function DashboardPage() {
           />
         )}
 
-        <RecentActivities
-          activities={activities.map((row) => ({
-            id: row.id,
-            // 消えたユーザーの操作も残る（audit_logs は ON DELETE SET NULL）。
-            actor: row.display_name ?? '（削除されたユーザー）',
-            action: row.action,
-            resourceType: row.resource_type,
-            occurredAt: formatDateTime(row.occurred_at),
-          }))}
-        />
+        {canReadAudit && (
+          <RecentActivities
+            activities={activities.map((row) => ({
+              id: row.id,
+              // 消えたユーザーの操作も残る（audit_logs は ON DELETE SET NULL）。
+              actor: row.actorDisplayName ?? '（削除されたユーザー）',
+              action: row.action,
+              resourceType: row.resourceType,
+              occurredAt: formatDateTime(row.occurredAt),
+            }))}
+          />
+        )}
       </div>
 
       {/* Plugin の Widget。何が入るかは本体が知らない（03_プラグイン設計.md §9）。 */}

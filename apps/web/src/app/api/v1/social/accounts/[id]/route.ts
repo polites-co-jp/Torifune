@@ -6,7 +6,11 @@ import {
 } from '@/application/social/social-use-cases';
 import { dataResponse, noContentResponse } from '@/api/response';
 import { defineRoute } from '@/api/route';
-import { toAccountResponse, updateAccountSchema } from '@/api/schemas/social';
+import {
+  accountEnvelopeSchema,
+  toAccountResponse,
+  updateAccountSchema,
+} from '@/api/schemas/social';
 
 export const GET = defineRoute({
   operationId: 'getSocialAccount',
@@ -14,6 +18,7 @@ export const GET = defineRoute({
   path: '/social/accounts/{id}',
   summary: 'SNSアカウントを取得する',
   permission: 'social.read',
+  response: accountEnvelopeSchema,
   handler: async ({ context, params }) => {
     const account = await getSocialAccount(context, { id: params['id'] ?? '' });
     return dataResponse(toAccountResponse(account));
@@ -27,6 +32,7 @@ export const PATCH = defineRoute({
   summary: 'SNSアカウントを更新する',
   permission: 'social.write',
   body: updateAccountSchema,
+  response: accountEnvelopeSchema,
   handler: async ({ context, params, body }) => {
     const account = await updateSocialAccount(context, {
       id: params['id'] ?? '',
@@ -46,6 +52,7 @@ export const DELETE = defineRoute({
   summary: 'SNSアカウントを削除する',
   permission: 'social.delete',
   body: z.object({ csrfToken: z.string().optional() }),
+  successStatus: 204,
   handler: async ({ context, params }) => {
     await deleteSocialAccount(context, { id: params['id'] ?? '' });
     return noContentResponse();

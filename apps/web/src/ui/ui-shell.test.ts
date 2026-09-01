@@ -197,6 +197,28 @@ describe('Core の Extension Point', () => {
     }
   });
 
+  it('描画している拡張点は、すべて公開契約に載っている', async () => {
+    // **逆向きの検査。** 宣言→描画だけを見ていたため、
+    // `campaign.list.actions` / `campaign.edit.sidebar` が
+    // 描画されているのに `CORE_EXTENSION_POINTS` へ載らないまま通っていた。
+    // 載っていない拡張点は、Plugin 作者が公開定数から見つけられない。
+    const files = [
+      ...(await sourceFiles(join(UI_DIR, '..', 'app'))),
+      ...(await sourceFiles(UI_DIR)),
+    ];
+    const sources = files.map((file) => readFileSync(file, 'utf8')).join('\n');
+
+    const declared = new Set<string>(CORE_EXTENSION_POINTS);
+    const rendered = [...sources.matchAll(/point="([a-z][a-z0-9.]*)"/g)].map((match) => match[1]);
+
+    for (const point of new Set(rendered)) {
+      expect(
+        declared.has(point as (typeof CORE_EXTENSION_POINTS)[number]),
+        `${point} を描画しているが CORE_EXTENSION_POINTS に無い。Plugin 作者から発見できない`,
+      ).toBe(true);
+    }
+  });
+
   it('PENDING に、もう存在しない拡張点が残っていない', () => {
     for (const point of Object.keys(PENDING)) {
       expect(CORE_EXTENSION_POINTS as readonly string[]).toContain(point);

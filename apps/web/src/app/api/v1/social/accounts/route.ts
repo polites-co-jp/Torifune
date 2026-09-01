@@ -2,7 +2,9 @@ import { createSocialAccount, listSocialAccounts } from '@/application/social/so
 import { createdResponse, pageResponse } from '@/api/response';
 import { defineRoute } from '@/api/route';
 import {
+  accountEnvelopeSchema,
   accountListQuerySchema,
+  accountPageSchema,
   createAccountSchema,
   toAccountResponse,
 } from '@/api/schemas/social';
@@ -14,6 +16,7 @@ export const GET = defineRoute({
   summary: 'SNSアカウントの一覧を取得する',
   permission: 'social.read',
   query: accountListQuerySchema,
+  response: accountPageSchema,
   handler: async ({ context, query }) => {
     const page = await listSocialAccounts(context, {
       page: query.page,
@@ -35,6 +38,8 @@ export const POST = defineRoute({
   summary: 'SNSアカウントを登録する',
   permission: 'social.write',
   body: createAccountSchema,
+  response: accountEnvelopeSchema,
+  successStatus: 201,
   handler: async ({ context, body }) => {
     const account = await createSocialAccount(context, {
       provider: body.provider,

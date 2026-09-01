@@ -3,6 +3,7 @@ import {
   type PluginDataApi,
   type CampaignView,
   type SiteView,
+  type SocialPostView,
   type UserView,
 } from '@torifune/plugin-api';
 import type { AuthorizationContext } from '@/application/authorization/authorize';
@@ -32,6 +33,7 @@ import { getUser, listUsers } from '@/application/user/user-use-cases';
 import { NotFoundError } from '@/domain/repository';
 import type { Campaign } from '@/domain/campaign/campaign';
 import type { Site } from '@/domain/site/site';
+import type { SocialPost } from '@/domain/social/social';
 import type { User } from '@/domain/user';
 
 /**
@@ -91,8 +93,27 @@ function toCampaignView(campaign: Campaign): CampaignView {
     startsOn: campaign.startsOn,
     endsOn: campaign.endsOn,
     siteIds: campaign.siteIds,
+    socialPostIds: campaign.socialPostIds,
     createdAt: campaign.createdAt.toISOString(),
     updatedAt: campaign.updatedAt.toISOString(),
+  };
+}
+
+/**
+ * Plugin から見えるSNS投稿。
+ *
+ * **4箇所で同じ変換を書いていたのをまとめた。** 項目を足すたびに
+ * 書き忘れる箇所が出る（実際 `failureReason` がどこにも出ていなかった）。
+ */
+function toSocialPostView(post: SocialPost): SocialPostView {
+  return {
+    id: post.id,
+    socialAccountId: post.socialAccountId,
+    body: post.body,
+    scheduledAt: post.scheduledAt?.toISOString() ?? null,
+    status: post.status,
+    publishedAt: post.publishedAt?.toISOString() ?? null,
+    failureReason: post.failureReason,
   };
 }
 
@@ -208,6 +229,7 @@ export function createPluginDataApi(deps: PluginDataApiDeps): PluginDataApi {
           startsOn: input.startsOn,
           endsOn: input.endsOn ?? null,
           siteIds: input.siteIds ?? [],
+          socialPostIds: input.socialPostIds ?? [],
         });
         return toCampaignView(campaign);
       },
@@ -222,6 +244,7 @@ export function createPluginDataApi(deps: PluginDataApiDeps): PluginDataApi {
           ...(input.startsOn === undefined ? {} : { startsOn: input.startsOn }),
           ...(input.endsOn === undefined ? {} : { endsOn: input.endsOn }),
           ...(input.siteIds === undefined ? {} : { siteIds: input.siteIds }),
+          ...(input.socialPostIds === undefined ? {} : { socialPostIds: input.socialPostIds }),
         });
         return toCampaignView(campaign);
       },
@@ -316,14 +339,7 @@ export function createPluginDataApi(deps: PluginDataApiDeps): PluginDataApi {
         });
 
         return {
-          items: result.items.map((post) => ({
-            id: post.id,
-            socialAccountId: post.socialAccountId,
-            body: post.body,
-            scheduledAt: post.scheduledAt?.toISOString() ?? null,
-            status: post.status,
-            publishedAt: post.publishedAt?.toISOString() ?? null,
-          })),
+          items: result.items.map(toSocialPostView),
           total: result.total,
           page,
           perPage,
@@ -333,15 +349,7 @@ export function createPluginDataApi(deps: PluginDataApiDeps): PluginDataApi {
       async get(id) {
         requireDeclared('social.read');
         try {
-          const post = await getSocialPost(context, { id });
-          return {
-            id: post.id,
-            socialAccountId: post.socialAccountId,
-            body: post.body,
-            scheduledAt: post.scheduledAt?.toISOString() ?? null,
-            status: post.status,
-            publishedAt: post.publishedAt?.toISOString() ?? null,
-          };
+          return toSocialPostView(await getSocialPost(context, { id }));
         } catch (error) {
           if (error instanceof NotFoundError) {
             return null;
@@ -352,28 +360,17 @@ export function createPluginDataApi(deps: PluginDataApiDeps): PluginDataApi {
 
       async markPublished(id) {
         requireDeclared('social.write');
-        const post = await updateSocialPost(context, { id, status: 'published' });
-        return {
-          id: post.id,
-          socialAccountId: post.socialAccountId,
-          body: post.body,
-          scheduledAt: post.scheduledAt?.toISOString() ?? null,
-          status: post.status,
-          publishedAt: post.publishedAt?.toISOString() ?? null,
-        };
+        return toSocialPostView(await updateSocialPost(context, { id, status: 'published' }));
       },
 
-      async markFailed(id) {
+      async markFailed(id, reason) {
         requireDeclared('social.write');
-        const post = await updateSocialPost(context, { id, status: 'failed' });
-        return {
-          id: post.id,
-          socialAccountId: post.socialAccountId,
-          body: post.body,
-          scheduledAt: post.scheduledAt?.toISOString() ?? null,
-          status: post.status,
-          publishedAt: post.publishedAt?.toISOString() ?? null,
-        };
+        // **理由を捨てない。** 以前はここが `reason` を渡しておらず、
+        // 公開 API が受け取ると宣言している値がどこにも保存されていなかった。
+        // 画面には「失敗」とだけ出て、理由が分からない状態だった。
+        return toSocialPostView(
+          await updateSocialPost(context, { id, status: 'failed', failureReason: reason }),
+        );
       },
     },
 

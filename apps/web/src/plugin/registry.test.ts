@@ -115,6 +115,43 @@ describe('収集', () => {
     expect(collectActions('site.list.actions', new Set(['site.write']))).toHaveLength(1);
   });
 
+  it('Action を対象リソースで絞る', () => {
+    // 06_画面設計.md §26「Actionは、対象リソースとPermissionを定義する」。
+    const registrations = load('a-plugin');
+    registrations.actions.push({
+      location: 'site.list.actions',
+      label: 'サイトを検査',
+      component: () => null,
+      resource: 'site',
+    });
+    registrations.actions.push({
+      location: 'site.list.actions',
+      label: 'キャンペーンを検査',
+      component: () => null,
+      resource: 'campaign',
+    });
+
+    expect(
+      collectActions('site.list.actions', new Set(), 'site').map((a) => a.registration.label),
+    ).toEqual(['サイトを検査']);
+  });
+
+  /**
+   * **`resource` を宣言していない登録を落とさない。**
+   * 落とすと、任意項目として足したはずの `resource` が、
+   * 書いていない既存の Plugin を画面から消してしまう。
+   */
+  it('対象リソースを宣言していない Action は絞り込みで消えない', () => {
+    load('a-plugin').actions.push({
+      location: 'site.list.actions',
+      label: '昔からある操作',
+      component: () => null,
+    });
+
+    expect(collectActions('site.list.actions', new Set(), 'site')).toHaveLength(1);
+    expect(collectActions('site.list.actions', new Set())).toHaveLength(1);
+  });
+
   it('収集したものに、どの Plugin のものかが付く', () => {
     // 描画側が Plugin ごとの Data API を組み立てるために要る。
     load('a-plugin').widgets.push({ location: 'dashboard', component: () => null });

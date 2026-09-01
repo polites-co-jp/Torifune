@@ -9,53 +9,27 @@ import {
   isValidWebhookUrl,
   WEBHOOK_NAME_MAX_LENGTH,
   type Webhook,
-  type WebhookStatus,
 } from '@/domain/webhook/webhook';
 import { encryptSecret } from '@/infrastructure/crypto/cipher';
 import { log } from '@/infrastructure/logging';
+import { webhookRepository } from '@/infrastructure/webhook-repository';
 
 /**
  * Webhook の管理（05_API設計.md §39）。
  *
  * **`system.manage` を要求する。** 外部へデータを送る設定であり、
  * 誰にでも配ってよい操作ではない。
+ *
+ * SQL は `infrastructure/webhook-repository.ts` に置く
+ * （02_データベース設計.md §7）。
  */
 
 const CORE_EVENT_NAMES = new Set<string>(CORE_EVENTS);
 
-interface Row {
-  id: string;
-  name: string;
-  url: string;
-  events: string[];
-  status: string;
-  created_at: Date;
-}
-
-function toWebhook(row: Row): Webhook {
-  return {
-    id: row.id,
-    name: row.name,
-    url: row.url,
-    events: row.events,
-    status: row.status as WebhookStatus,
-    createdAt: row.created_at,
-  };
-}
-
 export const listWebhooks = defineUseCase<Record<string, never>, readonly Webhook[]>({
   name: 'webhook.list',
   permission: 'system.manage',
-  handler: async (context) => {
-    // **secret を select しない。** 型に載らなければ、うっかり返すこともできない。
-    const rows = await context.connection.db
-      .selectFrom('webhooks')
-      .select(['id', 'name', 'url', 'events', 'status', 'created_at'])
-      .orderBy('created_at', 'desc')
-      .execute();
-
-    return rows.map((row) => toWebhook(row as Row));
-  },
+  handler: async (context) => webhookRepository.list(context.connection),
 });
 
 export interface CreateWebhookInput {
@@ -105,22 +79,18 @@ export const createWebhook = defineUseCase<CreateWebhookInput, CreatedWebhook>({
 
     const secret = generateWebhookSecret();
 
-    const row = await context.connection.transaction((tx) =>
-      tx.db
-        .insertInto('webhooks')
-        .values({
-          id: uuidv7(),
-          name: input.name.trim(),
-          url: input.url,
-          // 平文で保存しない（02_データベース設計.md §13）。
-          secret: encryptSecret(secret),
-          events: [...input.events],
-        })
-        .returning(['id', 'name', 'url', 'events', 'status', 'created_at'])
-        .executeTakeFirstOrThrow(),
+    const webhook = await context.connection.transaction((tx) =>
+      webhookRepository.create(tx, {
+        id: uuidv7(),
+        name: input.name.trim(),
+        url: input.url,
+        // 平文で保存しない（02_データベース設計.md §13）。
+        encryptedSecret: encryptSecret(secret),
+        events: input.events,
+      }),
     );
 
-    return { webhook: toWebhook(row as Row), secret };
+    return { webhook, secret };
   },
 });
 
@@ -129,11 +99,11 @@ export const deleteWebhook = defineUseCase<{ id: string }, void>({
   permission: 'system.manage',
   audit: { action: 'deleted', resourceType: 'webhook', resourceId: (input) => input.id },
   handler: async (context, input) => {
-    const result = await context.connection.transaction((tx) =>
-      tx.db.deleteFrom('webhooks').where('id', '=', input.id).executeTakeFirst(),
+    const deleted = await context.connection.transaction((tx) =>
+      webhookRepository.delete(tx, input.id),
     );
 
-    if (Number(result.numDeletedRows) === 0) {
+    if (deleted === 0) {
       throw new NotFoundError('Webhook', input.id);
     }
   },
@@ -155,31 +125,12 @@ export async function enqueueWebhookDeliveries(eventName: string, payload: unkno
 
   try {
     await withConnection(async (connection) => {
-      const matching = await connection.db
-        .selectFrom('webhooks')
-        .select(['id', 'events'])
-        .where('status', '=', 'active')
-        .execute();
+      const ids = await webhookRepository.idsSubscribedTo(connection, eventName);
 
-      const ids = matching
-        .filter((row) => (row.events as string[]).includes(eventName))
-        .map((row) => row.id);
-
-      if (ids.length === 0) {
-        return;
-      }
-
-      await connection.db
-        .insertInto('webhook_deliveries')
-        .values(
-          ids.map((webhookId) => ({
-            id: uuidv7(),
-            webhook_id: webhookId,
-            event: eventName,
-            payload: JSON.stringify(payload ?? {}),
-          })),
-        )
-        .execute();
+      await webhookRepository.enqueueDeliveries(
+        connection,
+        ids.map((webhookId) => ({ id: uuidv7(), webhookId, event: eventName, payload })),
+      );
     });
   } catch (error) {
     log.error('failed to enqueue webhook deliveries', {

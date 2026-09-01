@@ -7,9 +7,11 @@ import {
   MAX_RANGE_DAYS,
   rangeDays,
   type AnalyticsPoint,
+  type TopPath,
+  type TrackedSite,
 } from '@/domain/analytics/analytics';
 import { ValidationError } from '@/domain/repository';
-import { analyticsRepository, type TopPath } from '@/infrastructure/analytics-repository';
+import { analyticsRepository } from '@/infrastructure/analytics-repository';
 
 /**
  * アクセス・分析データの参照（05_API設計.md §20、018-analytics）。
@@ -50,6 +52,78 @@ export const listAnalytics = defineUseCase<AnalyticsRangeInput, readonly Analyti
       to: input.to,
       source: input.source,
     });
+  },
+});
+
+/**
+ * ページ指定つきの参照（05_API設計.md §33）。
+ *
+ * **`{id}` での取得は無い。** analytics は
+ * `(site_id, metric_date, source, metric)` の複合キーで保存する集計値の集合であり、
+ * 1件を指す id が存在しない。必要な範囲は期間指定・絞り込み・Pagination で取る
+ * （仕様書 §20 / `docs/仕様書/改訂履歴.md` 2026-09-01）。
+ */
+export interface AnalyticsPageInput extends AnalyticsRangeInput {
+  readonly page: number;
+  readonly perPage: number;
+}
+
+/**
+ * 一覧の結果。
+ *
+ * 他の UseCase（`UserWithRolesPage` など）と同じく `{ items, total }` だけを返す。
+ * `page` / `perPage` は要求した側が知っているので、返しても増えるだけ。
+ */
+export interface AnalyticsPage<T> {
+  readonly items: readonly T[];
+  readonly total: number;
+}
+
+function offsetOf(input: AnalyticsPageInput): number {
+  return (input.page - 1) * input.perPage;
+}
+
+export const listAnalyticsPage = defineUseCase<AnalyticsPageInput, AnalyticsPage<AnalyticsPoint>>({
+  name: 'analytics.listPage',
+  permission: 'analytics.read',
+  handler: async (context, input) => {
+    assertRange(input.from, input.to);
+
+    const range = {
+      siteId: input.siteId,
+      from: input.from,
+      to: input.to,
+      source: input.source,
+    };
+
+    // 件数を先に取る。**「そのページの件数」ではなく条件に合う全件数**を返す（§33）。
+    const total = await analyticsRepository.countPoints(context.connection, range);
+    const items = await analyticsRepository.listPoints(context.connection, {
+      ...range,
+      limit: input.perPage,
+      offset: offsetOf(input),
+    });
+
+    return { items, total };
+  },
+});
+
+export const listTopPathsPage = defineUseCase<AnalyticsPageInput, AnalyticsPage<TopPath>>({
+  name: 'analytics.topPathsPage',
+  permission: 'analytics.read',
+  handler: async (context, input) => {
+    assertRange(input.from, input.to);
+
+    const range = { siteId: input.siteId, from: input.from, to: input.to };
+
+    const total = await analyticsRepository.countTopPaths(context.connection, range);
+    const items = await analyticsRepository.topPaths(context.connection, {
+      ...range,
+      limit: input.perPage,
+      offset: offsetOf(input),
+    });
+
+    return { items, total };
   },
 });
 
@@ -114,4 +188,17 @@ export const recordAnalytics = defineUseCase<RecordAnalyticsInput, void>({
       }),
     );
   },
+});
+
+/**
+ * 計測タグを表示するためのサイト一覧（06_画面設計.md §15）。
+ *
+ * 公開キーを含むので `site.read` を要求する。
+ * 公開キーは計測タグに埋めて配る値で秘密ではないが、
+ * どのサイトを持っているかは権限のある人にだけ見せる。
+ */
+export const listTrackedSites = defineUseCase<Record<string, never>, readonly TrackedSite[]>({
+  name: 'analytics.trackedSites',
+  permission: 'site.read',
+  handler: async (context) => analyticsRepository.listTrackedSites(context.connection, 200),
 });

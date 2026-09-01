@@ -17,6 +17,7 @@ export const POST = defineRoute({
     newPassword: z.string().min(1, '入力してください。'),
     csrfToken: z.string().optional(),
   }),
+  successStatus: 204,
   rateLimit: { windowMs: 60_000, max: 20 },
   handler: async ({ request, body }) => {
     const outcome = await confirmPasswordReset({

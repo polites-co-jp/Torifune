@@ -159,6 +159,14 @@ export interface CreateUserInput {
 export const createUser = defineUseCase<CreateUserInput, UserWithRoles>({
   name: 'user.create',
   permission: 'user.manage',
+  // **auth_audit_logs だけでは足りない。** あちらは認証の記録で、
+  // 「誰がこのユーザーを作ったか」は操作の追跡（audit_logs）の側にも要る。
+  audit: {
+    action: 'created',
+    resourceType: 'user',
+    resourceId: (_input, created) => created.user.id,
+    detail: (input) => ({ loginId: input.loginId, roles: [...input.roles] }),
+  },
   handler: async (context, input) => {
     const actor = requireAuthenticated(context);
 
@@ -232,6 +240,13 @@ export interface UpdateUserInput {
 export const updateUser = defineUseCase<UpdateUserInput, UserWithRoles>({
   name: 'user.update',
   permission: 'user.manage',
+  audit: {
+    action: 'updated',
+    resourceType: 'user',
+    resourceId: (input) => input.id,
+    // 変えた項目名だけ。値は残さない（パスワードが混ざりうる）。
+    detail: (input) => ({ changed: Object.keys(input).filter((key) => key !== 'id') }),
+  },
   handler: async (context, input) => {
     const actor = requireAuthenticated(context);
 
@@ -342,6 +357,7 @@ export const updateUser = defineUseCase<UpdateUserInput, UserWithRoles>({
 export const deleteUser = defineUseCase<{ id: string }, void>({
   name: 'user.delete',
   permission: 'user.manage',
+  audit: { action: 'deleted', resourceType: 'user', resourceId: (input) => input.id },
   handler: async (context, input) => {
     const actor = requireAuthenticated(context);
     assertNotSelf(actor.userId, input.id, '削除');

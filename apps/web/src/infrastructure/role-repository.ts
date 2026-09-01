@@ -46,6 +46,24 @@ export const roleRepository: RoleRepository = {
     return rows.map((row) => row.permission_name);
   },
 
+  async allGrants(
+    connection: Connection,
+  ): Promise<Readonly<Record<string, readonly PermissionName[]>>> {
+    const rows = await connection.db
+      .selectFrom('role_permissions')
+      .innerJoin('roles', 'roles.id', 'role_permissions.role_id')
+      .select(['roles.name as role_name', 'role_permissions.permission_name'])
+      .orderBy('roles.name')
+      .orderBy('role_permissions.permission_name')
+      .execute();
+
+    const grants: Record<string, PermissionName[]> = {};
+    for (const row of rows) {
+      (grants[row.role_name] ??= []).push(row.permission_name);
+    }
+    return grants;
+  },
+
   async effectivePermissionsOf(
     connection: Connection,
     userId: string,

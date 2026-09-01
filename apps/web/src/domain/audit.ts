@@ -29,6 +29,8 @@ export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 export const AUDIT_RESOURCE_TYPES = [
   'site',
   'campaign',
+  'user',
+  'access_log',
   'social_account',
   'social_post',
   'plugin',

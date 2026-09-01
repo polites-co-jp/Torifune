@@ -4,6 +4,7 @@ import {
   CAMPAIGN_STATUSES,
   type Campaign,
 } from '@/domain/campaign/campaign';
+import { dataEnvelope, pageEnvelope } from './envelope';
 
 /**
  * Campaign API の Zod スキーマ（05_API設計.md §19）。
@@ -50,6 +51,7 @@ export const createCampaignSchema = z.object({
   startsOn: dateOnly,
   endsOn: dateOnly.nullish(),
   siteIds: z.array(z.string()).default([]),
+  socialPostIds: z.array(z.string()).default([]),
   csrfToken: z.string().optional(),
 });
 
@@ -60,8 +62,26 @@ export const updateCampaignSchema = z.object({
   startsOn: dateOnly.optional(),
   endsOn: dateOnly.nullish(),
   siteIds: z.array(z.string()).optional(),
+  socialPostIds: z.array(z.string()).optional(),
   csrfToken: z.string().optional(),
 });
+
+/** API が返す形（OpenAPI 用）。`CampaignResponse` と同じ形にしておく。 */
+export const campaignResponseSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string(),
+  status: campaignStatusSchema,
+  startsOn: z.string(),
+  endsOn: z.string().nullable(),
+  siteIds: z.array(z.string()),
+  socialPostIds: z.array(z.string()),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+export const campaignEnvelopeSchema = dataEnvelope(campaignResponseSchema);
+export const campaignPageSchema = pageEnvelope(campaignResponseSchema);
 
 export interface CampaignResponse {
   readonly id: string;
@@ -71,6 +91,7 @@ export interface CampaignResponse {
   readonly startsOn: string;
   readonly endsOn: string | null;
   readonly siteIds: readonly string[];
+  readonly socialPostIds: readonly string[];
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -84,6 +105,7 @@ export function toCampaignResponse(campaign: Campaign): CampaignResponse {
     startsOn: campaign.startsOn,
     endsOn: campaign.endsOn,
     siteIds: campaign.siteIds,
+    socialPostIds: campaign.socialPostIds,
     createdAt: campaign.createdAt.toISOString(),
     updatedAt: campaign.updatedAt.toISOString(),
   };

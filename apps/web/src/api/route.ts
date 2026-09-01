@@ -15,6 +15,7 @@ import { authorizationErrorResponse } from './authorize';
 import { CSRF_COOKIE, readCookie, requestInfoOf, SESSION_COOKIE } from './cookies';
 import { corsHeaders } from './cors';
 import { verifyCsrf } from './csrf';
+import { assertValidDeprecation, deprecationHeaders, type DeprecationNotice } from './deprecation';
 import { errorResponse } from './errors';
 import { UnknownSortFieldError } from './query';
 import { registerEndpoint, type EndpointSpec } from './registry';
@@ -57,6 +58,26 @@ export interface RouteDefinition<TBodySchema extends z.ZodType, TQuerySchema ext
    */
   readonly bodyKind?: 'json' | 'raw';
   readonly query?: TQuerySchema;
+  /**
+   * 成功時の応答スキーマ（05_API設計.md §40）。
+   *
+   * 外側まで含めて書く。`api/schemas/envelope.ts` の
+   * `dataEnvelope` / `pageEnvelope` / `listEnvelope` で包む。
+   *
+   * **任意にしてある。** 全エンドポイントへ一度に付けると差分が大きくなりすぎるので、
+   * 主要なものから付けている。未宣言の一覧は E2E で固定してあり、
+   * 新しいエンドポイントを未宣言のまま足すとテストが落ちる。
+   */
+  readonly response?: z.ZodType;
+  /** 成功時のステータス。既定は 200。作成は 201、本文なしは 204。 */
+  readonly successStatus?: 200 | 201 | 204;
+  /**
+   * 非推奨の告知（05_API設計.md §41）。
+   *
+   * 書くと OpenAPI に `deprecated: true` が出て、
+   * 応答に `Deprecation` / `Sunset` ヘッダが付く（`api/deprecation.ts`）。
+   */
+  readonly deprecated?: DeprecationNotice;
   /** 公開 API 仕様に載せるか。内部エンドポイントは false。 */
   readonly documented?: boolean;
   /**
@@ -122,6 +143,17 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
     );
   }
 
+  if (definition.deprecated !== undefined) {
+    // 告知として成立していない `deprecated` は、書いたつもりで告知できていない状態。
+    assertValidDeprecation(definition.operationId, definition.deprecated);
+  }
+
+  if (definition.successStatus === 204 && definition.response !== undefined) {
+    throw new RouteDefinitionError(
+      `${definition.operationId}: 204 は本文を返さないので response を書けない`,
+    );
+  }
+
   const spec: EndpointSpec = {
     operationId: definition.operationId,
     method: definition.method,
@@ -129,10 +161,19 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
     summary: definition.summary,
     permission: definition.permission,
     documented: definition.documented ?? true,
+    sessionOnly: definition.sessionOnly ?? false,
     bodySchema: definition.body,
     querySchema: definition.query,
+    responseSchema: definition.response,
+    successStatus: definition.successStatus,
+    deprecated: definition.deprecated,
   };
   registerEndpoint(spec);
+
+  // 非推奨なら**すべての応答**へ付ける。成功時だけにすると、
+  // 認証に失敗し続けているクライアントには最後まで届かない。
+  const deprecation =
+    definition.deprecated === undefined ? {} : deprecationHeaders(definition.deprecated);
 
   // 省略したら既定がかかる。**書かなければ無制限、にしない。**
   const limiter =
@@ -144,7 +185,8 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
     request: Request,
     args?: { params?: Promise<Record<string, string>> },
   ): Promise<Response> {
-    const cors = corsHeaders(request);
+    // 以降の応答すべてに付ける共通ヘッダ。CORS と非推奨の告知。
+    const cors = { ...corsHeaders(request), ...deprecation };
 
     try {
       if (limiter !== null) {

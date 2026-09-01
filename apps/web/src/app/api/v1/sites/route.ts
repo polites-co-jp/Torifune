@@ -5,7 +5,9 @@ import { defineRoute } from '@/api/route';
 import {
   createSiteSchema,
   SITE_SORT_FIELDS,
+  siteEnvelopeSchema,
   siteListQuerySchema,
+  sitePageSchema,
   toSiteResponse,
 } from '@/api/schemas/site';
 
@@ -18,6 +20,7 @@ export const GET = defineRoute({
   summary: 'Webサイトの一覧を取得する',
   permission: 'site.read',
   query: siteListQuerySchema,
+  response: sitePageSchema,
   handler: async ({ context, query }) => {
     // 未許可の並び替えは例外になり、route.ts が 422 へ変換する。
     const sort = parseSort(query.sort, SITE_SORT_FIELDS, DEFAULT_SORT);
@@ -45,6 +48,8 @@ export const POST = defineRoute({
   summary: 'Webサイトを作成する',
   permission: 'site.write',
   body: createSiteSchema,
+  response: siteEnvelopeSchema,
+  successStatus: 201,
   handler: async ({ context, body }) => {
     const site = await createSite(context, {
       name: body.name,

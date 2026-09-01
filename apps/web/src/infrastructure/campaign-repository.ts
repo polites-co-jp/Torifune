@@ -50,7 +50,11 @@ function toDateOnly(value: Date | string): string {
   return `${year}-${month}-${day}`;
 }
 
-function toCampaign(row: CampaignRow, siteIds: readonly string[]): Campaign {
+function toCampaign(
+  row: CampaignRow,
+  siteIds: readonly string[],
+  socialPostIds: readonly string[],
+): Campaign {
   return {
     id: row.id,
     name: row.name,
@@ -59,6 +63,7 @@ function toCampaign(row: CampaignRow, siteIds: readonly string[]): Campaign {
     startsOn: toDateOnly(row.starts_on),
     endsOn: row.ends_on === null ? null : toDateOnly(row.ends_on),
     siteIds,
+    socialPostIds,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     createdBy: row.created_by,
@@ -108,6 +113,31 @@ async function siteIdsOf(
   return result;
 }
 
+/** 紐づくSNS投稿をまとめて引く。`siteIdsOf` と同じ形。 */
+async function socialPostIdsOf(
+  connection: Connection,
+  campaignIds: readonly string[],
+): Promise<Map<string, string[]>> {
+  const result = new Map<string, string[]>();
+  if (campaignIds.length === 0) {
+    return result;
+  }
+
+  const rows = await connection.db
+    .selectFrom('campaign_social_posts')
+    .select(['campaign_id', 'social_post_id'])
+    .where('campaign_id', 'in', [...campaignIds])
+    .orderBy('social_post_id')
+    .execute();
+
+  for (const row of rows) {
+    const current = result.get(row.campaign_id) ?? [];
+    current.push(row.social_post_id);
+    result.set(row.campaign_id, current);
+  }
+  return result;
+}
+
 /** 対象サイトを丸ごと置き換える。差分では「消す」を表現できない。 */
 async function replaceSites(
   connection: Connection,
@@ -124,6 +154,28 @@ async function replaceSites(
   await connection.db
     .insertInto('campaign_sites')
     .values(unique.map((siteId) => ({ campaign_id: campaignId, site_id: siteId })))
+    .execute();
+}
+
+/** 紐づくSNS投稿を丸ごと置き換える。`replaceSites` と同じ形。 */
+async function replaceSocialPosts(
+  connection: Connection,
+  campaignId: string,
+  socialPostIds: readonly string[],
+): Promise<void> {
+  await connection.db
+    .deleteFrom('campaign_social_posts')
+    .where('campaign_id', '=', campaignId)
+    .execute();
+
+  const unique = [...new Set(socialPostIds)];
+  if (unique.length === 0) {
+    return;
+  }
+
+  await connection.db
+    .insertInto('campaign_social_posts')
+    .values(unique.map((postId) => ({ campaign_id: campaignId, social_post_id: postId })))
     .execute();
 }
 
@@ -188,13 +240,14 @@ export const campaignRepository: CampaignRepository = {
     const rows = await rowsQuery.limit(query.perPage).offset(offset).execute();
     const counted = await countQuery.executeTakeFirstOrThrow();
 
-    const sites = await siteIdsOf(
-      connection,
-      rows.map((row) => row.id),
-    );
+    const campaignIds = rows.map((row) => row.id);
+    const sites = await siteIdsOf(connection, campaignIds);
+    const posts = await socialPostIdsOf(connection, campaignIds);
 
     return {
-      items: rows.map((row) => toCampaign(row as CampaignRow, sites.get(row.id) ?? [])),
+      items: rows.map((row) =>
+        toCampaign(row as CampaignRow, sites.get(row.id) ?? [], posts.get(row.id) ?? []),
+      ),
       total: Number(counted.count),
     };
   },
@@ -214,7 +267,8 @@ export const campaignRepository: CampaignRepository = {
     }
 
     const sites = await siteIdsOf(connection, [id]);
-    return toCampaign(row as CampaignRow, sites.get(id) ?? []);
+    const posts = await socialPostIdsOf(connection, [id]);
+    return toCampaign(row as CampaignRow, sites.get(id) ?? [], posts.get(id) ?? []);
   },
 
   async insert(connection: Connection, campaign: NewCampaign): Promise<Campaign> {
@@ -233,8 +287,13 @@ export const campaignRepository: CampaignRepository = {
       .executeTakeFirstOrThrow();
 
     await replaceSites(connection, campaign.id, campaign.siteIds);
+    await replaceSocialPosts(connection, campaign.id, campaign.socialPostIds);
 
-    return toCampaign(row as CampaignRow, [...new Set(campaign.siteIds)].sort());
+    return toCampaign(
+      row as CampaignRow,
+      [...new Set(campaign.siteIds)].sort(),
+      [...new Set(campaign.socialPostIds)].sort(),
+    );
   },
 
   async update(
@@ -267,16 +326,20 @@ export const campaignRepository: CampaignRepository = {
     if (patch.siteIds !== undefined) {
       await replaceSites(connection, id, patch.siteIds);
     }
+    if (patch.socialPostIds !== undefined) {
+      await replaceSocialPosts(connection, id, patch.socialPostIds);
+    }
 
     const sites = await siteIdsOf(connection, [id]);
-    return toCampaign(row as CampaignRow, sites.get(id) ?? []);
+    const posts = await socialPostIdsOf(connection, [id]);
+    return toCampaign(row as CampaignRow, sites.get(id) ?? [], posts.get(id) ?? []);
   },
 
   async delete(connection: Connection, id: string): Promise<boolean> {
     if (!UUID_PATTERN.test(id)) {
       return false;
     }
-    // campaign_sites は ON DELETE CASCADE で消える。
+    // campaign_sites / campaign_social_posts は ON DELETE CASCADE で消える。
     const result = await connection.db
       .deleteFrom('campaigns')
       .where('id', '=', id)

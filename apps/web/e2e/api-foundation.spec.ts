@@ -26,6 +26,62 @@ test('OpenAPI 文書が取得できる', async ({ request }) => {
   expect(document.components.securitySchemes['session']).toBeDefined();
 });
 
+test('OpenAPI に Bearer 認証が宣言されている', async ({ request }) => {
+  // Bearer は実装済み（`domain/api-token.ts` / `api/route.ts`）。
+  // 宣言が無いと、生成したクライアントは認証の付け方を推測することになる。
+  const document = (await (await request.get('/api/v1/openapi.json')).json()) as {
+    components: { securitySchemes: Record<string, Record<string, unknown>> };
+  };
+
+  const bearer = document.components.securitySchemes['bearer'];
+  expect(bearer).toBeDefined();
+  expect(bearer?.['type']).toBe('http');
+  expect(bearer?.['scheme']).toBe('bearer');
+  expect(bearer?.['bearerFormat']).toBe('TorifuneApiToken');
+});
+
+test('OpenAPI の security が実態に合っている', async ({ request }) => {
+  const document = (await (await request.get('/api/v1/openapi.json')).json()) as {
+    paths: Record<string, Record<string, { security?: unknown[] }>>;
+  };
+
+  // 通常の口は Cookie でも API Token でも呼べる。
+  expect(document.paths['/sites']?.['get']?.security).toEqual([{ session: [] }, { bearer: [] }]);
+  // Token の発行はセッション認証だけ（Token から Token を作らせない）。
+  expect(document.paths['/api-tokens']?.['post']?.security).toEqual([{ session: [] }]);
+});
+
+test('OpenAPI に Response スキーマが含まれる', async ({ request }) => {
+  const document = (await (await request.get('/api/v1/openapi.json')).json()) as {
+    paths: Record<
+      string,
+      Record<
+        string,
+        { responses: Record<string, { content?: Record<string, { schema?: unknown }> }> }
+      >
+    >;
+  };
+
+  // 一覧は data と meta を持つ。
+  const list = document.paths['/sites']?.['get']?.responses['200']?.content?.['application/json']
+    ?.schema as { properties: Record<string, unknown> };
+  expect(Object.keys(list.properties).sort()).toEqual(['data', 'meta']);
+
+  // 作成は 201 に出る。
+  expect(
+    document.paths['/sites']?.['post']?.responses['201']?.content?.['application/json']?.schema,
+  ).toBeDefined();
+
+  // 削除は 204 で本文を持たない。
+  expect(document.paths['/sites/{id}']?.['delete']?.responses['204']).toBeDefined();
+  expect(document.paths['/sites/{id}']?.['delete']?.responses['204']?.content).toBeUndefined();
+
+  // エラー応答も形が分かる。
+  expect(
+    document.paths['/sites']?.['get']?.responses['422']?.content?.['application/json']?.schema,
+  ).toBeDefined();
+});
+
 test('OpenAPI に登録済みエンドポイントが含まれる', async ({ request }) => {
   const document = (await (await request.get('/api/v1/openapi.json')).json()) as {
     paths: Record<string, Record<string, { operationId: string }>>;

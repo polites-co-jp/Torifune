@@ -199,13 +199,26 @@ export function collectWidgets(
     .sort(byOwnedOrder);
 }
 
+/**
+ * 差し込む Action を集める。
+ *
+ * `resource` を渡すと、そのリソースを対象にした Action へ絞る
+ * （06_画面設計.md §26）。**`resource` を宣言していない登録は落とさない。**
+ * 落とすと、任意項目として足したはずの `resource` が、
+ * 書いていない既存の Plugin を画面から消してしまう。
+ */
 export function collectActions(
   location: string,
   permissions: ReadonlySet<string>,
+  resource?: string,
 ): readonly Owned<ActionRegistration>[] {
   return ownedEntries((entry) => entry.actions).filter(
     ({ registration }) =>
-      registration.location === location && allowed(registration.permission, permissions),
+      registration.location === location &&
+      allowed(registration.permission, permissions) &&
+      (resource === undefined ||
+        registration.resource === undefined ||
+        registration.resource === resource),
   );
 }
 

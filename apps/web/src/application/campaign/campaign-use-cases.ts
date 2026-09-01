@@ -29,6 +29,7 @@ function payloadOf(campaign: Campaign): CampaignEventPayload {
     startsOn: campaign.startsOn,
     endsOn: campaign.endsOn,
     siteIds: campaign.siteIds,
+    socialPostIds: campaign.socialPostIds,
   };
 }
 
@@ -84,6 +85,13 @@ export interface CreateCampaignInput {
   readonly startsOn: string;
   readonly endsOn: string | null;
   readonly siteIds: readonly string[];
+  /**
+   * 紐づくSNS投稿。
+   *
+   * **任意にしてある。** 必須にすると、既存の呼び出し（API・Data API・
+   * Server Component）がすべて型エラーになる。省略は「紐づけない」。
+   */
+  readonly socialPostIds?: readonly string[] | undefined;
 }
 
 export const createCampaign = defineUseCase<CreateCampaignInput, Campaign>({
@@ -109,6 +117,7 @@ export const createCampaign = defineUseCase<CreateCampaignInput, Campaign>({
         startsOn: input.startsOn,
         endsOn: input.endsOn,
         siteIds: input.siteIds,
+        socialPostIds: input.socialPostIds ?? [],
         createdBy: identity.userId,
       }),
     );
@@ -127,6 +136,8 @@ export interface UpdateCampaignInput {
   readonly startsOn?: string | undefined;
   readonly endsOn?: string | null | undefined;
   readonly siteIds?: readonly string[] | undefined;
+  /** 指定したら丸ごと置き換える。指定しなければ触らない。 */
+  readonly socialPostIds?: readonly string[] | undefined;
 }
 
 export const updateCampaign = defineUseCase<UpdateCampaignInput, Campaign>({
@@ -162,6 +173,7 @@ export const updateCampaign = defineUseCase<UpdateCampaignInput, Campaign>({
         ...(input.startsOn === undefined ? {} : { startsOn: input.startsOn }),
         ...(input.endsOn === undefined ? {} : { endsOn: input.endsOn }),
         ...(input.siteIds === undefined ? {} : { siteIds: input.siteIds }),
+        ...(input.socialPostIds === undefined ? {} : { socialPostIds: input.socialPostIds }),
       }),
     );
 

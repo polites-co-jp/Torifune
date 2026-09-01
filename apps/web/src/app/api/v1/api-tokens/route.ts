@@ -2,7 +2,9 @@ import { createApiToken, listApiTokens } from '@/application/api-token/api-token
 import { createdResponse, dataResponse } from '@/api/response';
 import { defineRoute } from '@/api/route';
 import {
+  apiTokenListSchema,
   createApiTokenSchema,
+  createdApiTokenEnvelopeSchema,
   toApiTokenResponse,
   type CreatedApiTokenResponse,
 } from '@/api/schemas/api-token';
@@ -13,6 +15,7 @@ export const GET = defineRoute({
   path: '/api-tokens',
   summary: '自分の API Token 一覧を取得する',
   permission: 'token.manage',
+  response: apiTokenListSchema,
   // 自分の Token を一覧するだけなら Token 認証でもよい。
   handler: async ({ context }) => {
     const tokens = await listApiTokens(context, {});
@@ -27,6 +30,8 @@ export const POST = defineRoute({
   summary: 'API Token を発行する',
   permission: 'token.manage',
   body: createApiTokenSchema,
+  response: createdApiTokenEnvelopeSchema,
+  successStatus: 201,
   // **Token から Token を作らせない。** できると、Scope を絞った Token から
   // より広い Token を発行できてしまう（021-api-token 設計 §5）。
   sessionOnly: true,

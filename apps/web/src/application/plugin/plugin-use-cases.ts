@@ -33,6 +33,12 @@ import {
   searchEntries,
   type RegistryEntry,
 } from '@/plugin/registry-client';
+import {
+  currentTorifuneVersion,
+  evaluateRegistryEntry,
+  type InstalledPluginState,
+  type RegistryCompatibility,
+} from '@/plugin/registry-compatibility';
 import { isLoaded, loadedPlugin } from '@/plugin/registry';
 
 /**
@@ -56,6 +62,12 @@ export interface PluginSummary {
   readonly permissions: readonly string[];
   readonly dependencies: Readonly<Record<string, string>>;
   readonly description: string | null;
+  /**
+   * 作者（03_プラグイン設計.md §11 §13）。Manifest の任意項目なので、無ければ null。
+   *
+   * **誰が作ったものかを画面に出す。** 出さないと、導入の判断材料が1つ減る。
+   */
+  readonly author: string | null;
 }
 
 export interface PluginListOutput {
@@ -79,6 +91,9 @@ function summarize(manifest: PluginManifest, status: PluginStatus | null): Plugi
     permissions: manifest.permissions ?? [],
     dependencies: manifest.dependencies ?? {},
     description: manifest.description ?? null,
+    // 任意項目。壊れた値が画面へ流れないよう、文字列でなければ無いものとして扱う。
+    author:
+      typeof manifest.author === 'string' && manifest.author.trim() !== '' ? manifest.author : null,
   };
 }
 
@@ -116,6 +131,7 @@ export const listPlugins = defineUseCase<void, PluginListOutput>({
         permissions: [],
         dependencies: {},
         description: 'ファイルが見つからない',
+        author: null,
       });
     }
 
@@ -537,31 +553,51 @@ export const getPluginOperation = defineUseCase<{ id: string }, PluginOperation>
  * **未設定なら空を返して「設定されていない」と伝える。**
  * 例外にすると、設定していない環境で画面が壊れる。
  */
+export interface RegistryItem {
+  readonly entry: RegistryEntry;
+  /** 導入する前の判定（§15 §16 §17）。押してから失敗させない。 */
+  readonly compatibility: RegistryCompatibility;
+}
+
 export interface RegistryListOutput {
   readonly configured: boolean;
   /** 信頼する検証鍵が設定されているか。無ければ導入できない。 */
   readonly trusted: boolean;
-  readonly entries: readonly RegistryEntry[];
+  readonly items: readonly RegistryItem[];
   readonly error: string | null;
 }
 
 export const listRegistryPlugins = defineUseCase<{ keyword: string }, RegistryListOutput>({
   name: 'plugin.registry.list',
   permission: 'plugin.manage',
-  handler: async (_context, input) => {
+  handler: async (context, input) => {
     const url = registryUrl();
     const trusted = trustedKeys().length > 0;
 
     if (url === null) {
-      return { configured: false, trusted, entries: [], error: null };
+      return { configured: false, trusted, items: [], error: null };
     }
 
     try {
       const entries = await fetchRegistryIndex(url);
+
+      // 依存を満たすかは、いま入っているものと突き合わせないと分からない。
+      const records = await listPluginRecords(context.connection);
+      const installed = new Map<string, InstalledPluginState>(
+        records.map((record) => [
+          record.id,
+          { version: record.version, enabled: record.status === 'enabled' },
+        ]),
+      );
+      const torifuneVersion = currentTorifuneVersion();
+
       return {
         configured: true,
         trusted,
-        entries: searchEntries(entries, input.keyword),
+        items: searchEntries(entries, input.keyword).map((entry) => ({
+          entry,
+          compatibility: evaluateRegistryEntry(entry, { installed, torifuneVersion }),
+        })),
         error: null,
       };
     } catch (error) {
@@ -569,7 +605,7 @@ export const listRegistryPlugins = defineUseCase<{ keyword: string }, RegistryLi
       return {
         configured: true,
         trusted,
-        entries: [],
+        items: [],
         error: error instanceof Error ? error.message : String(error),
       };
     }

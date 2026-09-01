@@ -2,11 +2,13 @@ import { z } from 'zod';
 import {
   ACCOUNT_STATUSES,
   DISPLAY_NAME_MAX_LENGTH,
+  FAILURE_REASON_MAX_LENGTH,
   POST_BODY_MAX_LENGTH,
   POST_STATUSES,
   type SocialAccount,
   type SocialPost,
 } from '@/domain/social/social';
+import { dataEnvelope, pageEnvelope } from './envelope';
 
 /** SNS API の Zod スキーマ。 */
 
@@ -57,6 +59,13 @@ export const updatePostSchema = z.object({
   body: z.string().min(1).max(POST_BODY_MAX_LENGTH).optional(),
   scheduledAt: z.coerce.date().nullable().optional(),
   status: postStatusSchema.optional(),
+  /**
+   * 配信に失敗した理由。
+   *
+   * **外部の配信ワーカーがここへ記録する。** 実配信は Plugin の責務なので、
+   * 「失敗した」だけを送れて理由を送れないと、画面から原因が追えない。
+   */
+  failureReason: z.string().max(FAILURE_REASON_MAX_LENGTH).nullish(),
   csrfToken: z.string().optional(),
 });
 
@@ -65,6 +74,21 @@ export const updatePostSchema = z.object({
  *
  * **`credential` を返さない。** 設定済みかどうかだけを返す（05_API設計.md §18）。
  */
+export const accountResponseSchema = z.object({
+  id: z.string(),
+  provider: z.string(),
+  displayName: z.string(),
+  handle: z.string(),
+  status: accountStatusSchema,
+  /** **平文は返さない。** 設定済みかどうかだけ。 */
+  credentialConfigured: z.boolean(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+export const accountEnvelopeSchema = dataEnvelope(accountResponseSchema);
+export const accountPageSchema = pageEnvelope(accountResponseSchema);
+
 export interface AccountResponse {
   readonly id: string;
   readonly provider: string;
@@ -89,6 +113,22 @@ export function toAccountResponse(account: SocialAccount): AccountResponse {
   };
 }
 
+export const postResponseSchema = z.object({
+  id: z.string(),
+  socialAccountId: z.string(),
+  body: z.string(),
+  scheduledAt: z.string().nullable(),
+  status: postStatusSchema,
+  publishedAt: z.string().nullable(),
+  failedAt: z.string().nullable(),
+  failureReason: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+export const postEnvelopeSchema = dataEnvelope(postResponseSchema);
+export const postPageSchema = pageEnvelope(postResponseSchema);
+
 export interface PostResponse {
   readonly id: string;
   readonly socialAccountId: string;
@@ -96,6 +136,7 @@ export interface PostResponse {
   readonly scheduledAt: string | null;
   readonly status: string;
   readonly publishedAt: string | null;
+  readonly failedAt: string | null;
   readonly failureReason: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -109,6 +150,7 @@ export function toPostResponse(post: SocialPost): PostResponse {
     scheduledAt: post.scheduledAt?.toISOString() ?? null,
     status: post.status,
     publishedAt: post.publishedAt?.toISOString() ?? null,
+    failedAt: post.failedAt?.toISOString() ?? null,
     failureReason: post.failureReason,
     createdAt: post.createdAt.toISOString(),
     updatedAt: post.updatedAt.toISOString(),

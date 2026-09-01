@@ -76,6 +76,9 @@ const plugin: Plugin = {
       location: 'site.list.actions',
       label: 'サンプルPluginで見る',
       component: ExampleSiteAction,
+      // 対象リソース（06_画面設計.md §26）。任意項目だが、書いておくと
+      // リソースで絞り込む画面でも意図どおりに出る。
+      resource: 'site',
     });
 
     ui.registerExtension({

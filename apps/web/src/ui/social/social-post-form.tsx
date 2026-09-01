@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { canTransition, isPostStatus, type PostStatus } from '@/domain/social/social';
 import { apiRequest } from '@/ui/client/api-client';
 import { Alert, Button, FormField, Input, Select, Textarea } from '@/ui/components';
@@ -42,6 +42,15 @@ export interface SocialPostFormProps {
   readonly accounts: readonly AccountOption[];
   /** 新規なら undefined。 */
   readonly postId?: string;
+  /**
+   * フォームの脇に出すもの（`social.edit.sidebar` の描画結果）。
+   *
+   * **ここは Client Component なので、拡張点を自分で描けない。**
+   * Server Component 側で描いたものを受け取る。
+   * 渡されなければ脇の欄そのものを作らず、フォームを全幅にする
+   * （`site-form.tsx` と同じ形）。
+   */
+  readonly sidebar?: ReactNode;
 }
 
 /** ローカル時刻の `datetime-local` 値を、API へ渡せる ISO 文字列にする。 */
@@ -66,7 +75,7 @@ function toLocalInputValue(iso: string | null): string {
   return shifted.toISOString().slice(0, 16);
 }
 
-export function SocialPostForm({ title, initial, accounts, postId }: SocialPostFormProps) {
+export function SocialPostForm({ title, initial, accounts, postId, sidebar }: SocialPostFormProps) {
   const [message, setMessage] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, readonly string[]>>({});
   const [busy, setBusy] = useState(false);
@@ -144,7 +153,9 @@ export function SocialPostForm({ title, initial, accounts, postId }: SocialPostF
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: '1fr var(--tf-size-form)',
+          // **脇に出すものが無ければ2カラムにしない。** 空の <aside> を置いたままだと、
+          // Plugin が何も足していない環境でもフォームが 360px 分だけ狭く描かれる。
+          gridTemplateColumns: sidebar === undefined ? '1fr' : '1fr var(--tf-size-form)',
           gap: 'var(--tf-space-6)',
         }}
       >
@@ -232,13 +243,8 @@ export function SocialPostForm({ title, initial, accounts, postId }: SocialPostF
           </div>
         </form>
 
-        <aside>
-          {/*
-            型B のサイドバー（02_画面デザイン方針.md §4）。
-            Plugin の Extension Point（social.edit.sidebar）の位置を確保しておく。
-            デザインを詰めるときに位置が消えないよう、先に枠を置く。
-          */}
-        </aside>
+        {/* 型B のサイドバー（02_画面デザイン方針.md §4）。中身は Server Component 側から来る。 */}
+        {sidebar !== undefined && <aside>{sidebar}</aside>}
       </div>
     </>
   );

@@ -1,7 +1,9 @@
+import Link from 'next/link';
 import { listSocialAccounts, listSocialPosts } from '@/application/social/social-use-cases';
 import { providerLabel } from '@/domain/social/social';
+import { Button } from '@/ui/components';
 import { AppShell } from '@/ui/layout/app-shell';
-import { ExtensionPoint } from '@/ui/plugin/plugin-slot';
+import { ExtensionPoint, PluginActions } from '@/ui/plugin/plugin-slot';
 import { requirePageSession } from '@/ui/server/page-session';
 import { SocialAccounts } from '@/ui/social/social-accounts';
 import { SocialPosts } from '@/ui/social/social-posts';
@@ -52,6 +54,25 @@ export default async function SocialPage({
 
   return (
     <AppShell displayName={displayName} permissions={permissions}>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          gap: 'var(--tf-space-3)',
+          flexWrap: 'wrap',
+        }}
+      >
+        {/*
+          Plugin が足した操作（06_画面設計.md §26）。
+          `campaign.list.actions` / `site.list.actions` と同じ描画先を SNS にも置く。
+        */}
+        <PluginActions location="social.list.actions" permissions={permissions} context={context} />
+        {/* 配信結果は別画面にまとめる（06_画面設計.md §13「履歴」）。 */}
+        <Link href="/social/history">
+          <Button variant="secondary">配信履歴</Button>
+        </Link>
+      </div>
       <ExtensionPoint point="social.list.actions" permissions={permissions} context={context} />
       <SocialAccounts
         initialAccounts={accounts.items.map((account) => ({

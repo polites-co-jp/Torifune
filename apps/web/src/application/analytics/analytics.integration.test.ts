@@ -3,7 +3,9 @@ import { uuidv7 } from 'uuidv7';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   listAnalytics,
+  listAnalyticsPage,
   listTopPaths,
+  listTopPathsPage,
   recordAnalytics,
 } from '@/application/analytics/analytics-use-cases';
 import { collectAccess, resetDailySalts } from '@/application/analytics/collect';
@@ -364,6 +366,147 @@ describe('参照', () => {
         from: '2020-01-01',
         to: '2026-01-01',
         source: null,
+      }),
+    ).rejects.toThrow(ValidationError);
+  });
+});
+
+/**
+ * Pagination（05_API設計.md §33）。
+ *
+ * **analytics に単一リソースの id は無い**（複合キーの集計値）ため、
+ * `GET /{id}` は提供しない。必要な範囲は期間指定・絞り込みと Pagination で取る。
+ */
+describe('Pagination', () => {
+  const range = { siteId: null as string | null, source: null as string | null };
+
+  async function seedPoints(siteId: string, metrics: readonly string[]): Promise<void> {
+    for (const metric of metrics) {
+      await recordAnalytics(admin, {
+        siteId,
+        metricDate: today(),
+        source: 'com.example.ga',
+        metric,
+        value: 1,
+      });
+    }
+  }
+
+  it('total は条件に合う全件数で、items はそのページの分だけ', async () => {
+    const site = await makeSite();
+    await seedPoints(site.id, ['pageviews', 'visitors', 'sessions']);
+
+    const first = await listAnalyticsPage(admin, {
+      ...range,
+      siteId: site.id,
+      from: today(),
+      to: today(),
+      page: 1,
+      perPage: 2,
+    });
+
+    // 「そのページの件数」ではなく全件数を返す。
+    expect(first.total).toBe(3);
+    expect(first.items).toHaveLength(2);
+  });
+
+  it('次のページに残りが出て、前のページと重ならない', async () => {
+    const site = await makeSite();
+    await seedPoints(site.id, ['pageviews', 'visitors', 'sessions']);
+
+    const query = { ...range, siteId: site.id, from: today(), to: today(), perPage: 2 };
+    const first = await listAnalyticsPage(admin, { ...query, page: 1 });
+    const second = await listAnalyticsPage(admin, { ...query, page: 2 });
+
+    expect(second.total).toBe(3);
+    expect(second.items).toHaveLength(1);
+
+    const seen = [...first.items, ...second.items].map((point) => point.metric);
+    expect(new Set(seen).size).toBe(3);
+  });
+
+  it('範囲外のページは空になる（total は変わらない）', async () => {
+    const site = await makeSite();
+    await seedPoints(site.id, ['pageviews']);
+
+    const page = await listAnalyticsPage(admin, {
+      ...range,
+      siteId: site.id,
+      from: today(),
+      to: today(),
+      page: 99,
+      perPage: 20,
+    });
+
+    expect(page.items).toHaveLength(0);
+    expect(page.total).toBe(1);
+  });
+
+  it('絞り込みは total にも効く', async () => {
+    const site = await makeSite();
+    await seedPoints(site.id, ['pageviews', 'visitors']);
+
+    const filtered = await listAnalyticsPage(admin, {
+      siteId: site.id,
+      from: today(),
+      to: today(),
+      source: 'com.example.other',
+      page: 1,
+      perPage: 20,
+    });
+
+    expect(filtered.total).toBe(0);
+    expect(filtered.items).toHaveLength(0);
+  });
+
+  it('上位ページもページ指定できる（total はパスの種類数）', async () => {
+    const site = await makeSite();
+    for (const path of ['/a', '/b', '/c']) {
+      await collectAccess({
+        publicKey: site.publicKey,
+        path,
+        referrer: null,
+        ipAddress: '203.0.113.1',
+        userAgent: BROWSER,
+      });
+    }
+
+    const query = { ...range, siteId: site.id, from: today(), to: today(), perPage: 2 };
+    const first = await listTopPathsPage(admin, { ...query, page: 1 });
+    const second = await listTopPathsPage(admin, { ...query, page: 2 });
+
+    // 行数（3件のアクセス）ではなくパスの種類（3種）を数える。
+    expect(first.total).toBe(3);
+    expect(first.items).toHaveLength(2);
+    expect(second.items).toHaveLength(1);
+
+    const seen = [...first.items, ...second.items].map((row) => row.path);
+    expect(new Set(seen)).toEqual(new Set(['/a', '/b', '/c']));
+  });
+
+  it('analytics.read が無ければ読めない', async () => {
+    const noRole = await contextFor('viewer');
+    const stripped: AuthorizationContext = { ...noRole, permissions: new Set() };
+
+    await expect(
+      listAnalyticsPage(stripped, {
+        ...range,
+        from: today(),
+        to: today(),
+        page: 1,
+        perPage: 20,
+      }),
+    ).rejects.toThrow(ForbiddenError);
+  });
+
+  it('期間の検証はページ指定でも効く', async () => {
+    await expect(
+      listAnalyticsPage(admin, {
+        ...range,
+        from: '2020-01-01',
+        to: '2026-01-01',
+        page: 1,
+        perPage: 20,
       }),
     ).rejects.toThrow(ValidationError);
   });

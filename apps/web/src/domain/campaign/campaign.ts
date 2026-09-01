@@ -22,6 +22,13 @@ export interface Campaign {
   readonly endsOn: string | null;
   /** 対象の Webサイト。多対多。 */
   readonly siteIds: readonly string[];
+  /**
+   * 紐づくSNS投稿。多対多。
+   *
+   * 仕様（06_画面設計.md §14）が求める「キャンペーンとWebサイト、SNS投稿等を
+   * 関連付けられる構造」。`siteIds` と同じ扱いにする。
+   */
+  readonly socialPostIds: readonly string[];
   readonly createdAt: Date;
   readonly updatedAt: Date;
   readonly createdBy: string | null;

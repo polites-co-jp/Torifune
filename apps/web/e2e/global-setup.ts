@@ -47,6 +47,16 @@ async function seedAdministrator(connectionString: string): Promise<void> {
     await client.query('DELETE FROM login_attempts');
     await client.query('DELETE FROM system_settings');
     await client.query('DELETE FROM api_tokens');
+    // ダッシュボードの「最近の活動」が実行回数ぶん積み上がらないようにする。
+    await client.query('DELETE FROM audit_logs');
+    await client.query('DELETE FROM auth_audit_logs');
+    // リダイレクト型認証の State。期限切れでも行としては残る。
+    await client.query('DELETE FROM auth_authorization_states');
+    // 導入済み Plugin。**消さないと2回目以降の導入が 409 になる。**
+    // ファイルは `plugins/` に残るので、消えるのは「導入済み」という記録だけ。
+    await client.query('DELETE FROM plugin_operations');
+    await client.query('DELETE FROM plugin_store');
+    await client.query('DELETE FROM plugins');
 
     const id = uuidv7();
     const passwordHash = await hash(SEEDED_ADMIN.password);

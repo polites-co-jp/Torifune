@@ -53,6 +53,13 @@ export interface SocialPostView {
   readonly scheduledAt: string | null;
   readonly status: string;
   readonly publishedAt: string | null;
+  /**
+   * 配信に失敗した理由。
+   *
+   * `markFailed(id, reason)` で記録したものが返る。
+   * **以前はここが無く、渡した理由を読み返せなかった。**
+   */
+  readonly failureReason: string | null;
 }
 
 export interface SiteInput {
@@ -71,6 +78,8 @@ export interface CampaignView {
   readonly startsOn: string;
   readonly endsOn: string | null;
   readonly siteIds: readonly string[];
+  /** 紐づくSNS投稿（06_画面設計.md §14）。 */
+  readonly socialPostIds: readonly string[];
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -82,6 +91,8 @@ export interface CampaignInput {
   readonly startsOn: string;
   readonly endsOn?: string | null;
   readonly siteIds?: readonly string[];
+  /** 紐づくSNS投稿。**指定したら丸ごと置き換える**（`siteIds` と同じ）。 */
+  readonly socialPostIds?: readonly string[];
 }
 
 export interface AnalyticsPointView {

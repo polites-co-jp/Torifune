@@ -10,7 +10,7 @@ import { createRateLimiter } from './rate-limit';
  * Authentication Provider の登録と解決（04_認証設計.md §4）。
  *
  * 標準では標準認証を使う。Plugin が差し替えることで OIDC 等へ移行できる。
- * 差し替えの口は `011-plugin-runtime` でここへ繋ぐ。
+ * 差し替えは `plugin/context.ts` が行い、`plugin/authentication-adapter.ts` が仲介する。
  *
  * **Application 層はこの関数だけを見る。**
  * どの Provider が使われているかを本体のどこにも書かない。

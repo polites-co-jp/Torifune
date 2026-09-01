@@ -6,7 +6,9 @@ import {
   createUserSchema,
   toUserResponse,
   USER_SORT_FIELDS,
+  userEnvelopeSchema,
   userListQuerySchema,
+  userPageSchema,
 } from '@/api/schemas/user';
 import { createUser, listUsers } from '@/application/user/user-use-cases';
 
@@ -19,6 +21,7 @@ export const GET = defineRoute({
   summary: 'ユーザーの一覧を取得する',
   permission: 'user.manage',
   query: userListQuerySchema,
+  response: userPageSchema,
   handler: async ({ context, query }) => {
     const sort = parseSort(query.sort, USER_SORT_FIELDS, DEFAULT_SORT);
 
@@ -45,6 +48,8 @@ export const POST = defineRoute({
   summary: 'ユーザーを作成する',
   permission: 'user.manage',
   body: createUserSchema,
+  response: userEnvelopeSchema,
+  successStatus: 201,
   handler: async ({ context, body, request }) => {
     const created = await createUser(context, {
       loginId: body.loginId,

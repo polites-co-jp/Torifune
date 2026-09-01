@@ -3,6 +3,9 @@ import type {
   AuthenticationContext,
   AuthenticationProvider,
   AuthenticationResult,
+  AuthorizationCallback,
+  AuthorizationStart,
+  AuthorizationStartContext,
   SessionIssuer,
 } from '@/authentication/provider';
 import type { UserIdentity } from '@/authentication/identity';
@@ -21,6 +24,11 @@ import { userRepository } from '@/infrastructure/user-repository';
  * そのため `issue` は差し替え前の Provider（標準認証）のものを使い続ける。
  * ここを Plugin へ渡すと、Session Fixation 対策と失効の責任が
  * Plugin ごとにばらける。
+ *
+ * **リダイレクト型（OIDC 等）でも同じ。**
+ * `completeAuthorization` が返すのは「この外部 ID は Torifune のこのユーザーだ」まで。
+ * State の発行・照合・使い捨てと、セッションの発行は Core に残る
+ * （`025-redirect-authentication` 設計 §2）。
  */
 
 export interface AdaptOptions {
@@ -71,6 +79,57 @@ async function resolveIdentity(
   };
 }
 
+/**
+ * リダイレクト往復（`04_認証設計.md` §17 §21）を橋渡しする。
+ *
+ * **両方揃っているときだけ生やす。** 片方だけでは往復が閉じず、
+ * 「認可エンドポイントへは飛ぶがログインは決して成立しない」という
+ * 気づきにくい壊れ方になる。生やさなければ Core は `unsupported` と答えられる。
+ *
+ * **State / Nonce / Redirect URI は Core が発行して `context` で渡す。**
+ * ここでは Plugin の申告を一切受け取らない。
+ */
+function redirectMethodsOf(
+  provider: PluginAuthenticationProvider,
+): Pick<AuthenticationProvider, 'startAuthorization' | 'completeAuthorization'> {
+  const start = provider.startAuthorization;
+  const complete = provider.completeAuthorization;
+
+  if (start === undefined || complete === undefined) {
+    return {};
+  }
+
+  return {
+    async startAuthorization(context: AuthorizationStartContext): Promise<AuthorizationStart> {
+      return start.call(provider, {
+        ...toPluginContext(context),
+        state: context.state,
+        nonce: context.nonce,
+        redirectUri: context.redirectUri,
+      });
+    },
+
+    async completeAuthorization(
+      callback: AuthorizationCallback,
+      context: AuthenticationContext,
+    ): Promise<AuthenticationResult> {
+      const result = await complete.call(provider, callback, toPluginContext(context));
+      if (!result.ok) {
+        return { ok: false, reason: result.reason };
+      }
+
+      const identity = await resolveIdentity(result.identity, provider.id, context);
+      if (identity === null) {
+        // **理由を分けない。** `authenticate` と同じ扱い。
+        // 「そのユーザーは居ない」と返すと、外部の識別子から利用者を探れる。
+        return { ok: false, reason: 'invalid_credentials' };
+      }
+
+      return { ok: true, identity };
+    },
+  };
+}
+
 export function adaptPluginAuthenticationProvider(
   options: AdaptOptions,
 ): AuthenticationProvider & SessionIssuer {
@@ -78,6 +137,9 @@ export function adaptPluginAuthenticationProvider(
 
   return {
     id: provider.id,
+
+    // 往復型を実装している Plugin のときだけ生える。
+    ...redirectMethodsOf(provider),
 
     async authenticate(credentials, context): Promise<AuthenticationResult> {
       const result = await provider.authenticate(credentials, toPluginContext(context));
@@ -112,6 +174,10 @@ export function adaptPluginAuthenticationProvider(
     },
 
     // セッションの発行は差し替えない。
-    issue: (userId, context) => sessionIssuer.issue(userId, context),
+    //
+    // **`options` をそのまま渡す。** 落とすと、Authentication Provider を
+    // 差し替えた環境でだけ長期ログイン（Remember Me）が効かなくなる。
+    // 画面のチェックボックスは押せるのに効かない、という気づきにくい壊れ方になる。
+    issue: (userId, context, options) => sessionIssuer.issue(userId, context, options),
   };
 }

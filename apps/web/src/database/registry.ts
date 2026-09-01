@@ -5,8 +5,7 @@ import type { Connection, DatabaseProvider } from './provider';
  * Database Provider の登録と解決。
  *
  * 標準では PostgreSQL Provider を使う。Plugin が差し替えることで別の接続方式を
- * 実装できる（01_アーキテクチャ設計.md §9）。差し替えの口は
- * `011-plugin-runtime` でここへ繋ぐ。
+ * 実装できる（01_アーキテクチャ設計.md §9）。差し替えは `plugin/context.ts` が行う。
  *
  * ビジネスロジックは、どの Provider が使われているかを知らない。
  */

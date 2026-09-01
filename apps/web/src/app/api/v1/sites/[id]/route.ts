@@ -1,7 +1,7 @@
 import { deleteSite, getSite, updateSite } from '@/application/site/site-use-cases';
 import { dataResponse, noContentResponse } from '@/api/response';
 import { defineRoute } from '@/api/route';
-import { toSiteResponse, updateSiteSchema } from '@/api/schemas/site';
+import { siteEnvelopeSchema, toSiteResponse, updateSiteSchema } from '@/api/schemas/site';
 import { z } from 'zod';
 
 export const GET = defineRoute({
@@ -10,6 +10,7 @@ export const GET = defineRoute({
   path: '/sites/{id}',
   summary: 'Webサイトを取得する',
   permission: 'site.read',
+  response: siteEnvelopeSchema,
   handler: async ({ context, params }) => {
     const site = await getSite(context, { id: params['id'] ?? '' });
     return dataResponse(toSiteResponse(site));
@@ -23,6 +24,7 @@ export const PATCH = defineRoute({
   summary: 'Webサイトを更新する',
   permission: 'site.write',
   body: updateSiteSchema,
+  response: siteEnvelopeSchema,
   handler: async ({ context, params, body }) => {
     const site = await updateSite(context, {
       id: params['id'] ?? '',
@@ -42,6 +44,7 @@ export const DELETE = defineRoute({
   summary: 'Webサイトを削除する',
   permission: 'site.delete',
   body: z.object({ csrfToken: z.string().optional() }),
+  successStatus: 204,
   handler: async ({ context, params }) => {
     await deleteSite(context, { id: params['id'] ?? '' });
     return noContentResponse();

@@ -78,14 +78,10 @@ export async function collectAccess(input: CollectInput): Promise<CollectOutcome
   }
 
   return withConnection(async (connection) => {
-    const site = await connection.db
-      .selectFrom('sites')
-      .select(['id', 'status'])
-      .where('public_key', '=', input.publicKey)
-      .executeTakeFirst();
+    const site = await analyticsRepository.findSiteByPublicKey(connection, input.publicKey);
 
     // 存在しないキーと停止中のサイトを区別しない。
-    if (site === undefined || site.status === 'archived') {
+    if (site === null || site.status === 'archived') {
       return { ok: false };
     }
 

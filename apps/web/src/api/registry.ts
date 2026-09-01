@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 import type { PermissionName } from '@/domain/permission';
+import type { DeprecationNotice } from './deprecation';
 
 /**
  * エンドポイントの登録。OpenAPI 生成の入力になる。
@@ -17,8 +18,27 @@ export interface EndpointSpec {
   readonly permission: PermissionName | null;
   /** 公開 API 仕様に載せるか。 */
   readonly documented: boolean;
+  /**
+   * セッション認証だけを許すか。
+   *
+   * OpenAPI の `security` をここから決める。**実態と宣言をずらさない**ため、
+   * `defineRoute` が実際に使っている値をそのまま持つ。
+   */
+  readonly sessionOnly: boolean;
   readonly bodySchema?: z.ZodType | undefined;
   readonly querySchema?: z.ZodType | undefined;
+  /**
+   * 成功時の応答スキーマ（外側の `{ data }` まで含む）。
+   *
+   * **任意。** 全エンドポイントへ一度に付けると差分が大きくなりすぎるため、
+   * 主要なものから付けている。未宣言の一覧は E2E（`e2e/api-foundation.spec.ts`）で
+   * 固定してあり、増やすとテストが落ちて気づける。
+   */
+  readonly responseSchema?: z.ZodType | undefined;
+  /** 成功時のステータス。既定は 200。204 は本文を返さない。 */
+  readonly successStatus?: 200 | 201 | 204 | undefined;
+  /** 非推奨の告知（05_API設計.md §41）。 */
+  readonly deprecated?: DeprecationNotice | undefined;
 }
 
 const endpoints = new Map<string, EndpointSpec>();

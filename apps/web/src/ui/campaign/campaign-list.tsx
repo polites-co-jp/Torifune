@@ -14,6 +14,7 @@ import {
   type Column,
   type ToastMessage,
 } from '@/ui/components';
+import { campaignStatusLabel } from '@/ui/campaign/labels';
 
 /**
  * キャンペーン一覧（06_画面設計.md §14）。
@@ -28,14 +29,8 @@ export interface CampaignRow {
   readonly startsOn: string;
   readonly endsOn: string | null;
   readonly siteCount: number;
+  readonly postCount: number;
 }
-
-const STATUS_LABEL: Record<string, string> = {
-  draft: '下書き',
-  running: '実施中',
-  finished: '終了',
-  cancelled: '中止',
-};
 
 export function CampaignList({
   initialCampaigns,
@@ -85,7 +80,7 @@ export function CampaignList({
     {
       key: 'status',
       header: '状態',
-      render: (campaign) => STATUS_LABEL[campaign.status] ?? campaign.status,
+      render: (campaign) => campaignStatusLabel(campaign.status),
     },
     {
       key: 'period',
@@ -99,14 +94,26 @@ export function CampaignList({
       render: (campaign) => (campaign.siteCount === 0 ? '—' : `${campaign.siteCount} 件`),
     },
     {
+      key: 'posts',
+      header: 'SNS投稿',
+      render: (campaign) => (campaign.postCount === 0 ? '—' : `${campaign.postCount} 件`),
+    },
+    {
       key: 'actions',
       header: '',
-      render: (campaign) =>
-        canDelete ? (
-          <Button variant="danger" onClick={() => setDeleting(campaign)}>
-            削除
-          </Button>
-        ) : null,
+      render: (campaign) => (
+        <span style={{ display: 'flex', gap: 'var(--tf-space-2)' }}>
+          {/* 分析は参照だけなので、一覧を開けている相手には常に出す（06_画面設計.md §14）。 */}
+          <Link href={`/campaigns/${campaign.id}/analytics`}>
+            <Button variant="ghost">分析</Button>
+          </Link>
+          {canDelete && (
+            <Button variant="danger" onClick={() => setDeleting(campaign)}>
+              削除
+            </Button>
+          )}
+        </span>
+      ),
     },
   ];
 

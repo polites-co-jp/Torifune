@@ -2,6 +2,7 @@ import { csrfCookie } from '@/api/cookies';
 import { generateCsrfToken } from '@/api/csrf';
 import { dataResponse } from '@/api/response';
 import { defineRoute } from '@/api/route';
+import { csrfTokenEnvelopeSchema } from '@/api/schemas/auth';
 
 /**
  * CSRF トークンを発行する。
@@ -16,6 +17,7 @@ export const GET = defineRoute({
   summary: 'CSRF トークンを発行する',
   permission: null,
   reason: '認証前に必要になる。トークン自体は秘密ではなく、Cookie との一致だけが意味を持つ',
+  response: csrfTokenEnvelopeSchema,
   handler: async ({ request }) => {
     const token = generateCsrfToken();
     return dataResponse(

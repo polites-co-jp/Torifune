@@ -10,6 +10,7 @@ export const DELETE = defineRoute({
   summary: 'Webhook を削除する',
   permission: 'system.manage',
   body: z.object({ csrfToken: z.string().optional() }).optional(),
+  successStatus: 204,
   handler: async ({ context, params }) => {
     await deleteWebhook(context, { id: params['id'] as string });
     return noContentResponse();

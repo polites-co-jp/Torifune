@@ -119,16 +119,61 @@ export default tseslint.config(
   },
 
   // UI から Database へ直接触らない（docs/仕様書/06_画面設計.md §3）。
+  //
+  // **DB 製品の import を禁じるだけでは足りなかった。** 実際の抜け道は
+  // `withConnection` と Repository の直接呼び出しで、どちらも `pg` / `kysely` を
+  // 名指ししないため素通りしていた（dashboard / analytics / settings の3画面と
+  // `/api/v1/roles`）。Connection を手に入れる経路そのものを塞ぐ。
   {
     files: ['apps/web/src/ui/**/*.{ts,tsx}', 'apps/web/src/app/**/*.{ts,tsx}'],
+    ignores: ['apps/web/src/**/*.test.{ts,tsx}'],
     rules: {
       'no-restricted-imports': [
         'error',
         {
-          paths: DB_PACKAGES.map((name) => ({
-            name,
-            message: 'UI から Database へ直接アクセスしてはならない。Application 層を経由する。',
-          })),
+          paths: [
+            ...DB_PACKAGES.map((name) => ({
+              name,
+              message: 'UI から Database へ直接アクセスしてはならない。Application 層を経由する。',
+            })),
+            {
+              name: '@/application/transaction',
+              message:
+                'UI から Connection を取ってはならない（Application 層の認可を迂回する）。UseCase を作って呼ぶ。',
+            },
+          ],
+          patterns: [
+            {
+              group: ['@/infrastructure/*-repository', '**/infrastructure/*-repository'],
+              message:
+                'UI から Repository を直接呼んではならない（認可が抜ける）。UseCase を経由する。',
+            },
+          ],
+        },
+      ],
+    },
+  },
+
+  // Application 層から直接 SQL を書かない（docs/仕様書/02_データベース設計.md §7）。
+  //
+  // **UI だけを見ていて漏れていた。** UI の直叩きを塞いだあとも、
+  // `application/webhook/` と `application/analytics/{rollup,collect}.ts` が
+  // `connection.db` を直接叩いていた。Webhook はデータアクセス層が丸ごと無く、
+  // UseCase がテーブル名・カラム名へ直結していた。
+  //
+  // `.db` への参照を禁止する形にしているのは、import では捕まらないため。
+  // Connection は Application 層が正当に持つもので、
+  // **問題はそこから Kysely を取り出すこと**にある。
+  {
+    files: ['apps/web/src/application/**/*.ts'],
+    ignores: ['apps/web/src/application/**/*.test.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "MemberExpression[property.name='db']",
+          message:
+            'Application 層から直接 SQL を書かない。Repository（infrastructure/*-repository.ts）へ移す。',
         },
       ],
     },
