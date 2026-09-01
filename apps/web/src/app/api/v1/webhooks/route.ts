@@ -24,6 +24,8 @@ export const POST = defineRoute({
   method: 'POST',
   path: '/webhooks',
   summary: 'Webhook を登録する',
+  // createdResponse（201）を返す。宣言しないと OpenAPI が 200 と書く。
+  successStatus: 201,
   permission: 'system.manage',
   body: z.object({
     name: z.string().min(1, '入力してください。').max(WEBHOOK_NAME_MAX_LENGTH),

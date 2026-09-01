@@ -126,7 +126,13 @@ export default tseslint.config(
   // `/api/v1/roles`）。Connection を手に入れる経路そのものを塞ぐ。
   {
     files: ['apps/web/src/ui/**/*.{ts,tsx}', 'apps/web/src/app/**/*.{ts,tsx}'],
-    ignores: ['apps/web/src/**/*.test.{ts,tsx}'],
+    ignores: [
+      'apps/web/src/**/*.test.{ts,tsx}',
+      // **Readiness だけは例外。** DB へ「到達できるか」を見るのが仕事で、
+      // データを読まない。通すべき UseCase が存在しない
+      // （認可も要らない。落ちているかどうかは秘密ではない）。
+      'apps/web/src/app/api/ready/route.ts',
+    ],
     rules: {
       'no-restricted-imports': [
         'error',
@@ -136,17 +142,25 @@ export default tseslint.config(
               name,
               message: 'UI から Database へ直接アクセスしてはならない。Application 層を経由する。',
             })),
-            {
-              name: '@/application/transaction',
-              message:
-                'UI から Connection を取ってはならない（Application 層の認可を迂回する）。UseCase を作って呼ぶ。',
-            },
           ],
           patterns: [
             {
               group: ['@/infrastructure/*-repository', '**/infrastructure/*-repository'],
               message:
                 'UI から Repository を直接呼んではならない（認可が抜ける）。UseCase を経由する。',
+            },
+            // **相対パスも塞ぐ。** 完全一致の `paths` だけだと
+            // `../application/transaction` で素通りできた。
+            {
+              group: ['@/application/transaction', '**/application/transaction'],
+              message:
+                'UI から Connection を取ってはならない（Application 層の認可を迂回する）。UseCase を作って呼ぶ。',
+            },
+            // `withConnection` の中身そのもの。ここを開けたままだと
+            // 上を塞いでも1行で Connection が取れる。
+            {
+              group: ['@/database/registry', '**/database/registry'],
+              message: 'UI から Database Provider を直接触ってはならない。UseCase を作って呼ぶ。',
             },
           ],
         },
@@ -172,6 +186,13 @@ export default tseslint.config(
         'error',
         {
           selector: "MemberExpression[property.name='db']",
+          message:
+            'Application 層から直接 SQL を書かない。Repository（infrastructure/*-repository.ts）へ移す。',
+        },
+        // **ブラケット記法も塞ぐ。** `connection['db']` は上の selector に
+        // 掛からず、素通りできた。
+        {
+          selector: "MemberExpression[computed=true][property.value='db']",
           message:
             'Application 層から直接 SQL を書かない。Repository（infrastructure/*-repository.ts）へ移す。',
         },

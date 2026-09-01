@@ -196,3 +196,76 @@ describe('掲載範囲', () => {
     expect(Object.keys(build().paths)).toEqual(['/things']);
   });
 });
+
+describe('Parameter', () => {
+  /**
+   * **OpenAPI 3.1 では、パスに書いた変数に対応する parameter が必須。**
+   * 無いと文書として成立せず、クライアント生成に使えない（§40）。
+   */
+  it('パスの変数が path parameter として出る', () => {
+    registerEndpoint(spec({ operationId: 'getThing', path: '/things/{id}' }));
+
+    const document = buildOpenApiDocument() as {
+      paths: Record<string, Record<string, { parameters?: { name: string; in: string }[] }>>;
+    };
+    const parameters = document.paths['/things/{id}']?.['get']?.parameters ?? [];
+
+    expect(parameters).toContainEqual(
+      expect.objectContaining({ name: 'id', in: 'path', required: true }),
+    );
+  });
+
+  it('複数の変数がすべて出る', () => {
+    registerEndpoint(spec({ operationId: 'getNested', path: '/things/{id}/parts/{partId}' }));
+
+    const document = buildOpenApiDocument() as {
+      paths: Record<string, Record<string, { parameters?: { name: string }[] }>>;
+    };
+    const names = (document.paths['/things/{id}/parts/{partId}']?.['get']?.parameters ?? []).map(
+      (parameter) => parameter.name,
+    );
+
+    expect(names).toEqual(['id', 'partId']);
+  });
+
+  /**
+   * **スキーマ全体を1個の `query` にしない。**
+   * そうすると、この文書から生成したクライアントは
+   * `?page=1&perPage=20` ではなく `?query=...` を送ることになる。
+   */
+  it('クエリが項目ごとの parameter になる', () => {
+    registerEndpoint(
+      spec({
+        operationId: 'listThings',
+        querySchema: z.object({ page: z.coerce.number().optional(), keyword: z.string() }),
+      }),
+    );
+
+    const document = buildOpenApiDocument() as {
+      paths: Record<string, Record<string, { parameters?: { name: string; in: string }[] }>>;
+    };
+    const parameters = document.paths['/things']?.['get']?.parameters ?? [];
+
+    expect(parameters.map((parameter) => parameter.name).sort()).toEqual(['keyword', 'page']);
+    expect(parameters.every((parameter) => parameter.in === 'query')).toBe(true);
+    // `query` という名前のパラメータを作らない。
+    expect(parameters.some((parameter) => parameter.name === 'query')).toBe(false);
+  });
+
+  it('必須のクエリだけ required になる', () => {
+    registerEndpoint(
+      spec({
+        operationId: 'listRequired',
+        querySchema: z.object({ page: z.string().optional(), keyword: z.string() }),
+      }),
+    );
+
+    const document = buildOpenApiDocument() as {
+      paths: Record<string, Record<string, { parameters?: { name: string; required: boolean }[] }>>;
+    };
+    const parameters = document.paths['/things']?.['get']?.parameters ?? [];
+
+    expect(parameters.find((parameter) => parameter.name === 'keyword')?.required).toBe(true);
+    expect(parameters.find((parameter) => parameter.name === 'page')?.required).toBe(false);
+  });
+});

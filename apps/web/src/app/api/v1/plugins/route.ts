@@ -28,6 +28,8 @@ export const POST = defineRoute({
   method: 'POST',
   path: '/plugins',
   summary: '配置済みの Plugin を導入する',
+  // createdResponse（201）を返す。宣言しないと OpenAPI が 200 と書く。
+  successStatus: 201,
   permission: 'plugin.manage',
   body: installPluginSchema,
   handler: async ({ context, body }) => {

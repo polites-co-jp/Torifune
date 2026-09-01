@@ -110,9 +110,9 @@ pnpm migrate        # DB マイグレーション
 docker compose up -d postgres-test
 ```
 
-* **結合テスト**（`pnpm test`）は `TORIFUNE_TEST_DATABASE_URL` を見ます。
+- **結合テスト**（`pnpm test`）は `TORIFUNE_TEST_DATABASE_URL` を見ます。
   テストごとに使い捨てのデータベースを作るので、既存のデータは触りません。
-* **E2E**（`pnpm test:e2e`）は `DATABASE_URL` を見て、**そのデータベースの行を
+- **E2E**（`pnpm test:e2e`）は `DATABASE_URL` を見て、**そのデータベースの行を
   全部消してから**開始します。E2E 専用のデータベースを指してください。
 
 ```bash

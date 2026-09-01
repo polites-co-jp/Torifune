@@ -117,6 +117,62 @@ function descriptionFor(endpoint: EndpointSpec): string | undefined {
   return deprecationDescription(endpoint.deprecated);
 }
 
+interface OpenApiParameter {
+  readonly name: string;
+  readonly in: 'path' | 'query';
+  readonly required: boolean;
+  readonly schema: unknown;
+  readonly description?: string;
+}
+
+/**
+ * `/sites/{id}` の `{id}` を取り出す。
+ *
+ * **OpenAPI 3.1 では、パスに書いた変数に対応する parameter が必須。**
+ * 無いと文書として成立せず、クライアント生成（05_API設計.md §40）に使えない。
+ */
+function pathParametersOf(path: string): OpenApiParameter[] {
+  return [...path.matchAll(/\{([^}]+)\}/g)].map((match) => ({
+    name: match[1] ?? '',
+    in: 'path' as const,
+    // パスの一部なので常に必須。
+    required: true,
+    schema: { type: 'string' },
+  }));
+}
+
+/**
+ * クエリを**1件ずつ**の parameter にする。
+ *
+ * **スキーマ全体を1個の `query` という parameter にしてはいけない。**
+ * そうすると、この文書から生成したクライアントは
+ * `?page=1&perPage=20` ではなく `?query=...` を送ることになる。
+ */
+function queryParametersOf(endpoint: EndpointSpec): OpenApiParameter[] {
+  const schema = jsonSchemaOf(endpoint.querySchema);
+  if (schema === undefined) {
+    return [];
+  }
+
+  const object = schema as {
+    properties?: Record<string, unknown>;
+    required?: readonly string[];
+  };
+  const properties = object.properties ?? {};
+  const required = new Set(object.required ?? []);
+
+  return Object.entries(properties).map(([name, propertySchema]) => {
+    const described = propertySchema as { description?: string };
+    return {
+      name,
+      in: 'query' as const,
+      required: required.has(name),
+      schema: propertySchema,
+      ...(described.description === undefined ? {} : { description: described.description }),
+    };
+  });
+}
+
 export function buildOpenApiDocument(): Record<string, unknown> {
   const paths: Record<string, Record<string, OpenApiOperation>> = {};
 
@@ -143,15 +199,9 @@ export function buildOpenApiDocument(): Record<string, unknown> {
       operation['x-required-permission'] = endpoint.permission;
     }
 
-    const querySchema = jsonSchemaOf(endpoint.querySchema);
-    if (querySchema !== undefined) {
-      operation.parameters = [
-        {
-          name: 'query',
-          in: 'query',
-          schema: querySchema,
-        },
-      ];
+    const parameters = [...pathParametersOf(endpoint.path), ...queryParametersOf(endpoint)];
+    if (parameters.length > 0) {
+      operation.parameters = parameters;
     }
 
     const bodySchema = jsonSchemaOf(endpoint.bodySchema);

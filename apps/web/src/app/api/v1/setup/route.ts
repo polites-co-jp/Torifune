@@ -16,6 +16,8 @@ export const POST = defineRoute({
   method: 'POST',
   path: '/setup',
   summary: '最初の管理者を作成する',
+  // createdResponse（201）を返す。宣言しないと OpenAPI が 200 と書く。
+  successStatus: 201,
   permission: null,
   reason: '管理者が0人のときだけ開く。認可する相手がまだ存在しない',
   body: z.object({
