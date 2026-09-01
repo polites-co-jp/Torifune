@@ -16,7 +16,7 @@ import { buildSecurityHeaders, generateNonce } from '@/security-headers';
  * middleware で認可すると、判定が2箇所になって食い違う。
  */
 
-export function middleware(request: NextRequest): NextResponse {
+export function proxy(request: NextRequest): NextResponse {
   // Preflight は本体の処理へ通さない。通しても意味が無く、
   // 認証や CSRF の検証にかかって落ちるだけ。
   if (request.method === 'OPTIONS' && request.nextUrl.pathname.startsWith('/api/')) {

@@ -32,6 +32,7 @@ export const AUDIT_RESOURCE_TYPES = [
   'social_post',
   'plugin',
   'plugin_settings',
+  'api_token',
 ] as const;
 
 export type AuditResourceType = (typeof AUDIT_RESOURCE_TYPES)[number];

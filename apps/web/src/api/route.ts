@@ -3,7 +3,11 @@ import {
   requirePermission,
   type AuthorizationContext,
 } from '@/application/authorization/authorize';
-import { buildAuthorizationContext } from '@/application/authorization/context';
+import {
+  buildApiTokenContext,
+  buildAuthorizationContext,
+} from '@/application/authorization/context';
+import { bearerTokenOf } from '@/domain/api-token';
 import type { PermissionName } from '@/domain/permission';
 import { ConflictError, NotFoundError, ValidationError } from '@/domain/repository';
 import { log } from '@/infrastructure/logging';
@@ -55,6 +59,13 @@ export interface RouteDefinition<TBodySchema extends z.ZodType, TQuerySchema ext
   readonly query?: TQuerySchema;
   /** 公開 API 仕様に載せるか。内部エンドポイントは false。 */
   readonly documented?: boolean;
+  /**
+   * セッション認証だけを許す（API Token では呼べない）。
+   *
+   * Token から Token を作れると、Scope を絞った Token より広い Token を
+   * 発行できてしまう（021-api-token 設計 §5）。
+   */
+  readonly sessionOnly?: boolean;
   /**
    * Rate Limit。
    *
@@ -128,7 +139,16 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
         }
       }
 
+      // **Bearer が付いていれば Bearer で認証する。**
+      // Cookie と両方あるときに「どちらでも通る」にすると、
+      // CSRF 検証を Bearer で迂回できてしまう（設計 §2.5）。
+      const bearer = bearerTokenOf(request.headers.get('authorization'));
+
       // 状態を変えるメソッドは CSRF を検証する（04_認証設計.md §12）。
+      //
+      // **Bearer 認証では検証しない。** CSRF は「ブラウザが Cookie を自動送信すること」
+      // への対策で、`Authorization` ヘッダは自動送信されない。
+      // 検証したままにすると、API クライアントが更新系を一切呼べない。
       let rawBody: unknown;
       if (!SAFE_METHODS.has(definition.method)) {
         if ((definition.bodyKind ?? 'json') === 'json') {
@@ -138,20 +158,31 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
             .catch(() => undefined);
         }
 
-        const bodyToken =
-          typeof rawBody === 'object' && rawBody !== null && 'csrfToken' in rawBody
-            ? String((rawBody as Record<string, unknown>)['csrfToken'])
-            : undefined;
+        if (bearer === null) {
+          const bodyToken =
+            typeof rawBody === 'object' && rawBody !== null && 'csrfToken' in rawBody
+              ? String((rawBody as Record<string, unknown>)['csrfToken'])
+              : undefined;
 
-        if (!verifyCsrf(request, { cookieToken: readCookie(request, CSRF_COOKIE), bodyToken })) {
-          return errorResponse('CSRF_FAILED', undefined, cors);
+          if (!verifyCsrf(request, { cookieToken: readCookie(request, CSRF_COOKIE), bodyToken })) {
+            return errorResponse('CSRF_FAILED', undefined, cors);
+          }
         }
       }
 
-      const context = await buildAuthorizationContext(
-        readCookie(request, SESSION_COOKIE),
-        requestInfoOf(request),
-      );
+      if (bearer !== null && definition.sessionOnly === true) {
+        // Token から Token を作れると、Scope を絞った Token より広い Token を
+        // 発行できてしまい、Scope の意味が無くなる（設計 §5）。
+        return errorResponse('UNAUTHENTICATED', undefined, cors);
+      }
+
+      const context =
+        bearer === null
+          ? await buildAuthorizationContext(
+              readCookie(request, SESSION_COOKIE),
+              requestInfoOf(request),
+            )
+          : await buildApiTokenContext(bearer, requestInfoOf(request));
 
       if (definition.permission !== null) {
         requirePermission(context, definition.permission);

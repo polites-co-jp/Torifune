@@ -93,6 +93,22 @@ export interface AuditLogsTable {
   occurred_at: CreatedAt;
 }
 
+/** API Token（05_API設計.md §37-38）。設計は docs/設計/021-api-token/。 */
+export interface ApiTokensTable {
+  id: string;
+  user_id: string;
+  name: string;
+  /** 平文は保存しない。SHA-256 のみ。 */
+  token_hash: string;
+  /** 一覧で見分けるための先頭部分。これだけでは認証に使えない。 */
+  prefix: string;
+  scopes: string[];
+  expires_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  last_used_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  revoked_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  created_at: CreatedAt;
+}
+
 export interface SitesTable {
   id: string;
   name: string;
@@ -197,6 +213,7 @@ export interface Schema {
   sessions: SessionsTable;
   auth_audit_logs: AuthAuditLogsTable;
   audit_logs: AuditLogsTable;
+  api_tokens: ApiTokensTable;
   password_reset_tokens: PasswordResetTokensTable;
   login_attempts: LoginAttemptsTable;
   schema_migrations: SchemaMigrationsTable;

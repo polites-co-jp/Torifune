@@ -308,13 +308,13 @@ describe('Torifune の初期スキーマ', () => {
     ).rejects.toThrowError();
   });
 
-  it('初期 Role が3件、初期 Permission が9件ある', async () => {
+  it('初期 Role が3件、初期 Permission が10件ある', async () => {
     const roles = await queryScratch<{ name: string }>('SELECT name FROM roles ORDER BY name');
     expect(roles.map((r) => r.name)).toEqual(['administrator', 'editor', 'viewer']);
 
     // 003 で content.* を取り下げたため 9 件（改訂履歴.md 2026-08-24）。
     const permissions = await queryScratch<{ name: string }>('SELECT name FROM permissions');
-    expect(permissions).toHaveLength(9);
+    expect(permissions).toHaveLength(10);
   });
 
   it('administrator が全 Permission を持つ', async () => {

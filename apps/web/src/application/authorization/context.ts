@@ -2,8 +2,12 @@ import { getCurrentUser } from '../auth/current-user';
 import type { RequestInfo } from '../auth/context';
 import type { UserIdentity } from '../../authentication/identity';
 import type { Connection } from '../../database/provider';
+import { effectiveTokenPermissions, hashApiToken, isUsable } from '../../domain/api-token';
 import type { PermissionName } from '../../domain/permission';
+import { apiTokenRepository } from '../../infrastructure/api-token-repository';
+import { log } from '../../infrastructure/logging';
 import { roleRepository } from '../../infrastructure/role-repository';
+import { userRepository } from '../../infrastructure/user-repository';
 import { withConnection } from '../transaction';
 import type { AuthorizationContext } from './authorize';
 
@@ -43,6 +47,68 @@ export async function buildAuthorizationContext(
     return {
       identity,
       permissions: await effectivePermissions(connection, identity.userId),
+      connection,
+      request,
+    };
+  });
+}
+
+/**
+ * API Token から認可の文脈を組み立てる（05_API設計.md §37-38）。
+ *
+ * **実効 Permission は「所有者のいまの Permission ∩ Token の Scope」。**
+ * 固定した Scope をそのまま信じると、ロールを外されたユーザーの Token が
+ * 外す前の権限で動き続ける。Token は権限を増やせない。絞るだけ。
+ *
+ * 使えない Token（失効・期限切れ）と、所有者が無効化されている場合は
+ * 未認証として扱う。**理由は呼び出し側へ伝えない。**
+ * 伝えると、Token の状態を調べる手段になる。
+ */
+export async function buildApiTokenContext(
+  bearerToken: string,
+  request: RequestInfo,
+): Promise<AuthorizationContext> {
+  return withConnection(async (connection) => {
+    const anonymous: AuthorizationContext = {
+      identity: null,
+      permissions: new Set<PermissionName>(),
+      connection,
+      request,
+    };
+
+    const token = await apiTokenRepository.findByHash(connection, hashApiToken(bearerToken));
+    if (token === null || !isUsable(token, new Date())) {
+      return anonymous;
+    }
+
+    const owner = await userRepository.findById(connection, token.userId);
+    if (owner === null || owner.status !== 'active') {
+      return anonymous;
+    }
+
+    const ownerPermissions = await effectivePermissions(connection, owner.id);
+
+    // 最終利用時刻の更新に失敗しても認証は通す。
+    // 記録のための書き込みで、認証そのものを止める理由が無い。
+    try {
+      await apiTokenRepository.touch(connection, token.id, new Date());
+    } catch (error) {
+      log.warn('failed to update api token last_used_at', {
+        tokenId: token.id,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    return {
+      identity: {
+        userId: owner.id,
+        loginId: owner.loginId,
+        displayName: owner.displayName,
+        email: owner.email,
+        providerId: 'api-token',
+        externalUserId: null,
+      },
+      permissions: effectiveTokenPermissions(ownerPermissions, token.scopes),
       connection,
       request,
     };

@@ -58,12 +58,12 @@ afterEach(async () => {
 });
 
 describe('実効 Permission', () => {
-  it('administrator は 9 種すべてを持つ', async () => {
+  it('administrator は 10 種すべてを持つ', async () => {
     const userId = await createUserWithRoles(['administrator']);
 
     const permissions = await withConnection((c) => effectivePermissions(c, userId));
 
-    expect(permissions.size).toBe(9);
+    expect(permissions.size).toBe(10);
   });
 
   it('viewer は read 系だけを持つ', async () => {

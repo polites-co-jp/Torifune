@@ -60,6 +60,7 @@ export const CORE_PERMISSIONS = [
   'social.delete',
   'user.manage',
   'plugin.manage',
+  'token.manage',
   'system.manage',
 ] as const;
 
@@ -79,6 +80,8 @@ export const HIGH_PRIVILEGE_PERMISSIONS: readonly CorePermission[] = [
   'system.manage',
   'user.manage',
   'plugin.manage',
+  // API Token はアカウントの分身を作る操作。
+  'token.manage',
 ];
 
 export function isHighPrivilegePermission(permission: string): boolean {
@@ -100,6 +103,7 @@ export const PERMISSION_DESCRIPTIONS: Readonly<Record<CorePermission, string>> =
   'social.delete': 'SNSアカウントと投稿を削除する',
   'user.manage': 'ユーザーとロールを管理する（管理者を作れる）',
   'plugin.manage': 'プラグインを導入・有効化する（任意のコードを動かせる）',
+  'token.manage': 'APIトークンを発行・失効する（アカウントの分身を作れる）',
   'system.manage': 'システム全体の設定を変更する（認証方式を差し替えられる）',
 };
 
