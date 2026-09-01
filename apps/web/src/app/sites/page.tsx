@@ -42,7 +42,12 @@ export default async function SitesPage({
 
   return (
     <AppShell displayName={displayName} permissions={permissions}>
-      <PluginActions location="site.list.actions" permissions={permissions} context={context} />
+      <PluginActions
+        location="site.list.actions"
+        resource="site"
+        permissions={permissions}
+        context={context}
+      />
       <ExtensionPoint point="site.list.actions" permissions={permissions} context={context} />
       <SiteList
         initialSites={result.items.map((site) => ({

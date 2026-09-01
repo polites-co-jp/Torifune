@@ -126,10 +126,24 @@ export function ExtensionPoint({ point, permissions, context, props = {} }: Exte
 
 export interface PluginActionsProps extends PluginSlotProps {
   readonly location: string;
+  /**
+   * その枠が扱うリソース（`site` など、06_画面設計.md §26）。
+   *
+   * 渡すと、対象リソースを宣言した Action のうち一致するものだけを描く。
+   * **対象を宣言していない Action は絞り込みでも落とさない。**
+   * 落とすと、`resource` を知らない既存の Plugin が画面から消える。
+   */
+  readonly resource?: string;
 }
 
-export function PluginActions({ location, permissions, context, props = {} }: PluginActionsProps) {
-  const actions = collectActions(location, permissions);
+export function PluginActions({
+  location,
+  permissions,
+  context,
+  resource,
+  props = {},
+}: PluginActionsProps) {
+  const actions = collectActions(location, permissions, resource);
 
   if (actions.length === 0) {
     return null;

@@ -44,7 +44,12 @@ export default async function CampaignsPage({
 
   return (
     <AppShell displayName={displayName} permissions={permissions}>
-      <PluginActions location="campaign.list.actions" permissions={permissions} context={context} />
+      <PluginActions
+        location="campaign.list.actions"
+        resource="campaign"
+        permissions={permissions}
+        context={context}
+      />
       <ExtensionPoint point="campaign.list.actions" permissions={permissions} context={context} />
       <CampaignList
         initialCampaigns={result.items.map((campaign) => ({

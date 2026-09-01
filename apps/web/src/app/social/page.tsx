@@ -67,7 +67,12 @@ export default async function SocialPage({
           Plugin が足した操作（06_画面設計.md §26）。
           `campaign.list.actions` / `site.list.actions` と同じ描画先を SNS にも置く。
         */}
-        <PluginActions location="social.list.actions" permissions={permissions} context={context} />
+        <PluginActions
+          location="social.list.actions"
+          resource="social_account"
+          permissions={permissions}
+          context={context}
+        />
         {/* 配信結果は別画面にまとめる（06_画面設計.md §13「履歴」）。 */}
         <Link href="/social/history">
           <Button variant="secondary">配信履歴</Button>
