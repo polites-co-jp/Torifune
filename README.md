@@ -65,12 +65,15 @@ pnpm migrate        # DB マイグレーション
 ```text
 plugins/
 └── my-plugin/
-    ├── plugin.json
-    ├── backend/
-    ├── frontend/
-    ├── migrations/
+    ├── plugin.json      # 必須。ディレクトリ名と id を一致させる
+    ├── index.tsx        # 必須（index.ts でも可）。Plugin を default export する
     └── README.md
 ```
+
+`plugin.json` と `index.ts`/`index.tsx` だけが必須です。
+それ以外のファイル・ディレクトリの構成は自由です。
+プラグインのデータは Plugin Store（`context.store`）へ保存します。
+プラグインが独自のテーブルやマイグレーションを持つ方式は提供していません。
 
 > **注意：プラグインは信頼されたコードとして扱われます。**
 > インストールは、実質的に Torifune へ追加のコードを導入する操作です。
