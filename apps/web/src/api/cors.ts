@@ -74,3 +74,43 @@ export function corsHeaders(
     Vary: 'Origin',
   };
 }
+
+/** Preflight で許可するメソッド。API が実際に使うものだけを挙げる。 */
+const ALLOWED_METHODS = 'GET, POST, PUT, PATCH, DELETE, OPTIONS';
+
+/**
+ * Preflight で許可するヘッダ。
+ *
+ * **`x-csrf-token` を含める。** 含めないと、更新系のクロスオリジン要求が
+ * 必ずプリフライトで落ちる（04_認証設計.md §12 が要求するヘッダなので、
+ * CORS を有効にした時点で確実に踏む）。
+ */
+const ALLOWED_HEADERS = 'Content-Type, X-CSRF-Token';
+
+/** ブラウザが Preflight の結果を保持してよい秒数。 */
+const MAX_AGE_SECONDS = 600;
+
+/**
+ * Preflight（`OPTIONS`）への応答ヘッダ（05_API設計.md §43）。
+ *
+ * 許可していない Origin には**何も返さない**（空を返す）。
+ * 呼び出し側は空なら CORS ヘッダ無しで 204 を返し、ブラウザ側で落とさせる。
+ */
+export function corsPreflightHeaders(
+  request: Request,
+  env?: Readonly<Record<string, string | undefined>>,
+): Record<string, string> {
+  const base = corsHeaders(request, env);
+  if (Object.keys(base).length === 0) {
+    return {};
+  }
+
+  return {
+    ...base,
+    'Access-Control-Allow-Methods': ALLOWED_METHODS,
+    'Access-Control-Allow-Headers': ALLOWED_HEADERS,
+    'Access-Control-Max-Age': String(MAX_AGE_SECONDS),
+    // Origin だけで振り分けると、プリフライトの応答が別の要求へ再利用されうる。
+    Vary: 'Origin, Access-Control-Request-Method, Access-Control-Request-Headers',
+  };
+}
