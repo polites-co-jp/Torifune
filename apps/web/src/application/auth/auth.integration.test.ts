@@ -4,6 +4,7 @@ import { hashPassword } from '../../authentication/password';
 import { hashSessionToken } from '../../authentication/session-token';
 import type { Connection } from '../../database/provider';
 import { setAuthenticationProvider } from '../../authentication/registry';
+import { SYSTEM_SETTING_KEYS } from '../../domain/system-settings';
 import { buildPasswordResetMessage } from '../../infrastructure/notification/message';
 import { useScratchDatabase, type ScratchDatabase } from '../../test-support/database';
 import { setNotifier, type Notification } from '../notification';
@@ -99,6 +100,10 @@ afterEach(async () => {
     });
     createdUserIds.length = 0;
   }
+  // 設定はテストをまたいで残ると、次のテストの前提を壊す。
+  await withConnection(async (connection) => {
+    await connection.db.deleteFrom('system_settings').execute();
+  });
 });
 
 describe('login', () => {
@@ -638,6 +643,56 @@ describe('パスワードリセット', () => {
     expect(JSON.stringify(sentNotifications[0]?.data)).not.toContain(
       sentNotifications[0]?.secret ?? 'x',
     );
+  });
+
+  /**
+   * 長期ログイン（04_認証設計.md §11、015b-settings 設計 §3.3）。
+   *
+   * 方式は「セッションの有効期限を延ばす」（`015-settings` §9 で決定）。
+   */
+  it('Remember Me を指定すると既定より長いセッションになる', async () => {
+    const user = await createUser();
+
+    const normal = await login({
+      loginId: user.loginId,
+      password: user.password,
+      request,
+    });
+    const long = await login({
+      loginId: user.loginId,
+      password: user.password,
+      request,
+      rememberMe: true,
+    });
+
+    if (!normal.ok || !long.ok) throw new Error('ログインに失敗した');
+    expect(long.expiresAt.getTime()).toBeGreaterThan(normal.expiresAt.getTime());
+  });
+
+  /** 組織の方針で禁止できる。チェックしても延びない。 */
+  it('設定で禁止していれば Remember Me は効かない', async () => {
+    const user = await createUser();
+
+    // 設定の保存経路は system-settings の結合テストで見ている。
+    // ここで見たいのは「ログインが設定を読むこと」。
+    await withConnection(async (connection) => {
+      await connection.db
+        .insertInto('system_settings')
+        .values({ key: SYSTEM_SETTING_KEYS.rememberMeEnabled, value: JSON.stringify(false) })
+        .execute();
+    });
+
+    const normal = await login({ loginId: user.loginId, password: user.password, request });
+    const asked = await login({
+      loginId: user.loginId,
+      password: user.password,
+      request,
+      rememberMe: true,
+    });
+
+    if (!normal.ok || !asked.ok) throw new Error('ログインに失敗した');
+    // 誤差を吸収する。同じ既定期間であることが見たい。
+    expect(Math.abs(asked.expiresAt.getTime() - normal.expiresAt.getTime())).toBeLessThan(5_000);
   });
 
   /**

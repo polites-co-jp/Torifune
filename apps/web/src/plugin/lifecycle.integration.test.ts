@@ -730,3 +730,71 @@ describe('削除', () => {
     expect(loadedPlugin('sample-plugin')).toBeNull();
   });
 });
+
+/**
+ * Permission変更・外部認証連携設定変更の監査（04_認証設計.md §26）。
+ *
+ * ロールの編集は入れていないため（自分へ権限を足す経路を作らない）、
+ * 本体の Permission 集合が変わるのは **Plugin が権限を登録・取り下げるときだけ**
+ * （015b-settings 設計 §3.4、§3.5）。
+ */
+describe('セキュリティ監査', () => {
+  async function eventsFor(pluginId: string): Promise<{ event: string; change: unknown }[]> {
+    return withConnection(async (connection) => {
+      const rows = await connection.db
+        .selectFrom('auth_audit_logs')
+        .select(['event', 'detail'])
+        .orderBy('occurred_at')
+        .execute();
+
+      return rows
+        .filter((row) => (row.detail as { pluginId?: string }).pluginId === pluginId)
+        .map((row) => ({
+          event: row.event,
+          change: (row.detail as { change?: unknown }).change,
+        }));
+    });
+  }
+
+  it('Permission を宣言した Plugin の有効化・無効化を記録する', async () => {
+    const m = manifest('perm-audit-plugin', { permissions: ['perm-audit-plugin.read'] });
+    await withConnection((connection) => installPlugin(connection, m));
+
+    await enable(m, testPlugin({}));
+    await withConnection((connection) =>
+      disablePlugin({
+        connection,
+        manifest: m,
+        plugin: testPlugin({}),
+        authorization: admin,
+        candidates: candidatesOf([m, true]),
+      }),
+    );
+
+    expect(await eventsFor('perm-audit-plugin')).toEqual([
+      { event: 'permission.changed', change: 'enabled' },
+      { event: 'permission.changed', change: 'disabled' },
+    ]);
+  });
+
+  /** 認証方式が変わったことは、Plugin の有効化ログとは別に残す。 */
+  it('認証を差し替える Plugin の有効化を記録する', async () => {
+    const m = manifest('auth-audit-plugin', { extensions: ['authentication'] });
+    await withConnection((connection) => installPlugin(connection, m));
+
+    await enable(m, testPlugin({}));
+
+    expect(await eventsFor('auth-audit-plugin')).toEqual([
+      { event: 'auth.provider.changed', change: 'enabled' },
+    ]);
+  });
+
+  it('権限も認証も宣言しない Plugin では記録しない', async () => {
+    const m = manifest('plain-audit-plugin');
+    await withConnection((connection) => installPlugin(connection, m));
+
+    await enable(m, testPlugin({}));
+
+    expect(await eventsFor('plain-audit-plugin')).toEqual([]);
+  });
+});

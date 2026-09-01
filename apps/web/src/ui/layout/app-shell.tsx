@@ -1,12 +1,15 @@
 import Link from 'next/link';
 import type { ReactNode } from 'react';
+import { loadSystemSettings } from '@/application/system-settings/system-settings-use-cases';
 import { collectMenus } from '@/plugin/registry';
 import { CORE_NAVIGATION, visibleNavigation, type NavigationItem } from './navigation';
 
 /**
  * ログイン後の共通レイアウト（06_画面設計.md §7）。
  *
- * サービス名は画面上ひらがなで「とりふね」（同 §2-11）。
+ * サービス名は既定でひらがなの「とりふね」（同 §2-11）。
+ * **設定で変えられる**（06 §16 の一般タブ）。本番と検証を見分けるため。
+ * ここで読むのは、ページごとに渡すと必ずどこかで渡し忘れるから。
  */
 
 export interface AppShellProps {
@@ -15,7 +18,9 @@ export interface AppShellProps {
   readonly children: ReactNode;
 }
 
-export function AppShell({ displayName, permissions, children }: AppShellProps) {
+export async function AppShell({ displayName, permissions, children }: AppShellProps) {
+  const { serviceName } = await loadSystemSettings();
+
   // Plugin が追加した項目を Core の項目のあとに並べる。
   // Plugin が既存の項目を押しのけないよう、順序は Core を先にする。
   const pluginItems: NavigationItem[] = collectMenus(permissions).map((menu) => ({
@@ -46,7 +51,7 @@ export function AppShell({ displayName, permissions, children }: AppShellProps) 
         }}
       >
         <Link href="/dashboard" style={{ color: 'var(--tf-color-text)', fontWeight: 600 }}>
-          とりふね
+          {serviceName}
         </Link>
 
         <div style={{ display: 'flex', gap: 'var(--tf-space-4)', alignItems: 'center' }}>
@@ -98,7 +103,7 @@ export function AppShell({ displayName, permissions, children }: AppShellProps) 
           fontSize: '0.875rem',
         }}
       >
-        とりふね
+        {serviceName}
       </footer>
     </div>
   );

@@ -1,10 +1,16 @@
-import Link from 'next/link';
+import { allowedOrigins } from '@/api/cors';
 import { listPermissions } from '@/application/authorization/permission-registry';
+import { getSystemSettings } from '@/application/system-settings/system-settings-use-cases';
+import { authenticationProviderId } from '@/authentication/registry';
 import { listUsers } from '@/application/user/user-use-cases';
 import { roleRepository } from '@/infrastructure/role-repository';
+import { Tabs } from '@/ui/components';
 import { AppShell } from '@/ui/layout/app-shell';
 import { ExtensionPoint } from '@/ui/plugin/plugin-slot';
 import { requirePageSession } from '@/ui/server/page-session';
+import { ApiSettings } from '@/ui/settings/api-settings';
+import { AuthSettings } from '@/ui/settings/auth-settings';
+import { GeneralSettings } from '@/ui/settings/general-settings';
 import { PermissionMatrix } from '@/ui/settings/permission-matrix';
 import { UserList } from '@/ui/settings/user-list';
 import { AsyncState } from '@/ui/states/async-state';
@@ -14,22 +20,23 @@ export const dynamic = 'force-dynamic';
 /**
  * 設定画面（06_画面設計.md §16）。
  *
- * 今回作るのは「ユーザー」「権限」の2タブ（`015-settings`）。
- * 一般 / 認証 / API は `015b`。
+ * 一般 / ユーザー / 権限 / 認証 / API の5タブ（`015-settings` ＋ `015b-settings`）。
+ * Plugin は別画面（`/plugins`）。
+ *
+ * **タブごとに要る権限が違う。** 画面全体を1つの権限で塞がない。
+ * 一般・認証・API は認証さえしていれば見え、変更に `system.manage` が要る。
+ * ユーザー・権限は `user.manage` が要る。
  *
  * **読み取りは Server Component から UseCase を直接呼ぶ**（決定事項 D-06）。
  * 認可は UseCase 側で行われる。
  */
 
-const TABS = [
-  { key: 'users', label: 'ユーザー' },
-  { key: 'permissions', label: '権限' },
-] as const;
+const TAB_KEYS = ['general', 'users', 'permissions', 'auth', 'api'] as const;
 
-type TabKey = (typeof TABS)[number]['key'];
+type TabKey = (typeof TAB_KEYS)[number];
 
 function toTab(value: string | string[] | undefined): TabKey {
-  return value === 'permissions' ? 'permissions' : 'users';
+  return (TAB_KEYS as readonly string[]).includes(String(value)) ? (value as TabKey) : 'general';
 }
 
 export default async function SettingsPage({
@@ -40,8 +47,23 @@ export default async function SettingsPage({
   const params = await searchParams;
   const { context, displayName, permissions } = await requirePageSession();
 
-  // 表示制御ではなく認可。ナビを隠すだけでは止められない（同 §29-30）。
-  if (!permissions.has('user.manage')) {
+  const canManageUsers = permissions.has('user.manage');
+  const canManageSystem = permissions.has('system.manage');
+  const canManageTokens = permissions.has('token.manage');
+
+  const requested = toTab(params['tab']);
+
+  // **表示制御ではなく認可。** ナビを隠すだけでは止められない（同 §29-30）。
+  // 見えないタブを URL で直接指しても中身を出さない。
+  const allowed: Record<TabKey, boolean> = {
+    general: true,
+    users: canManageUsers,
+    permissions: canManageUsers,
+    auth: true,
+    api: canManageTokens,
+  };
+
+  if (!allowed[requested]) {
     return (
       <AppShell displayName={displayName} permissions={permissions}>
         <AsyncState status="forbidden">{null}</AsyncState>
@@ -49,47 +71,44 @@ export default async function SettingsPage({
     );
   }
 
-  const tab = toTab(params['tab']);
+  const tab = requested;
   const page = Math.max(1, Number(params['page'] ?? 1) || 1);
   const perPage = 20;
 
-  const roles = await roleRepository.list(context.connection);
+  const roles = canManageUsers ? await roleRepository.list(context.connection) : [];
+  const settings = await getSystemSettings(context, {});
 
   return (
     <AppShell displayName={displayName} permissions={permissions}>
       <h1 style={{ fontSize: '1.25rem', marginTop: 0 }}>設定</h1>
 
-      <nav
-        aria-label="設定のタブ"
-        style={{
-          display: 'flex',
-          gap: 'var(--tf-space-4)',
-          borderBottom: '1px solid var(--tf-color-border)',
-          marginBottom: 'var(--tf-space-4)',
-        }}
-      >
-        {TABS.map((entry) => (
-          <Link
-            key={entry.key}
-            href={`/settings?tab=${entry.key}`}
-            aria-current={tab === entry.key ? 'page' : undefined}
-            style={{
-              padding: 'var(--tf-space-2) 0',
-              color: tab === entry.key ? 'var(--tf-color-text)' : 'var(--tf-color-text-muted)',
-              borderBottom:
-                tab === entry.key ? '2px solid var(--tf-color-primary)' : '2px solid transparent',
-              textDecoration: 'none',
-            }}
-          >
-            {entry.label}
-          </Link>
-        ))}
-      </nav>
+      <Tabs
+        label="設定のタブ"
+        current={tab}
+        hrefFor={(key) => `/settings?tab=${key}`}
+        items={[
+          { key: 'general', label: '一般' },
+          { key: 'users', label: 'ユーザー', visible: canManageUsers },
+          { key: 'permissions', label: '権限', visible: canManageUsers },
+          { key: 'auth', label: '認証' },
+          { key: 'api', label: 'API', visible: canManageTokens },
+        ]}
+      />
 
-      {tab === 'users' ? (
+      {tab === 'general' && <GeneralSettings settings={settings} canManage={canManageSystem} />}
+      {tab === 'users' && (
         <UsersTab context={context} page={page} perPage={perPage} roles={roles} />
-      ) : (
-        <PermissionsTab context={context} roles={roles} />
+      )}
+      {tab === 'permissions' && <PermissionsTab context={context} roles={roles} />}
+      {tab === 'auth' && (
+        <AuthSettings
+          settings={settings}
+          canManage={canManageSystem}
+          authProviderId={authenticationProviderId()}
+        />
+      )}
+      {tab === 'api' && (
+        <ApiSettings scopeCandidates={[...permissions].sort()} corsOrigins={allowedOrigins()} />
       )}
 
       {/*

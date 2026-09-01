@@ -66,10 +66,22 @@ export interface AuthenticationProvider {
   refresh(sessionToken: string, context: AuthenticationContext): Promise<void>;
 }
 
+/** セッション発行時の指定。 */
+export interface IssueOptions {
+  /**
+   * セッションの有効期間。省略すると既定（SESSION_LIFETIME_MS）。
+   *
+   * 長期ログイン（Remember Me）で長くする。**呼び出し側が決める。**
+   * Provider が方針を持つと、Provider を差し替えるたびに方針が変わる。
+   */
+  readonly lifetimeMs?: number | undefined;
+}
+
 /** ログイン成功時にセッションを発行する責務。Provider とは分けている。 */
 export interface SessionIssuer {
   issue(
     userId: string,
     context: AuthenticationContext,
+    options?: IssueOptions,
   ): Promise<{ readonly token: string; readonly expiresAt: Date }>;
 }

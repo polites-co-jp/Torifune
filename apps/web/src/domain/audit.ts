@@ -33,6 +33,7 @@ export const AUDIT_RESOURCE_TYPES = [
   'plugin',
   'plugin_settings',
   'api_token',
+  'system_settings',
 ] as const;
 
 export type AuditResourceType = (typeof AUDIT_RESOURCE_TYPES)[number];

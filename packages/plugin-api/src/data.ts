@@ -83,6 +83,32 @@ export interface PluginDataApi {
     markPublished(id: string): Promise<SocialPostView>;
     markFailed(id: string, reason: string): Promise<SocialPostView>;
   };
+
+  /**
+   * ユーザー（05_API設計.md §22）。
+   *
+   * **読み取りだけ。** Plugin がユーザーを作れると、Plugin の導入が
+   * そのまま管理者の追加になりうる。
+   * 「誰がやったか」を表示するために要る、という用途に限る。
+   */
+  readonly users: {
+    list(options?: ListOptions): Promise<Page<UserView>>;
+    get(id: string): Promise<UserView | null>;
+  };
+}
+
+/**
+ * Plugin から見えるユーザー。
+ *
+ * **`passwordHash` を型として持たせない。** 存在しなければ、うっかり足すこともできない。
+ * メールアドレスも出さない。表示に要らず、出せば漏洩の面が増える。
+ */
+export interface UserView {
+  readonly id: string;
+  readonly loginId: string;
+  readonly displayName: string;
+  readonly status: string;
+  readonly createdAt: string;
 }
 
 /** Plugin が宣言していない Permission の操作を試みた。 */

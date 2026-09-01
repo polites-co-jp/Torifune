@@ -5,7 +5,10 @@ import {
   registerPermission,
   unregisterPermissionsOf,
 } from '@/application/authorization/permission-registry';
+import { uuidv7 } from 'uuidv7';
 import type { Connection } from '@/database/provider';
+import { authAuditRepository } from '@/infrastructure/auth-audit-repository';
+import { log } from '@/infrastructure/logging';
 import { buildPluginContext } from './context';
 import { checkDependencies, dependentsOf, type DependencyCandidate } from './dependencies';
 import { registerLoadedPlugin, unregisterPlugin } from './registry';
@@ -172,7 +175,61 @@ export async function enablePlugin(deps: EnableDeps): Promise<EnableOutcome> {
   }
 
   await setStatus(connection, manifest.id, 'enabled');
+
+  // Plugin の有効化は、本体の Permission 集合と認証方式を変えうる。
+  // Plugin の有効化ログだけでは弱いので、独立した事象として残す
+  // （04_認証設計.md §26、015b-settings 設計 §3.4 §3.5）。
+  await recordSecurityChanges(connection, manifest, authorization, 'enabled');
+
   return { ok: true };
+}
+
+/** Permission と認証方式の変化を監査ログへ残す。 */
+async function recordSecurityChanges(
+  connection: Connection,
+  manifest: PluginManifest,
+  authorization: AuthorizationContext,
+  change: 'enabled' | 'disabled',
+): Promise<void> {
+  const userId = authorization.identity?.userId ?? null;
+  const base = {
+    userId,
+    loginIdAttempted: null,
+    ipAddress: authorization.request?.ipAddress ?? null,
+    userAgent: authorization.request?.userAgent ?? null,
+  };
+
+  try {
+    if ((manifest.permissions ?? []).length > 0) {
+      await authAuditRepository.record(connection, {
+        ...base,
+        id: uuidv7(),
+        event: 'permission.changed',
+        detail: {
+          pluginId: manifest.id,
+          change,
+          permissions: [...(manifest.permissions ?? [])],
+        },
+      });
+    }
+
+    if ((manifest.extensions ?? []).includes('authentication')) {
+      await authAuditRepository.record(connection, {
+        ...base,
+        id: uuidv7(),
+        event: 'auth.provider.changed',
+        detail: { pluginId: manifest.id, change },
+      });
+    }
+  } catch (error) {
+    // 記録の失敗で有効化・無効化そのものを止めない。
+    // 止めると、壊れた Plugin を外せなくなる。
+    log.warn('failed to record security audit for plugin', {
+      pluginId: manifest.id,
+      change,
+      reason: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 export interface DisableDeps {
@@ -216,6 +273,8 @@ export async function disablePlugin(deps: DisableDeps): Promise<readonly string[
   unregisterPermissionsOf(manifest.id);
   await setStatus(connection, manifest.id, 'disabled');
   disabled.push(manifest.id);
+
+  await recordSecurityChanges(connection, manifest, authorization, 'disabled');
 
   return disabled;
 }

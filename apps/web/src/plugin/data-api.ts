@@ -1,4 +1,9 @@
-import { PluginPermissionError, type PluginDataApi, type SiteView } from '@torifune/plugin-api';
+import {
+  PluginPermissionError,
+  type PluginDataApi,
+  type SiteView,
+  type UserView,
+} from '@torifune/plugin-api';
 import type { AuthorizationContext } from '@/application/authorization/authorize';
 import {
   createSite,
@@ -14,8 +19,10 @@ import {
   listSocialPosts,
   updateSocialPost,
 } from '@/application/social/social-use-cases';
+import { getUser, listUsers } from '@/application/user/user-use-cases';
 import { NotFoundError } from '@/domain/repository';
 import type { Site } from '@/domain/site/site';
+import type { User } from '@/domain/user';
 
 /**
  * Plugin 向け Data API の実装。
@@ -46,6 +53,22 @@ function toSiteView(site: Site): SiteView {
     status: site.status,
     createdAt: site.createdAt.toISOString(),
     updatedAt: site.updatedAt.toISOString(),
+  };
+}
+
+/**
+ * Plugin から見えるユーザー。
+ *
+ * **メールアドレスを出さない。** 表示に要らず、出せば漏洩の面が増える。
+ * passwordHash は UserView の型に無いので、渡しようがない。
+ */
+function toUserView(user: User): UserView {
+  return {
+    id: user.id,
+    loginId: user.loginId,
+    displayName: user.displayName,
+    status: user.status,
+    createdAt: user.createdAt.toISOString(),
   };
 }
 
@@ -238,6 +261,48 @@ export function createPluginDataApi(deps: PluginDataApiDeps): PluginDataApi {
           status: post.status,
           publishedAt: post.publishedAt?.toISOString() ?? null,
         };
+      },
+    },
+
+    /**
+     * ユーザー（05_API設計.md §22）。
+     *
+     * **読み取りだけ。** 作成・更新・削除の口を出さない。
+     * 出すと、Plugin の導入がそのまま管理者の追加になりうる。
+     */
+    users: {
+      async list(options) {
+        requireDeclared('user.manage');
+        const page = options?.page ?? 1;
+        const perPage = options?.perPage ?? DEFAULT_PER_PAGE;
+
+        const result = await listUsers(context, {
+          page,
+          perPage,
+          status: null,
+          keyword: null,
+          sort: [{ field: 'created_at', direction: 'desc' }],
+        });
+
+        return {
+          items: result.items.map((entry) => toUserView(entry.user)),
+          total: result.total,
+          page,
+          perPage,
+        };
+      },
+
+      async get(id) {
+        requireDeclared('user.manage');
+        try {
+          const entry = await getUser(context, { id });
+          return toUserView(entry.user);
+        } catch (error) {
+          if (error instanceof NotFoundError) {
+            return null;
+          }
+          throw error;
+        }
       },
     },
   };

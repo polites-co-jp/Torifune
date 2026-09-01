@@ -6,8 +6,10 @@
  * `password.changed` / `user.created` / `user.disabled` / `role.changed` は
  * `015-settings` のユーザー管理から発火する。
  *
- * 同 §26 が挙げる「Permission変更」「外部認証連携設定変更」はまだ無い。
- * **その操作自体が存在しないため。** 操作を作るときに同時に足す。
+ * 同 §26 が挙げる「Permission変更」「外部認証連携設定変更」は、
+ * **Plugin の有効化・無効化で起きる**（`015b-settings` 設計 §3.4、§3.5）。
+ * ロールの編集は入れていないため（自分へ権限を足す経路を作らない）、
+ * 本体の Permission 集合が変わるのは Plugin が権限を登録・取り下げるときだけ。
  */
 
 export const AUTH_AUDIT_EVENTS = [
@@ -20,6 +22,15 @@ export const AUTH_AUDIT_EVENTS = [
   'user.created',
   'user.disabled',
   'role.changed',
+  /** Plugin が Permission を登録・取り下げた（04_認証設計.md §26「Permission変更」）。 */
+  'permission.changed',
+  /**
+   * 認証方式が差し替わった（同「外部認証連携設定変更」）。
+   *
+   * **Plugin の有効化ログだけでは弱い。** 認証方式が変わったことは、
+   * 何より先に記録されるべき事象として独立させる。
+   */
+  'auth.provider.changed',
   'setup.completed',
 ] as const;
 

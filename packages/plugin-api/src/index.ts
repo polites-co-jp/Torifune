@@ -60,6 +60,7 @@ export type {
   SiteView,
   SocialAccountView,
   SocialPostView,
+  UserView,
 } from './data';
 
 export type {

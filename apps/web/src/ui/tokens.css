@@ -24,6 +24,9 @@
   --tf-space-6: 24px;
   --tf-space-8: 32px;
 
+  /* 選択中のタブなどを示す太めの下線。1px では選択が読み取りにくい。 */
+  --tf-border-emphasis: 2px;
+
   --tf-radius-sm: 4px;
   --tf-radius-md: 6px;
   --tf-radius-lg: 10px;

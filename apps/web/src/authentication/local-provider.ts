@@ -11,6 +11,7 @@ import type {
   AuthenticationProvider,
   AuthenticationResult,
   Credentials,
+  IssueOptions,
   SessionIssuer,
 } from './provider';
 import type { RateLimiter } from './rate-limit';
@@ -116,13 +117,14 @@ export function createLocalProvider(
     async issue(
       userId: string,
       context: AuthenticationContext,
+      options?: IssueOptions,
     ): Promise<{ token: string; expiresAt: Date }> {
       const { connection, ipAddress, userAgent, now } = context;
 
       // ログインのたびに新しいトークンを発行する。
       // 既存のセッションIDを使い回すと Session Fixation が成立する（04_認証設計.md §9）。
       const token = generateSessionToken();
-      const expiresAt = new Date(now.getTime() + SESSION_LIFETIME_MS);
+      const expiresAt = new Date(now.getTime() + (options?.lifetimeMs ?? SESSION_LIFETIME_MS));
 
       await sessions.insert(connection, {
         id: uuidv7(),

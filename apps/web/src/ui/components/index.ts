@@ -28,6 +28,8 @@ export { FormField, type FormFieldProps } from './form-field';
 
 export { Pagination, Table, type Column, type PaginationProps, type TableProps } from './table';
 
+export { Tabs, type TabItem, type TabsProps } from './tabs';
+
 export {
   ConfirmDialog,
   EmptyState,

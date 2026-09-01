@@ -2,7 +2,7 @@
 
 import { useState, type FormEvent, type ReactNode } from 'react';
 import { apiRequest } from './client/api-client';
-import { Alert, Button, FormField, Input } from './components';
+import { Alert, Button, Checkbox, FormField, Input } from './components';
 
 /**
  * 認証まわりのフォーム。
@@ -36,6 +36,14 @@ export interface AuthFormProps {
   readonly extraValues?: Readonly<Record<string, string>>;
   /** フォームの前に出す説明。 */
   readonly description?: ReactNode;
+  /** 見出しに出すサービス表示名。既定は「とりふね」。 */
+  readonly serviceName?: string;
+  /**
+   * チェックボックス。値は送信時に真偽値として本文へ入る。
+   *
+   * 「ログインしたままにする」のように、入力欄ではないが送りたい項目に使う。
+   */
+  readonly toggles?: readonly { name: string; label: string }[];
 }
 
 export function AuthForm(props: AuthFormProps) {
@@ -50,7 +58,10 @@ export function AuthForm(props: AuthFormProps) {
     setBusy(true);
 
     const form = new FormData(event.currentTarget);
-    const payload: Record<string, string> = { ...props.extraValues };
+    const payload: Record<string, string | boolean> = { ...props.extraValues };
+    for (const toggle of props.toggles ?? []) {
+      payload[toggle.name] = form.get(toggle.name) === 'on';
+    }
     for (const field of props.fields) {
       payload[field.name] = String(form.get(field.name) ?? '');
     }
@@ -76,7 +87,9 @@ export function AuthForm(props: AuthFormProps) {
         padding: 'var(--tf-space-8) var(--tf-space-4)',
       }}
     >
-      <h1 style={{ fontSize: '1.5rem', marginBottom: 'var(--tf-space-2)' }}>とりふね</h1>
+      <h1 style={{ fontSize: '1.5rem', marginBottom: 'var(--tf-space-2)' }}>
+        {props.serviceName ?? 'とりふね'}
+      </h1>
       <h2
         style={{
           fontSize: '1rem',
@@ -117,6 +130,12 @@ export function AuthForm(props: AuthFormProps) {
               />
             )}
           </FormField>
+        ))}
+
+        {(props.toggles ?? []).map((toggle) => (
+          <div key={toggle.name} style={{ marginBottom: 'var(--tf-space-4)' }}>
+            <Checkbox name={toggle.name} label={toggle.label} />
+          </div>
         ))}
 
         <Button type="submit" variant="primary" disabled={busy} style={{ width: '100%' }}>

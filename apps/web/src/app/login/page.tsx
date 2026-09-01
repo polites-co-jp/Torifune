@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { loadSystemSettings } from '@/application/system-settings/system-settings-use-cases';
 import { ensurePluginsStartedAnonymously } from '@/plugin/runtime';
 import { AuthForm } from '@/ui/auth-form';
 import { PublicExtensionPoint } from '@/ui/plugin/plugin-slot';
@@ -11,12 +12,18 @@ export default async function LoginPage() {
   // ログイン手段を出すことも、その認証を通すこともできない。
   await ensurePluginsStartedAnonymously();
 
+  // ログイン画面こそ「いまどの環境を見ているか」が要る。
+  const { serviceName, rememberMeEnabled } = await loadSystemSettings();
+
   return (
     <AuthForm
       title="ログイン"
       submitLabel="ログイン"
       endpoint="/api/v1/auth/login"
       redirectTo="/"
+      serviceName={serviceName}
+      // 設定で禁止されていれば、そもそも選択肢を出さない。
+      toggles={rememberMeEnabled ? [{ name: 'rememberMe', label: 'ログインしたままにする' }] : []}
       fields={[
         { name: 'loginId', label: 'ログインID', type: 'text', autoComplete: 'username' },
         {

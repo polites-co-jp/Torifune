@@ -7,7 +7,11 @@ import type {
   PluginUiApi,
 } from '@torifune/plugin-api';
 import { PluginExtensionNotDeclaredError } from '@torifune/plugin-api';
-import { getAuthenticationProvider, setAuthenticationProvider } from '@/authentication/registry';
+import {
+  getAuthenticationProvider,
+  setAuthenticationProvider,
+  setAuthenticationProviderId,
+} from '@/authentication/registry';
 import { setDatabaseProvider } from '@/database/registry';
 import { adaptPluginAuthenticationProvider } from './authentication-adapter';
 import { adaptPluginDatabaseProvider } from './database-adapter';
@@ -125,6 +129,8 @@ export function buildPluginContext(deps: BuildContextDeps): PluginContext {
           sessionIssuer: getAuthenticationProvider(),
         }),
       );
+      // 設定画面に「いま何で認証しているか」を出すため。
+      setAuthenticationProviderId(`${pluginId}:${provider.id}`);
     },
   };
 

@@ -1,11 +1,21 @@
 import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
+import { loadSystemSettings } from '@/application/system-settings/system-settings-use-cases';
 import './globals.css';
 
-export const metadata: Metadata = {
-  title: 'とりふね',
-  description: 'Torifune - マーケティング活動を一元管理するオープンソースアプリケーション',
-};
+/**
+ * タイトルは設定のサービス表示名を使う（06_画面設計.md §16）。
+ *
+ * **タブの並びで環境を見分けられるようにするため。**
+ * 設定が読めないときは既定へ落ちる（`toSystemSettings`）。
+ */
+export async function generateMetadata(): Promise<Metadata> {
+  const { serviceName } = await loadSystemSettings();
+  return {
+    title: serviceName,
+    description: 'Torifune - マーケティング活動を一元管理するオープンソースアプリケーション',
+  };
+}
 
 /**
  * すべてのページを動的描画にする（022-hardening）。

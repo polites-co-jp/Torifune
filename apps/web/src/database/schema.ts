@@ -109,6 +109,14 @@ export interface ApiTokensTable {
   created_at: CreatedAt;
 }
 
+/** システム設定（06_画面設計.md §16）。設計は docs/設計/015b-settings/。 */
+export interface SystemSettingsTable {
+  key: string;
+  /** plugin_store と同じ扱い。任意の JSON を入れるため object に限定しない。 */
+  value: ColumnType<unknown, string, string>;
+  updated_at: UpdatedAt;
+}
+
 export interface SitesTable {
   id: string;
   name: string;
@@ -214,6 +222,7 @@ export interface Schema {
   auth_audit_logs: AuthAuditLogsTable;
   audit_logs: AuditLogsTable;
   api_tokens: ApiTokensTable;
+  system_settings: SystemSettingsTable;
   password_reset_tokens: PasswordResetTokensTable;
   login_attempts: LoginAttemptsTable;
   schema_migrations: SchemaMigrationsTable;

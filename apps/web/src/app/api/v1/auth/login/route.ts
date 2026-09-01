@@ -9,6 +9,8 @@ import { ensurePluginsStartedAnonymously } from '@/plugin/runtime';
 const LoginBody = z.object({
   loginId: z.string().min(1, '入力してください。'),
   password: z.string().min(1, '入力してください。'),
+  /** 長期ログイン（04_認証設計.md §11）。設定で禁止されていれば効かない。 */
+  rememberMe: z.boolean().optional(),
   csrfToken: z.string().optional(),
 });
 
@@ -33,6 +35,7 @@ export const POST = defineRoute({
       loginId: body.loginId,
       password: body.password,
       request: requestInfoOf(request),
+      rememberMe: body.rememberMe === true,
     });
 
     if (!outcome.ok) {
