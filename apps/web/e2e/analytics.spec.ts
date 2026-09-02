@@ -64,12 +64,50 @@ test('計測タグの受け口は認証なしで叩けて、結果を返さな�
   expect(response.status()).toBe(204);
 });
 
+test('登録したサイトの計測タグが、絞り込まなくても出る', async ({ page, request }) => {
+  // 絞り込みを待たせると、登録したサイトが見当たらないように見える。
+  const siteId = await makeTrackedSite(request);
+
+  await page.goto('/analytics');
+
+  const snippet = page.locator(`[data-tracking-snippet][data-site-id="${siteId}"]`);
+  await expect(snippet).toBeVisible();
+  await expect(snippet).toContainText('data-site=');
+});
+
+test('計測タグの src が絶対 URL になっている', async ({ page, request }) => {
+  // 相対パスのまま他所のサイトへ貼ると、貼った先の /t.js を探しに行って届かない。
+  const siteId = await makeTrackedSite(request);
+
+  await page.goto('/analytics');
+
+  const snippet = await page
+    .locator(`[data-tracking-snippet][data-site-id="${siteId}"]`)
+    .textContent();
+
+  const src = /src="([^"]+)"/.exec(snippet ?? '')?.[1] ?? '';
+  expect(src.startsWith('http://') || src.startsWith('https://')).toBe(true);
+  expect(src.endsWith('/t.js')).toBe(true);
+});
+
+test('サイトを絞り込むと、そのサイトのタグだけになる', async ({ page, request }) => {
+  const first = await makeTrackedSite(request);
+  const second = await makeTrackedSite(request);
+
+  await page.goto(`/analytics?siteId=${second}`);
+
+  await expect(page.locator(`[data-tracking-snippet][data-site-id="${second}"]`)).toBeVisible();
+  await expect(page.locator(`[data-tracking-snippet][data-site-id="${first}"]`)).toHaveCount(0);
+});
+
 test('アクセスを集めて集計し、画面で見られる', async ({ page, request }) => {
   const siteId = await makeTrackedSite(request);
 
   // 画面から公開キーを読む（API では返していない）。
   await page.goto(`/analytics?siteId=${siteId}`);
-  const snippet = await page.locator('[data-tracking-snippet]').textContent();
+  const snippet = await page
+    .locator(`[data-tracking-snippet][data-site-id="${siteId}"]`)
+    .textContent();
   const publicKey = /data-site="([^"]+)"/.exec(snippet ?? '')?.[1];
   expect(publicKey).toBeDefined();
 

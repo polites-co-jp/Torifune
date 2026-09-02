@@ -6,6 +6,7 @@ import {
   listAnalyticsPage,
   listTopPaths,
   listTopPathsPage,
+  listTrackedSites,
   recordAnalytics,
 } from '@/application/analytics/analytics-use-cases';
 import { collectAccess, resetDailySalts } from '@/application/analytics/collect';
@@ -103,6 +104,56 @@ afterEach(async () => {
     await connection.db.deleteFrom('access_logs').execute();
     await connection.db.deleteFrom('analytics').execute();
     await connection.db.deleteFrom('sites').execute();
+  });
+});
+
+describe('計測タグを出すためのサイト一覧', () => {
+  it('登録したサイトがすぐ一覧に出る', async () => {
+    // 計測タグは絞り込みを待たずに出す。出ないと、
+    // 登録したサイトが見当たらないように見える。
+    const site = await makeSite();
+
+    const tracked = await listTrackedSites(admin, {});
+
+    expect(tracked.map((entry) => entry.id)).toContain(site.id);
+  });
+
+  it('公開キーを添えて返す', async () => {
+    // これが無いと計測タグを組み立てられない。
+    const site = await makeSite();
+
+    const tracked = await listTrackedSites(admin, {});
+
+    expect(tracked.find((entry) => entry.id === site.id)?.publicKey).toBe(site.publicKey);
+  });
+
+  it('登録したサイトを取りこぼさない', async () => {
+    const first = await makeSite();
+    const second = await makeSite();
+
+    const tracked = await listTrackedSites(admin, {});
+
+    expect(tracked.map((entry) => entry.id).sort()).toEqual([first.id, second.id].sort());
+  });
+
+  it('site.read を持たないユーザーは取れない', async () => {
+    // 公開キーは Site の一覧 API では返していない値。
+    const outsider = await contextFor('viewer');
+    await withConnection((connection) =>
+      connection.db
+        .deleteFrom('user_roles')
+        .where('user_id', '=', outsider.identity?.userId ?? '')
+        .execute(),
+    );
+    const stripped = { ...outsider, permissions: new Set<string>() } as typeof outsider;
+
+    await expect(listTrackedSites(stripped, {})).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it('サイトが無ければ空を返す', async () => {
+    const tracked = await listTrackedSites(admin, {});
+
+    expect(tracked).toEqual([]);
   });
 });
 

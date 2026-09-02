@@ -1,3 +1,5 @@
+import { headers } from 'next/headers';
+import { originFromHeaders } from '@/api/absolute-url';
 import {
   listAnalytics,
   listTopPaths,
@@ -60,12 +62,18 @@ export default async function AnalyticsPage({
   // 計測タグを出すために公開キーが要る（Site の一覧 API は公開キーを返さない）。
   const sites = permissions.has('site.read') ? await listTrackedSites(context, {}) : [];
 
+  // **計測タグの src は絶対 URL で出す。** 相対パスのまま貼られると、
+  // 貼った先のサーバーの `/t.js` を探しに行って計測が届かない。
+  // 送信先は `t.js` が APP_URL から組み立てるので、ここも同じ優先順位にそろえる。
+  const scriptOrigin = originFromHeaders(await headers());
+
   return (
     <AppShell displayName={displayName} permissions={permissions}>
       <AnalyticsView
         points={points}
         topPaths={topPaths}
         sites={sites}
+        scriptOrigin={scriptOrigin}
         selectedSiteId={siteId}
         from={from}
         to={to}

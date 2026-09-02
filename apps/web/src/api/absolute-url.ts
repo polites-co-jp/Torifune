@@ -11,7 +11,7 @@
  */
 
 /** スキーム。TLS 終端が上流にある構成を考慮する。 */
-function scheme(request: Request): string {
+function schemeOf(headers: Headers, fallbackUrl: string | null): string {
   const appUrl = process.env['APP_URL'];
   if (appUrl !== undefined && appUrl !== '') {
     try {
@@ -21,7 +21,7 @@ function scheme(request: Request): string {
     }
   }
 
-  const forwarded = request.headers.get('x-forwarded-proto');
+  const forwarded = headers.get('x-forwarded-proto');
   if (forwarded !== null && forwarded !== '') {
     return forwarded.split(',')[0]?.trim() === 'https' ? 'https' : 'http';
   }
@@ -31,8 +31,12 @@ function scheme(request: Request): string {
     return 'https';
   }
 
+  if (fallbackUrl === null) {
+    return 'http';
+  }
+
   try {
-    return new URL(request.url).protocol === 'https:' ? 'https' : 'http';
+    return new URL(fallbackUrl).protocol === 'https:' ? 'https' : 'http';
   } catch {
     return 'http';
   }
@@ -45,7 +49,7 @@ function scheme(request: Request): string {
  * 2. `x-forwarded-host`（Reverse Proxy の背後）
  * 3. `host`
  */
-function host(request: Request): string | null {
+function hostOf(headers: Headers): string | null {
   const appUrl = process.env['APP_URL'];
   if (appUrl !== undefined && appUrl !== '') {
     try {
@@ -55,12 +59,12 @@ function host(request: Request): string | null {
     }
   }
 
-  const forwarded = request.headers.get('x-forwarded-host');
+  const forwarded = headers.get('x-forwarded-host');
   if (forwarded !== null && forwarded !== '') {
     return forwarded.split(',')[0]?.trim() ?? null;
   }
 
-  const header = request.headers.get('host');
+  const header = headers.get('host');
   return header === null || header === '' ? null : header;
 }
 
@@ -79,11 +83,29 @@ export class AbsoluteUrlError extends Error {
  * Redirect URI と食い違い、原因の分かりにくい失敗になる。
  */
 export function absoluteUrl(request: Request, path: string): string {
-  const found = host(request);
-  if (found === null) {
+  const origin = originFromHeaders(request.headers, request.url);
+  if (origin === null) {
     throw new AbsoluteUrlError('ホストを特定できない。APP_URL を設定すること。');
   }
-  return `${scheme(request)}://${found}${path}`;
+  return `${origin}${path}`;
+}
+
+/**
+ * ヘッダからオリジン（`https://host`）を求める。ホストが分からなければ `null`。
+ *
+ * **Server Component から使うためにヘッダを受け取る。** Route Handler は
+ * `Request` を持つが、Server Component は `headers()` しか持たない。
+ * 組み立ての規則を2箇所に書くと、片方だけ直したときに静かにずれる。
+ */
+export function originFromHeaders(
+  headers: Headers,
+  fallbackUrl: string | null = null,
+): string | null {
+  const found = hostOf(headers);
+  if (found === null) {
+    return null;
+  }
+  return `${schemeOf(headers, fallbackUrl)}://${found}`;
 }
 
 /**
