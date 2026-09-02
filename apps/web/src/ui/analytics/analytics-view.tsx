@@ -60,6 +60,7 @@ export function AnalyticsView({
   topPaths,
   sites,
   scriptOrigin,
+  timeZone,
   selectedSiteId,
   from,
   to,
@@ -69,6 +70,8 @@ export function AnalyticsView({
   readonly sites: readonly SiteOption[];
   /** 計測タグの src に付けるオリジン。分からなければ null。 */
   readonly scriptOrigin: string | null;
+  /** 1日の境目に使っているタイムゾーン。 */
+  readonly timeZone: string;
   readonly selectedSiteId: string | null;
   readonly from: string;
   readonly to: string;
@@ -124,6 +127,20 @@ export function AnalyticsView({
           </label>
           <button type="submit">絞り込む</button>
         </form>
+        {/*
+          **どの時間帯で1日を区切っているかを見せる。** 見えないと、
+          「昨日のはずの数字が今日に入っている」ときに確かめようがない。
+        */}
+        <p
+          style={{
+            margin: 'var(--tf-space-2) 0 0',
+            color: 'var(--tf-color-text-muted)',
+            fontSize: '0.875rem',
+          }}
+          data-analytics-timezone={timeZone}
+        >
+          日付の区切りは {timeZone} です。
+        </p>
       </Card>
 
       {rows.length === 0 ? (
@@ -177,7 +194,9 @@ export function AnalyticsView({
             </p>
             <div style={{ display: 'grid', gap: 'var(--tf-space-3)' }}>
               {shown.map((site) => (
-                <div key={site.id}>
+                // **minWidth: 0 が要る。** grid の子は既定で min-width:auto のため、
+                // 中の長い1行がトラックを押し広げ、ページ全体が横スクロールする。
+                <div key={site.id} style={{ minWidth: 0 }}>
                   <p style={{ margin: '0 0 var(--tf-space-1)', fontWeight: 600 }}>{site.name}</p>
                   <pre
                     data-tracking-snippet

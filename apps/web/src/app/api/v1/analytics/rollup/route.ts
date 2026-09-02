@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { analyticsTimeZone } from '@/application/analytics/timezone';
+import { daysAgoInTimeZone } from '@/domain/analytics/day';
 import { pruneAccessLogs, rollupAnalytics } from '@/application/analytics/rollup';
 import { requirePermission } from '@/application/authorization/authorize';
 import { dataResponse } from '@/api/response';
@@ -17,14 +19,9 @@ import { defineRoute } from '@/api/route';
 
 const dateOnly = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD の形式で入力してください。');
 
-/** ローカルの `YYYY-MM-DD` を日数だけ戻して返す。 */
+/** 集計と同じ境目で日付を戻す。 */
 function daysAgo(days: number): string {
-  const date = new Date();
-  date.setDate(date.getDate() - days);
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  return daysAgoInTimeZone(days, analyticsTimeZone());
 }
 
 export const POST = defineRoute({

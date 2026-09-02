@@ -1,3 +1,5 @@
+import { analyticsTimeZone } from '@/application/analytics/timezone';
+import { daysAgoInTimeZone } from '@/domain/analytics/day';
 import { listAnalytics } from '@/application/analytics/analytics-use-cases';
 import { listRecentActivities } from '@/application/audit-use-cases';
 import { listSocialPosts } from '@/application/social/social-use-cases';
@@ -15,11 +17,9 @@ import { requirePageSession } from '@/ui/server/page-session';
 
 export const dynamic = 'force-dynamic';
 
-/** ローカルの `YYYY-MM-DD` を日数だけ戻して返す。 */
+/** 集計と同じ境目で日付を戻す（`application/analytics/timezone.ts`）。 */
 function daysAgo(days: number): string {
-  const date = new Date();
-  date.setDate(date.getDate() - days);
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  return daysAgoInTimeZone(days, analyticsTimeZone());
 }
 
 function formatDateTime(value: Date): string {

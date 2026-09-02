@@ -10,12 +10,14 @@ import {
   recordAnalytics,
 } from '@/application/analytics/analytics-use-cases';
 import { collectAccess, resetDailySalts } from '@/application/analytics/collect';
+import { analyticsTimeZone, resetTimeZoneWarning } from '@/application/analytics/timezone';
 import { pruneAccessLogs, rollupAnalytics } from '@/application/analytics/rollup';
 import { ForbiddenError, type AuthorizationContext } from '@/application/authorization/authorize';
 import { authorizationContextFor } from '@/application/authorization/context';
 import { createSite } from '@/application/site/site-use-cases';
 import { withConnection } from '@/application/transaction';
 import type { UserIdentity } from '@/authentication/identity';
+import { daysAgoInTimeZone, todayInTimeZone } from '@/domain/analytics/day';
 import { ValidationError } from '@/domain/repository';
 import { roleRepository } from '@/infrastructure/role-repository';
 import { useScratchDatabase, type ScratchDatabase } from '@/test-support/database';
@@ -81,10 +83,14 @@ async function makeSite(): Promise<{ id: string; publicKey: string }> {
   return { id: site.id, publicKey: row.public_key };
 }
 
-/** ローカルの `YYYY-MM-DD`。 */
+/**
+ * 集計と同じ境目での「今日」。
+ *
+ * **サーバーのローカル日付で作らない。** 集計は運用タイムゾーンで畳むため、
+ * ローカルで作ると境目をまたぐ時間帯だけテストが落ちる。
+ */
 function today(): string {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  return todayInTimeZone(analyticsTimeZone());
 }
 
 const BROWSER = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
@@ -104,6 +110,110 @@ afterEach(async () => {
     await connection.db.deleteFrom('access_logs').execute();
     await connection.db.deleteFrom('analytics').execute();
     await connection.db.deleteFrom('sites').execute();
+  });
+});
+
+describe('1日の境目', () => {
+  afterEach(() => {
+    delete process.env['TORIFUNE_TIMEZONE'];
+    resetTimeZoneWarning();
+    resetDailySalts();
+  });
+
+  it('既定は UTC', () => {
+    delete process.env['TORIFUNE_TIMEZONE'];
+
+    expect(analyticsTimeZone()).toBe('UTC');
+  });
+
+  it('設定したタイムゾーンを使う', () => {
+    process.env['TORIFUNE_TIMEZONE'] = 'Asia/Tokyo';
+
+    expect(analyticsTimeZone()).toBe('Asia/Tokyo');
+  });
+
+  it('不正な指定では UTC へ落ちる', () => {
+    // 設定の誤りでアクセス記録まで止まると被害が大きい。
+    process.env['TORIFUNE_TIMEZONE'] = 'Mars/Olympus';
+
+    expect(analyticsTimeZone()).toBe('UTC');
+  });
+
+  it('タイムゾーンによって同じ瞬間が別の日になる', () => {
+    // 2026-09-02T15:30Z は JST では 9/3 の 00:30。
+    const instant = new Date('2026-09-02T15:30:00Z');
+
+    expect(todayInTimeZone('UTC', instant)).toBe('2026-09-02');
+    expect(todayInTimeZone('Asia/Tokyo', instant)).toBe('2026-09-03');
+  });
+
+  it('日数を戻すときも、そのタイムゾーンの暦で数える', () => {
+    const instant = new Date('2026-09-02T15:30:00Z');
+
+    expect(daysAgoInTimeZone(1, 'Asia/Tokyo', instant)).toBe('2026-09-02');
+    expect(daysAgoInTimeZone(1, 'UTC', instant)).toBe('2026-09-01');
+  });
+
+  it('設定したタイムゾーンの1日として集計される', async () => {
+    // **これが揃っていないと、JST の 00:00〜09:00 に見る「今日」が常に空になる。**
+    process.env['TORIFUNE_TIMEZONE'] = 'Asia/Tokyo';
+
+    const site = await makeSite();
+    await collectAccess({
+      publicKey: site.publicKey,
+      path: '/',
+      referrer: null,
+      ipAddress: '203.0.113.9',
+      userAgent: BROWSER,
+    });
+
+    const day = todayInTimeZone('Asia/Tokyo');
+    await withConnection((connection) => rollupAnalytics(connection, { from: day, to: day }));
+
+    const points = await listAnalytics(admin, {
+      siteId: site.id,
+      from: day,
+      to: day,
+      source: null,
+    });
+
+    expect(points.find((point) => point.metric === 'pageviews')?.value).toBe(1);
+  });
+
+  it('境目をまたぐアクセスが別の日に入る', async () => {
+    // JST では 9/2 23:30Z（= 9/3 08:30）と 9/3 00:30Z（= 9/3 09:30）が同じ日。
+    // UTC では別の日になる。畳み方がタイムゾーンで変わることを確かめる。
+    process.env['TORIFUNE_TIMEZONE'] = 'Asia/Tokyo';
+
+    const site = await makeSite();
+    await withConnection(async (connection) => {
+      for (const at of ['2026-09-02T23:30:00Z', '2026-09-03T00:30:00Z']) {
+        await connection.db
+          .insertInto('access_logs')
+          .values({
+            id: uuidv7(),
+            site_id: site.id,
+            occurred_at: at,
+            path: '/',
+            visitor_hash: `h-${at}`,
+            device: 'desktop',
+          })
+          .execute();
+      }
+    });
+
+    await withConnection((connection) =>
+      rollupAnalytics(connection, { from: '2026-09-03', to: '2026-09-03' }),
+    );
+
+    const points = await listAnalytics(admin, {
+      siteId: site.id,
+      from: '2026-09-03',
+      to: '2026-09-03',
+      source: null,
+    });
+
+    expect(points.find((point) => point.metric === 'pageviews')?.value).toBe(2);
   });
 });
 

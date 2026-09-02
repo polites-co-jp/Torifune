@@ -8,7 +8,9 @@ import {
   referrerHostOf,
   visitorHash,
 } from '@/domain/analytics/access-log';
+import { todayInTimeZone } from '@/domain/analytics/day';
 import { analyticsRepository } from '@/infrastructure/analytics-repository';
+import { analyticsTimeZone } from './timezone';
 
 /**
  * アクセスの記録（018-analytics 設計 §3）。
@@ -50,12 +52,14 @@ function dailySalt(day: string): string {
   return salt;
 }
 
-/** ローカルの `YYYY-MM-DD`。 */
-function today(now: Date): string {
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+/**
+ * ソルトを回す日付。
+ *
+ * **集計の1日の境目と必ずそろえる。** ずれると、1つの集計日の途中で
+ * ソルトが変わり、同じ訪問者が2人と数えられる。
+ */
+function saltDay(now: Date): string {
+  return todayInTimeZone(analyticsTimeZone(), now);
 }
 
 export interface CollectInput {
@@ -95,7 +99,7 @@ export async function collectAccess(input: CollectInput): Promise<CollectOutcome
       referrerHost: referrerHostOf(input.referrer),
       // **IP と User-Agent の生値は保存しない。**
       visitorHash: visitorHash({
-        dailySalt: dailySalt(today(now)),
+        dailySalt: dailySalt(saltDay(now)),
         siteId: site.id,
         // IP が取れない場合も一意性は User-Agent 側で担保する。
         ipAddress: input.ipAddress ?? 'unknown',

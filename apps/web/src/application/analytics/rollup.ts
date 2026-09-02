@@ -1,7 +1,9 @@
 import { emit } from '@/application/events';
 import type { Connection } from '@/database/provider';
 import { CORE_SOURCE } from '@/domain/analytics/analytics';
+import { dateOnly } from '@/domain/analytics/day';
 import { analyticsRepository } from '@/infrastructure/analytics-repository';
+import { analyticsTimeZone } from './timezone';
 import { log } from '@/infrastructure/logging';
 
 /**
@@ -23,20 +25,6 @@ export interface RollupResult {
 }
 
 /**
- * node-postgres は `date` を**ローカルタイムゾーンの0時**として `Date` にする。
- * `toISOString()` は UTC へ直すので、UTC より東では**1日前になる**。
- */
-function toDateOnly(value: Date | string): string {
-  if (typeof value === 'string') {
-    return value.slice(0, 10);
-  }
-  const year = value.getFullYear();
-  const month = String(value.getMonth() + 1).padStart(2, '0');
-  const day = String(value.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-/**
  * 期間の生ログを日次へ集計する。
  *
  * Bot は数えない。数えると、数字が実態から離れる。
@@ -49,12 +37,16 @@ export async function rollupAnalytics(
   connection: Connection,
   range: { readonly from: string; readonly to: string },
 ): Promise<RollupResult> {
-  const aggregates = await analyticsRepository.aggregateDaily(connection, range);
+  // 1日の境目は運用側のタイムゾーンで決める（`timezone.ts`）。
+  const aggregates = await analyticsRepository.aggregateDaily(connection, {
+    ...range,
+    timeZone: analyticsTimeZone(),
+  });
 
   let points = 0;
 
   for (const row of aggregates) {
-    const metricDate = toDateOnly(row.day);
+    const metricDate = dateOnly(row.day);
 
     for (const [metric, value] of [
       ['pageviews', row.pageviews],

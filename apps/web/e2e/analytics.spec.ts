@@ -18,9 +18,22 @@ function headers(token: string): Record<string, string> {
   return { 'X-CSRF-Token': token, Origin: origin };
 }
 
+/**
+ * サーバーが集計に使う境目での「今日」。
+ *
+ * **実行マシンのローカル日付で作らない。** サーバーは
+ * `TORIFUNE_TIMEZONE`（playwright.config.ts で固定）で1日を区切るため、
+ * ローカルで作ると境目をまたぐ時間帯だけ落ちる。
+ */
+const SERVER_TIME_ZONE = 'Asia/Tokyo';
+
 function today(): string {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: SERVER_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
 }
 
 /** サイトを作り、画面から公開キーを読む。 */
