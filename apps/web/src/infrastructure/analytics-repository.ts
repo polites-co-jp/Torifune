@@ -2,6 +2,7 @@ import { sql } from 'kysely';
 import type { Connection } from '../database/provider';
 import type { DeviceKind } from '../domain/analytics/access-log';
 import type { AnalyticsPoint, TopPath, TrackedSite } from '../domain/analytics/analytics';
+import { dateOnly } from '../domain/analytics/day';
 
 /**
  * アクセス・分析データの保存（018-analytics）。
@@ -26,15 +27,19 @@ export interface NewAccessLog {
   readonly device: DeviceKind;
 }
 
-/** `date` をローカルの `YYYY-MM-DD` に直す。`toISOString()` は1日ずれる。 */
-function toDateOnly(value: Date | string): string {
-  if (typeof value === 'string') {
-    return value.slice(0, 10);
-  }
-  const year = value.getFullYear();
-  const month = String(value.getMonth() + 1).padStart(2, '0');
-  const day = String(value.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+/**
+ * 生ログの期間を絞る条件。
+ *
+ * **`occurred_at >= '2026-09-03'::date` と書かない。**
+ * `timestamptz` と `date` を比べると、PostgreSQL は接続の TimeZone 設定で
+ * 日付を時刻へ直す。設定は環境に左右されるため、同じ SQL が環境ごとに
+ * 別の範囲を指してしまう。境目に使うタイムゾーンを必ず明示する。
+ */
+function withinDays(from: string, to: string, timeZone: string) {
+  return {
+    start: sql<boolean>`occurred_at >= (${from}::date::timestamp AT TIME ZONE ${timeZone})`,
+    end: sql<boolean>`occurred_at < ((${to}::date + interval '1 day')::timestamp AT TIME ZONE ${timeZone})`,
+  };
 }
 
 export const analyticsRepository = {
@@ -100,7 +105,7 @@ export const analyticsRepository = {
 
     return result.map((row) => ({
       siteId: row.site_id,
-      metricDate: toDateOnly(row.metric_date),
+      metricDate: dateOnly(row.metric_date),
       source: row.source,
       metric: row.metric,
       value: Number(row.value),
@@ -170,17 +175,21 @@ export const analyticsRepository = {
       readonly siteId: string | null;
       readonly from: string;
       readonly to: string;
+      /** 1日の境目に使うタイムゾーン。 */
+      readonly timeZone: string;
       readonly limit: number;
       readonly offset?: number;
     },
   ): Promise<readonly TopPath[]> {
+    const days = withinDays(query.from, query.to, query.timeZone);
+
     let rows = connection.db
       .selectFrom('access_logs')
       .select(['path'])
       .select((eb) => eb.fn.countAll<string>().as('pageviews'))
       .where('device', '!=', 'bot')
-      .where(sql<boolean>`occurred_at >= ${query.from}::date`)
-      .where(sql<boolean>`occurred_at < (${query.to}::date + interval '1 day')`);
+      .where(days.start)
+      .where(days.end);
 
     if (query.siteId !== null) {
       rows = rows.where('site_id', '=', query.siteId);
@@ -212,14 +221,17 @@ export const analyticsRepository = {
       readonly siteId: string | null;
       readonly from: string;
       readonly to: string;
+      readonly timeZone: string;
     },
   ): Promise<number> {
+    const days = withinDays(query.from, query.to, query.timeZone);
+
     let rows = connection.db
       .selectFrom('access_logs')
       .select((eb) => eb.fn.count<string>(eb.ref('path')).distinct().as('total'))
       .where('device', '!=', 'bot')
-      .where(sql<boolean>`occurred_at >= ${query.from}::date`)
-      .where(sql<boolean>`occurred_at < (${query.to}::date + interval '1 day')`);
+      .where(days.start)
+      .where(days.end);
 
     if (query.siteId !== null) {
       rows = rows.where('site_id', '=', query.siteId);
@@ -251,7 +263,7 @@ export const analyticsRepository = {
    */
   async aggregateDaily(
     connection: Connection,
-    range: { readonly from: string; readonly to: string },
+    range: { readonly from: string; readonly to: string; readonly timeZone: string },
   ): Promise<readonly DailyAggregate[]> {
     const result = await sql<{
       site_id: string;
@@ -261,13 +273,13 @@ export const analyticsRepository = {
     }>`
       SELECT
         site_id,
-        (occurred_at AT TIME ZONE 'UTC')::date AS day,
+        (occurred_at AT TIME ZONE ${range.timeZone})::date AS day,
         count(*) AS pageviews,
         count(DISTINCT visitor_hash) AS visitors
       FROM access_logs
       WHERE device <> 'bot'
-        AND occurred_at >= ${range.from}::date
-        AND occurred_at < (${range.to}::date + interval '1 day')
+        AND occurred_at >= (${range.from}::date::timestamp AT TIME ZONE ${range.timeZone})
+        AND occurred_at < ((${range.to}::date + interval '1 day')::timestamp AT TIME ZONE ${range.timeZone})
       GROUP BY site_id, day
     `.execute(connection.db);
 

@@ -44,10 +44,23 @@ function toDailyRows(points: readonly AnalyticsPoint[]): readonly DailyRow[] {
     .sort((a, b) => (a.date < b.date ? 1 : -1));
 }
 
+/**
+ * 計測タグの1行。
+ *
+ * **`src` は絶対 URL にする。** 相対パスのまま別のホストへ貼られると、
+ * 貼った先のサーバーの `/t.js` を探しに行って計測が届かない。
+ */
+function snippetFor(site: SiteOption, origin: string | null): string {
+  const src = origin === null ? '/t.js' : `${origin}/t.js`;
+  return `<script src="${src}" data-site="${site.publicKey}"></script>`;
+}
+
 export function AnalyticsView({
   points,
   topPaths,
   sites,
+  scriptOrigin,
+  timeZone,
   selectedSiteId,
   from,
   to,
@@ -55,12 +68,18 @@ export function AnalyticsView({
   readonly points: readonly AnalyticsPoint[];
   readonly topPaths: readonly TopPath[];
   readonly sites: readonly SiteOption[];
+  /** 計測タグの src に付けるオリジン。分からなければ null。 */
+  readonly scriptOrigin: string | null;
+  /** 1日の境目に使っているタイムゾーン。 */
+  readonly timeZone: string;
   readonly selectedSiteId: string | null;
   readonly from: string;
   readonly to: string;
 }) {
   const rows = toDailyRows(points);
   const selected = sites.find((site) => site.id === selectedSiteId) ?? null;
+  // 絞り込んでいればそのサイトだけ、していなければ登録済みのすべて。
+  const shown = selected === null ? sites : [selected];
 
   const totals = rows.reduce(
     (acc, row) => ({
@@ -108,6 +127,20 @@ export function AnalyticsView({
           </label>
           <button type="submit">絞り込む</button>
         </form>
+        {/*
+          **どの時間帯で1日を区切っているかを見せる。** 見えないと、
+          「昨日のはずの数字が今日に入っている」ときに確かめようがない。
+        */}
+        <p
+          style={{
+            margin: 'var(--tf-space-2) 0 0',
+            color: 'var(--tf-color-text-muted)',
+            fontSize: '0.875rem',
+          }}
+          data-analytics-timezone={timeZone}
+        >
+          日付の区切りは {timeZone} です。
+        </p>
       </Card>
 
       {rows.length === 0 ? (
@@ -146,28 +179,48 @@ export function AnalyticsView({
 
       <Card>
         <h2 style={{ fontSize: '1rem', marginTop: 0 }}>計測タグ</h2>
-        {selected === null ? (
-          <p style={{ margin: 0, color: 'var(--tf-color-text-muted)' }}>
-            サイトを選ぶと、そのサイト用の計測タグを表示します。
-          </p>
+
+        {/*
+          **絞り込みを待たずに出す。** 以前は「サイトを選んで絞り込む」まで
+          何も出なかったため、登録したサイトが見当たらないように見えていた。
+          サイトを選んでいるときは、そのサイトだけに絞る。
+        */}
+        {shown.length === 0 ? (
+          <EmptyState message="Webサイトを登録すると、ここに計測タグが出ます。" />
         ) : (
           <>
             <p style={{ marginTop: 0 }}>
-              «{selected.name}» の計測タグです。測りたいページの
-              <code>&lt;head&gt;</code> に貼ってください。
+              測りたいページの<code>&lt;head&gt;</code> に貼ってください。
             </p>
-            <pre
-              data-tracking-snippet
-              style={{
-                background: 'var(--tf-color-surface)',
-                border: '1px solid var(--tf-color-border)',
-                borderRadius: 'var(--tf-radius-md)',
-                padding: 'var(--tf-space-3)',
-                overflowX: 'auto',
-              }}
-            >
-              {`<script src="/t.js" data-site="${selected.publicKey}"></script>`}
-            </pre>
+            <div style={{ display: 'grid', gap: 'var(--tf-space-3)' }}>
+              {shown.map((site) => (
+                // **minWidth: 0 が要る。** grid の子は既定で min-width:auto のため、
+                // 中の長い1行がトラックを押し広げ、ページ全体が横スクロールする。
+                <div key={site.id} style={{ minWidth: 0 }}>
+                  <p style={{ margin: '0 0 var(--tf-space-1)', fontWeight: 600 }}>{site.name}</p>
+                  <pre
+                    data-tracking-snippet
+                    data-site-id={site.id}
+                    style={{
+                      background: 'var(--tf-color-surface)',
+                      border: '1px solid var(--tf-color-border)',
+                      borderRadius: 'var(--tf-radius-md)',
+                      padding: 'var(--tf-space-3)',
+                      margin: 0,
+                      overflowX: 'auto',
+                    }}
+                  >
+                    {snippetFor(site, scriptOrigin)}
+                  </pre>
+                </div>
+              ))}
+            </div>
+            {scriptOrigin === null && (
+              <Alert tone="warning">
+                送信先のホストを特定できませんでした。<code>APP_URL</code> を設定してください。
+                このままのタグを別のホストへ貼っても計測は届きません。
+              </Alert>
+            )}
             <p style={{ color: 'var(--tf-color-text-muted)', margin: 0 }}>
               Cookie は使いません。IPアドレスとブラウザ情報は保存せず、
               日ごとに変わるハッシュだけを記録します。

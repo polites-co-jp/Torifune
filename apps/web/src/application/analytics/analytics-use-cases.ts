@@ -12,6 +12,7 @@ import {
 } from '@/domain/analytics/analytics';
 import { ValidationError } from '@/domain/repository';
 import { analyticsRepository } from '@/infrastructure/analytics-repository';
+import { analyticsTimeZone } from './timezone';
 
 /**
  * アクセス・分析データの参照（05_API設計.md §20、018-analytics）。
@@ -114,7 +115,12 @@ export const listTopPathsPage = defineUseCase<AnalyticsPageInput, AnalyticsPage<
   handler: async (context, input) => {
     assertRange(input.from, input.to);
 
-    const range = { siteId: input.siteId, from: input.from, to: input.to };
+    const range = {
+      siteId: input.siteId,
+      from: input.from,
+      to: input.to,
+      timeZone: analyticsTimeZone(),
+    };
 
     const total = await analyticsRepository.countTopPaths(context.connection, range);
     const items = await analyticsRepository.topPaths(context.connection, {
@@ -140,6 +146,7 @@ export const listTopPaths = defineUseCase<
       siteId: input.siteId,
       from: input.from,
       to: input.to,
+      timeZone: analyticsTimeZone(),
       limit: Math.min(Math.max(1, input.limit), 100),
     });
   },

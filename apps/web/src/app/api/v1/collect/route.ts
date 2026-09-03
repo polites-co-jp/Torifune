@@ -12,6 +12,11 @@ import { defineRoute } from '@/api/route';
  *
  * 結果を出し分けない。成功しても失敗しても 204 を返す。
  * 出し分けると、キーの当たりを探る手段になる。
+ *
+ * **Content-Type を見ない。** 計測タグは `text/plain` で送る（設計 §3.4）。
+ * `application/json` にすると別オリジンからの送信でプリフライトが飛び、
+ * CORS を開いていないサイトの計測が落ちる。本文は Content-Type に関わらず
+ * JSON として読むので、ここで型を要求しない。
  */
 export const POST = defineRoute({
   operationId: 'collectAccess',

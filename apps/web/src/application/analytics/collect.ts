@@ -8,7 +8,9 @@ import {
   referrerHostOf,
   visitorHash,
 } from '@/domain/analytics/access-log';
+import { todayInTimeZone } from '@/domain/analytics/day';
 import { analyticsRepository } from '@/infrastructure/analytics-repository';
+import { analyticsTimeZone } from './timezone';
 
 /**
  * アクセスの記録（018-analytics 設計 §3）。
@@ -50,12 +52,14 @@ function dailySalt(day: string): string {
   return salt;
 }
 
-/** ローカルの `YYYY-MM-DD`。 */
-function today(now: Date): string {
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+/**
+ * ソルトを回す日付。
+ *
+ * **集計の1日の境目と必ずそろえる。** ずれると、1つの集計日の途中で
+ * ソルトが変わり、同じ訪問者が2人と数えられる。
+ */
+function saltDay(now: Date): string {
+  return todayInTimeZone(analyticsTimeZone(), now);
 }
 
 export interface CollectInput {
@@ -95,7 +99,7 @@ export async function collectAccess(input: CollectInput): Promise<CollectOutcome
       referrerHost: referrerHostOf(input.referrer),
       // **IP と User-Agent の生値は保存しない。**
       visitorHash: visitorHash({
-        dailySalt: dailySalt(today(now)),
+        dailySalt: dailySalt(saltDay(now)),
         siteId: site.id,
         // IP が取れない場合も一意性は User-Agent 側で担保する。
         ipAddress: input.ipAddress ?? 'unknown',
@@ -118,6 +122,17 @@ export function resetDailySalts(): void {
  *
  * **最小にする。** Cookie を使わず、`sendBeacon` で1回叩くだけ
  * （設計 §3.4）。Cookie を使うと同意取得の話が乗ってきて、導入の敷居が上がる。
+ *
+ * **Content-Type を `text/plain` にする。** このスクリプトは他所のサイトへ貼られ、
+ * 受け口とは別オリジンになる。`application/json` は CORS のセーフリスト外なので、
+ * 送るたびにプリフライト（`OPTIONS`）が飛ぶ。CORS は既定で無効であり
+ * （`api/cors.ts`）、貼ったサイトのオリジンを `TORIFUNE_CORS_ORIGINS` へ
+ * 足さない限り、計測がまるごと落ちる。
+ *
+ * **計測のために CORS を開かせない。** 開かせると、そのオリジンから
+ * `/api/v1` の参照系まで開くことになり、計測の代償として広すぎる。
+ * セーフリストの `text/plain` なら単純リクエストになり、プリフライトが起きない。
+ * 受け口は Content-Type を見ずに本文を JSON として読むため、受け側の変更は要らない。
  */
 export function trackingScript(origin: string): string {
   return `(function(){
@@ -126,9 +141,9 @@ var s=document.currentScript;
 var k=s&&s.getAttribute('data-site');
 if(!k)return;
 var b=JSON.stringify({key:k,path:location.pathname,referrer:document.referrer||null});
-var u=${JSON.stringify(origin)}+'/api/v1/collect';
-if(navigator.sendBeacon){navigator.sendBeacon(u,new Blob([b],{type:'application/json'}));}
-else{var x=new XMLHttpRequest();x.open('POST',u,true);x.setRequestHeader('Content-Type','application/json');x.send(b);}
+var u=${JSON.stringify(`${origin}/api/v1/collect`)};
+if(navigator.sendBeacon){navigator.sendBeacon(u,new Blob([b],{type:'text/plain;charset=UTF-8'}));}
+else{var x=new XMLHttpRequest();x.open('POST',u,true);x.setRequestHeader('Content-Type','text/plain;charset=UTF-8');x.send(b);}
 }catch(e){}
 })();`;
 }

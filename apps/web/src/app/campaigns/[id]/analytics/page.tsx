@@ -1,3 +1,5 @@
+import { analyticsTimeZone } from '@/application/analytics/timezone';
+import { todayInTimeZone } from '@/domain/analytics/day';
 import { listAnalytics } from '@/application/analytics/analytics-use-cases';
 import { getCampaign } from '@/application/campaign/campaign-use-cases';
 import { listSites } from '@/application/site/site-use-cases';
@@ -16,12 +18,9 @@ import { AsyncState } from '@/ui/states/async-state';
 
 export const dynamic = 'force-dynamic';
 
-/** ローカルの今日を `YYYY-MM-DD` で返す。UTC へ直すと東側で1日ずれる。 */
+/** 集計と同じ境目で「今日」を返す（`application/analytics/timezone.ts`）。 */
 function today(): string {
-  const date = new Date();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${date.getFullYear()}-${month}-${day}`;
+  return todayInTimeZone(analyticsTimeZone());
 }
 
 /**
