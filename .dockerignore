@@ -12,3 +12,7 @@ coverage
 playwright-report
 test-results
 docs
+
+# 自動生成（ビルド時に作り直す）。ホスト側に残った生成物を持ち込むと、
+# 「手元では通るのにクリーンな clone で落ちる」構図を隠してしまう。
+apps/web/src/plugin/generated-registry.ts

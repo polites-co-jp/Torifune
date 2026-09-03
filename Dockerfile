@@ -28,7 +28,14 @@ RUN pnpm install --frozen-lockfile --prod=false
 
 COPY . .
 
-RUN pnpm --filter @torifune/cli build \
+# Plugin レジストリ（apps/web/src/plugin/generated-registry.ts）を先に作る。
+# Next.js は静的な import しか辿れないため、plugins/ を走査した生成物が web の
+# ビルドより前に無いと Module not found で落ちる。
+# ここを `pnpm build`（generate:plugins を含む）ではなく --filter で組み立てている
+# ため、生成をこのステップで明示する。.dockerignore がホスト側の生成物を除外して
+# いるので、イメージの中身は必ずこのビルドで作り直したものになる。
+RUN pnpm generate:plugins \
+ && pnpm --filter @torifune/cli build \
  && pnpm --filter @torifune/web build
 
 # plugins/ とビルド出力だけが書き込み可能であればよい。
