@@ -28,6 +28,12 @@ RUN pnpm install --frozen-lockfile --prod=false
 
 COPY . .
 
+# ENTRYPOINT はこのスクリプトを直接 exec するため、実行ビットが要る。
+# Git 側にも 100755 で記録してあるが、実行ビットを保てない環境
+# （Windows の core.filemode=false、zip でのソース取得）から作っても
+# 動くイメージになるよう、ここでも立てる。
+RUN chmod +x docker/entrypoint.sh
+
 # Plugin レジストリ（apps/web/src/plugin/generated-registry.ts）を先に作る。
 # Next.js は静的な import しか辿れないため、plugins/ を走査した生成物が web の
 # ビルドより前に無いと Module not found で落ちる。
