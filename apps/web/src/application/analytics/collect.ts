@@ -120,8 +120,28 @@ export function resetDailySalts(): void {
 /**
  * 計測スクリプト。
  *
- * **最小にする。** Cookie を使わず、`sendBeacon` で1回叩くだけ
+ * **最小にする。** Cookie も localStorage も使わず、`sendBeacon` で叩くだけ
  * （設計 §3.4）。Cookie を使うと同意取得の話が乗ってきて、導入の敷居が上がる。
+ *
+ * **ロード時だけでなく、SPA のクライアント遷移でも送る。** Next.js 等の SPA では
+ * リンクを辿っても `<head>` が再描画されず、スクリプトは再実行されない。
+ * `history.pushState` / `replaceState` を包み、`popstate` を聞いて、
+ * pathname が変わるたびに送る。これが無いと、サイト内回遊の PV が丸ごと欠ける。
+ *
+ * - **公開キーは初回実行時に閉じ込める。** `document.currentScript` は
+ *   後続のコールバック内では `null` になる。遷移時に読み直すと必ず壊れる。
+ * - **pathname が実際に変わったときだけ送る。** SPA はスクロール復元や
+ *   クエリ更新で `replaceState` を連発する。受け口は query を捨てて path だけを
+ *   保存するので、判定も pathname で行う。ハッシュだけの変化も数えない。
+ * - **`pushState` / `replaceState` の包みは元の挙動を変えない。** 戻り値・`this`・
+ *   引数をそのまま通し、送信は元関数を呼んだ**後**に行う（URL が変わってから読む）。
+ *   送信側の例外はホストサイトのナビゲーションへ漏らさない。
+ * - **タグが2回貼られても二重に入らない。** `window.__torifune` で見張る。
+ * - **遷移時の referrer は `null`。** `document.referrer` は SPA の間ずっと
+ *   外部流入元のままなので、遷移ごとに送ると流入元が実数以上に膨らむ。
+ *   初回ロードだけ `document.referrer` を送る。
+ * - **bfcache からの復帰（`pageshow`）は数えない。** 戻った先はすでに数えた
+ *   ページであり、スクリプトの状態も凍結されたまま戻る。
  *
  * **Content-Type を `text/plain` にする。** このスクリプトは他所のサイトへ貼られ、
  * 受け口とは別オリジンになる。`application/json` は CORS のセーフリスト外なので、
@@ -140,10 +160,28 @@ try{
 var s=document.currentScript;
 var k=s&&s.getAttribute('data-site');
 if(!k)return;
-var b=JSON.stringify({key:k,path:location.pathname,referrer:document.referrer||null});
+if(window.__torifune)return;
+window.__torifune=1;
 var u=${JSON.stringify(`${origin}/api/v1/collect`)};
+var l=null;
+function send(r){
+var p=location.pathname;
+if(p===l)return;
+l=p;
+var b=JSON.stringify({key:k,path:p,referrer:r});
 if(navigator.sendBeacon){navigator.sendBeacon(u,new Blob([b],{type:'text/plain;charset=UTF-8'}));}
 else{var x=new XMLHttpRequest();x.open('POST',u,true);x.setRequestHeader('Content-Type','text/plain;charset=UTF-8');x.send(b);}
+}
+function spa(){try{send(null);}catch(e){}}
+function hook(n){
+var o=history[n];
+if(typeof o!=='function')return;
+history[n]=function(){var r=o.apply(this,arguments);spa();return r;};
+}
+hook('pushState');
+hook('replaceState');
+addEventListener('popstate',spa);
+send(document.referrer||null);
 }catch(e){}
 })();`;
 }

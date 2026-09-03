@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext } from '@playwright/test';
+import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 
 /**
  * アクセス解析（05_API設計.md §20、06_画面設計.md §15、018-analytics）。
@@ -51,6 +51,38 @@ async function makeTrackedSite(request: APIRequestContext): Promise<string> {
   });
   expect(response.status()).toBe(201);
   return ((await response.json()) as { data: { id: string } }).data.id;
+}
+
+/** 画面から公開キーを読む（API では返していない）。 */
+async function publicKeyOf(page: Page, siteId: string): Promise<string> {
+  await page.goto(`/analytics?siteId=${siteId}`);
+  const snippet = await page
+    .locator(`[data-tracking-snippet][data-site-id="${siteId}"]`)
+    .textContent();
+  const publicKey = /data-site="([^"]+)"/.exec(snippet ?? '')?.[1];
+  expect(publicKey).toBeDefined();
+  return publicKey ?? '';
+}
+
+/** 今日の分を集計し、指標を読む。 */
+async function metricToday(
+  request: APIRequestContext,
+  siteId: string,
+  metric: string,
+): Promise<number> {
+  const token = await csrf(request);
+  const rollup = await request.post('/api/v1/analytics/rollup', {
+    headers: headers(token),
+    data: { from: today(), to: today(), csrfToken: token },
+  });
+  expect(rollup.status()).toBe(200);
+
+  const analytics = await request.get(
+    `/api/v1/analytics?siteId=${siteId}&from=${today()}&to=${today()}`,
+  );
+  expect(analytics.status()).toBe(200);
+  const points = ((await analytics.json()) as { data: { metric: string; value: number }[] }).data;
+  return points.find((point) => point.metric === metric)?.value ?? 0;
 }
 
 test('計測スクリプトが配られる', async ({ request }) => {
@@ -115,14 +147,7 @@ test('サイトを絞り込むと、そのサイトのタグだけになる', as
 
 test('アクセスを集めて集計し、画面で見られる', async ({ page, request }) => {
   const siteId = await makeTrackedSite(request);
-
-  // 画面から公開キーを読む（API では返していない）。
-  await page.goto(`/analytics?siteId=${siteId}`);
-  const snippet = await page
-    .locator(`[data-tracking-snippet][data-site-id="${siteId}"]`)
-    .textContent();
-  const publicKey = /data-site="([^"]+)"/.exec(snippet ?? '')?.[1];
-  expect(publicKey).toBeDefined();
+  const publicKey = await publicKeyOf(page, siteId);
 
   // 計測タグと同じことをする。
   for (const path of ['/', '/', '/pricing']) {
@@ -134,24 +159,86 @@ test('アクセスを集めて集計し、画面で見られる', async ({ page,
   }
 
   // 集計する（cron から API Token で叩く想定の口）。
-  const token = await csrf(request);
-  const rollup = await request.post('/api/v1/analytics/rollup', {
-    headers: headers(token),
-    data: { from: today(), to: today(), csrfToken: token },
-  });
-  expect(rollup.status()).toBe(200);
-
-  const analytics = await request.get(
-    `/api/v1/analytics?siteId=${siteId}&from=${today()}&to=${today()}`,
-  );
-  expect(analytics.status()).toBe(200);
-  const points = ((await analytics.json()) as { data: { metric: string; value: number }[] }).data;
-  expect(points.find((point) => point.metric === 'pageviews')?.value).toBe(3);
+  expect(await metricToday(request, siteId, 'pageviews')).toBe(3);
 
   // 画面にも出る。
   await page.goto(`/analytics?siteId=${siteId}&from=${today()}&to=${today()}`);
   await expect(page.getByRole('heading', { name: 'アナリティクス' })).toBeVisible();
   await expect(page.getByText('/pricing')).toBeVisible();
+});
+
+/**
+ * 計測タグを貼った SPA（018-analytics 設計 §3.4）。
+ *
+ * **Torifune とは別オリジンに貼る。** 貼った先から受け口への送信が CORS の対象になり、
+ * プリフライトが起きない形かどうかを実際のブラウザで確かめられる。
+ * ページの中身は Playwright が返し、このホストへは何も届かない。
+ *
+ * `https` にしているのは Chromium の Local Network Access のため。外部サイトから
+ * ループバック（このテストの受け口）へ送るには、安全なコンテキストで許可を得る必要がある。
+ * ループバック宛ては混在コンテンツにならないので、`https` ページから `http` の受け口へ送れる。
+ */
+const SPA_ORIGIN = 'https://spa.example.test';
+
+test.describe('SPA のクライアント遷移', () => {
+  // Headless の User-Agent は Bot 扱いになり、集計から外れる（設計 §3.3）。
+  test.use({
+    userAgent:
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+  });
+
+  test('pathname が変わるたびに記録され、同じ pathname では増えない', async ({
+    page,
+    context,
+    request,
+  }) => {
+    const siteId = await makeTrackedSite(request);
+    const publicKey = await publicKeyOf(page, siteId);
+
+    // Chromium の Local Network Access。外部サイトからループバックへ送るときだけ
+    // 許可が要る。本番では受け口も公開ホストなので関係ない。
+    await context.grantPermissions(['local-network-access'], { origin: SPA_ORIGIN });
+
+    await page.route(`${SPA_ORIGIN}/**`, (route) =>
+      route.request().resourceType() === 'document'
+        ? route.fulfill({
+            contentType: 'text/html; charset=utf-8',
+            body: `<!doctype html><html><head><script src="${origin}/t.js" data-site="${publicKey}"></script></head><body>spa</body></html>`,
+          })
+        : route.fulfill({ status: 404 }),
+    );
+
+    // 受け口への送信を見張る。プリフライト（OPTIONS）が飛ばず、POST だけであること。
+    const collectMethods: string[] = [];
+    page.on('request', (sent) => {
+      if (sent.url().endsWith('/api/v1/collect')) {
+        collectMethods.push(sent.method());
+      }
+    });
+
+    // ハードロード：1件。
+    await page.goto(`${SPA_ORIGIN}/`);
+
+    // クライアント遷移。Next.js のようにクエリ更新の replaceState や
+    // 同じ path への pushState が混ざっても、path が変わった分だけ数える。
+    await page.evaluate(() => {
+      history.pushState({}, '', '/topics');
+      history.replaceState({}, '', '/topics?page=2');
+      history.pushState({}, '', '/topics');
+      history.pushState({}, '', '/topics/18665');
+    });
+    await expect(page).toHaveURL(`${SPA_ORIGIN}/topics/18665`);
+
+    // 戻る：popstate で /topics へ。
+    await page.evaluate(() => history.back());
+    await expect(page).toHaveURL(`${SPA_ORIGIN}/topics`);
+
+    // 期待する記録: / → /topics → /topics/18665 → /topics の4件。
+    // sendBeacon は送りっぱなしなので、届くまで集計を繰り返す。
+    await expect.poll(() => metricToday(request, siteId, 'pageviews'), { timeout: 15_000 }).toBe(4);
+
+    expect(collectMethods).toEqual(['POST', 'POST', 'POST', 'POST']);
+  });
 });
 
 /**
