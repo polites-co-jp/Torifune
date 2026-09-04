@@ -391,30 +391,41 @@ export function AccessTrend({
 
   return (
     <div style={{ display: 'grid', gap: 'var(--tf-space-6)' }}>
-      <div style={{ display: 'grid', gap: 'var(--tf-space-3)' }}>
-        <Chart
-          title="直近7日のページビューと訪問者の推移"
-          series={series}
-          legend
-          fallback={
-            daily.length === 0 ? (
-              <EmptyState message="アクセスの記録がありません。計測タグを貼ると数字が出ます。" />
-            ) : (
-              <Table columns={dailyColumns} rows={daily} rowKey={(row) => row.date} />
-            )
-          }
-        />
-        {daily.length > 0 && (
-          // X 軸は両端の日付（設計 §7.2）。途中の目盛りは置かない。
-          <div
-            aria-hidden="true"
-            style={{ ...CAPTION, ...MONO, display: 'flex', justifyContent: 'space-between' }}
-          >
-            <span>{shortDate(from)}</span>
-            <span>{shortDate(to)}</span>
-          </div>
-        )}
-      </div>
+      <Chart
+        title="直近7日のページビューと訪問者の推移"
+        series={series}
+        legend
+        fallback={
+          daily.length === 0 ? (
+            <EmptyState message="アクセスの記録がありません。計測タグを貼ると数字が出ます。" />
+          ) : (
+            <>
+              {/*
+                X 軸は両端の日付（設計 §7.2）。途中の目盛りは置かない。
+                `fallback` は SVG の直下に描かれるので、ここに置くと線のすぐ下に来る。
+              */}
+              <div
+                aria-hidden="true"
+                style={{
+                  ...CAPTION,
+                  ...MONO,
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  marginTop: 'var(--tf-space-2)',
+                }}
+              >
+                <span>{shortDate(from)}</span>
+                <span>{shortDate(to)}</span>
+              </div>
+              {/* 同じ値の表は畳んでおく（アナリティクスの概要タブと同じ）。読み上げ経路は残る。 */}
+              <details style={{ marginTop: 'var(--tf-space-3)' }}>
+                <summary style={CAPTION}>日ごとの値を表で見る</summary>
+                <Table columns={dailyColumns} rows={daily} rowKey={(row) => row.date} />
+              </details>
+            </>
+          )
+        }
+      />
 
       {sites !== null &&
         (sites.length === 0 ? (

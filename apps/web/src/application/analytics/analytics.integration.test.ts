@@ -19,7 +19,7 @@ import { resetEventHandlers, subscribe } from '@/application/events';
 import { createSite, regenerateSitePublicKey } from '@/application/site/site-use-cases';
 import { withConnection } from '@/application/transaction';
 import type { UserIdentity } from '@/authentication/identity';
-import type { AnalyticsPoint } from '@/domain/analytics/analytics';
+import { isValidBreakdownKey, type AnalyticsPoint } from '@/domain/analytics/analytics';
 import { daysAgoInTimeZone, todayInTimeZone } from '@/domain/analytics/day';
 import { NotFoundError, ValidationError } from '@/domain/repository';
 import { roleRepository } from '@/infrastructure/role-repository';
@@ -133,6 +133,17 @@ async function insertLogs(siteId: string, logs: readonly LogInput[]): Promise<vo
     }
   });
 }
+
+/**
+ * 制御文字（U+0001）を含むパス。
+ *
+ * 028 の検証で見つかった指摘：受け口がこれをそのまま保存すると、ロールアップが
+ * この key で `path_pageviews` 等を書き、画面がその key を `listAnalyticsBreakdown` の
+ * `keys` へ渡したときに `isValidBreakdownKey` で弾かれて「ページ」タブが落ちる。
+ *
+ * NUL（U+0000）は PostgreSQL の text 型に入らないので、直接 INSERT する検証には U+0001 を使う。
+ */
+const CONTROL_PATH = `/x${String.fromCharCode(0x01)}y`;
 
 /** 既定のタイムゾーン（UTC）で境目に掛からない日。 */
 const DAY = '2026-06-10';
@@ -488,6 +499,41 @@ describe('計測', () => {
     });
 
     expect(outcome.ok).toBe(false);
+  });
+
+  /**
+   * 制御文字を含むパスは記録しない（018 設計 §3.2 の正規化規則、028 の検証で追記）。
+   * 入口で落とせば、ロールアップにも画面にも制御文字入りの key が流れない。
+   */
+  it('制御文字を含むパスでは ok: false になる', async () => {
+    const site = await makeSite();
+
+    const outcome = await collectAccess({
+      publicKey: site.publicKey,
+      path: CONTROL_PATH,
+      referrer: null,
+      ipAddress: '203.0.113.5',
+      userAgent: BROWSER,
+    });
+
+    expect(outcome.ok).toBe(false);
+  });
+
+  it('制御文字を含むパスでは access_logs が増えない', async () => {
+    const site = await makeSite();
+
+    await collectAccess({
+      publicKey: site.publicKey,
+      path: CONTROL_PATH,
+      referrer: null,
+      ipAddress: '203.0.113.5',
+      userAgent: BROWSER,
+    });
+
+    const rows = await withConnection((connection) =>
+      connection.db.selectFrom('access_logs').select('id').execute(),
+    );
+    expect(rows).toHaveLength(0);
   });
 
   it('Bot は記録される', async () => {
@@ -1092,6 +1138,100 @@ describe('冪等な差し替え', () => {
 });
 
 /**
+ * 制御文字を含むパスが**既に生ログに入っている**場合（028 の検証で追記）。
+ *
+ * 受け口で落とす前に届いた行が残っていても、ロールアップは制御文字入りのパスを
+ * key に出さない（`aggregateDailyBreakdown` で除外）。出すと、画面が `keys` へ渡したときに
+ * 422 になり「ページ」タブが落ちる。**その PV 自体は正常な PV として数える**
+ * （key 無しの `pageviews` 等には入る）。
+ *
+ * 生ログ（同じ日）：
+ * - v1: 10:00 制御文字パス → 10:05 `/ok`（制御文字パスがランディングで、滞在の標本を持つ）
+ * - v2: 11:00 制御文字パス だけ（制御文字パスが直帰）
+ * - v3: 12:00 `/ok` だけ
+ */
+describe('制御文字を含むパスの生ログ', () => {
+  const PATH_METRICS = [
+    'path_pageviews',
+    'path_visitors',
+    'landing',
+    'path_bounces',
+    'path_dwell_ms',
+    'path_dwell_samples',
+  ] as const;
+
+  async function seedWithControlPath(siteId: string): Promise<void> {
+    await insertLogs(siteId, [
+      { at: at('10:00'), visitor: 'v1', path: CONTROL_PATH },
+      { at: at('10:05'), visitor: 'v1', path: '/ok' },
+      { at: at('11:00'), visitor: 'v2', path: CONTROL_PATH },
+      { at: at('12:00'), visitor: 'v3', path: '/ok' },
+    ]);
+    await rollup(DAY);
+  }
+
+  it.each(PATH_METRICS)('%s の key に制御文字を含むパスが現れない', async (metric) => {
+    const site = await makeSite();
+    await seedWithControlPath(site.id);
+
+    const points = await corePoints(site.id, DAY);
+
+    expect(keysOf(points, metric)).not.toContain(CONTROL_PATH);
+  });
+
+  /** どの指標でも、書いた key はすべて内訳キーとして妥当。 */
+  it('書かれた key はすべて isValidBreakdownKey を満たす', async () => {
+    const site = await makeSite();
+    await seedWithControlPath(site.id);
+
+    const points = await corePoints(site.id, DAY);
+
+    expect(points.length).toBeGreaterThan(0);
+    expect(points.filter((point) => !isValidBreakdownKey(point.key))).toEqual([]);
+  });
+
+  /** 同じ日の正常なパスは従来どおり出る。 */
+  it('同じ日の正常なパスは path_pageviews に出る', async () => {
+    const site = await makeSite();
+    await seedWithControlPath(site.id);
+
+    const points = await corePoints(site.id, DAY);
+
+    expect(keysOf(points, 'path_pageviews')).toEqual(['/ok']);
+    expect(valueOf(points, 'path_pageviews', '/ok')).toBe(2);
+  });
+
+  /** 制御文字入りの PV も PV として数える（key 無しの指標には入る）。 */
+  it('制御文字を含むパスの PV も pageviews には数える', async () => {
+    const site = await makeSite();
+    await seedWithControlPath(site.id);
+
+    const points = await corePoints(site.id, DAY);
+
+    expect(valueOf(points, 'pageviews')).toBe(4);
+    expect(valueOf(points, 'visitors')).toBe(3);
+  });
+
+  /**
+   * 画面の経路の再現。「ページ」タブは `path_pageviews` の内訳で読んだ key を
+   * そのまま `keys` に渡して `path_visitors` 等を引く。制御文字入りの生ログがある期間でも、
+   * この操作が例外にならない。
+   */
+  it('path_pageviews の key を keys に渡して path_visitors を引いても例外にならない', async () => {
+    const site = await makeSite();
+    await seedWithControlPath(site.id);
+    const base = { siteId: site.id, from: DAY, to: DAY, source: null, page: 1, perPage: 50 };
+
+    const pages = await listAnalyticsBreakdown(admin, { ...base, metric: 'path_pageviews' });
+    const keys = pages.items.map((item) => item.key);
+
+    await expect(
+      listAnalyticsBreakdown(admin, { ...base, metric: 'path_visitors', keys }),
+    ).resolves.toEqual({ items: [{ key: '/ok', value: 2 }], total: 1 });
+  });
+});
+
+/**
  * 最終受信の書き戻し（028 設計 §5.3.4、受け入れ条件 #24 / #25）。
  *
  * collect のたびに UPDATE せず、rollup が `max(occurred_at)`（Bot 含む）を `GREATEST` で書き戻す。
@@ -1241,6 +1381,26 @@ describe('参照', () => {
         source: null,
       }),
     ).rejects.toThrow(ValidationError);
+  });
+
+  /**
+   * UUID でない `siteId` は空結果（028 の検証で追記）。
+   * `uuid` へのキャストで PG エラーになり API が 500 を返していた。`findSiteLastSeen` と同じ扱いにする。
+   */
+  it('UUID でない siteId なら空を返す', async () => {
+    // 同じ期間に本物の行があっても、その ID に合う行は無い。
+    const site = await makeSite();
+    await recordAnalytics(admin, {
+      siteId: site.id,
+      metricDate: DAY,
+      source: 'com.example.ga',
+      metric: 'pageviews',
+      value: 1,
+    });
+
+    await expect(
+      listAnalytics(admin, { siteId: 'not-a-uuid', from: DAY, to: DAY, source: null }),
+    ).resolves.toEqual([]);
   });
 
   /**
@@ -1633,6 +1793,23 @@ describe('Pagination', () => {
       }),
     ).rejects.toThrow(ValidationError);
   });
+
+  /** `GET /api/v1/analytics?siteId=abc` の経路。UUID でない siteId は空結果（028 の検証で追記）。 */
+  it('UUID でない siteId なら items が空で total は 0', async () => {
+    const site = await makeSite();
+    await seedPoints(site.id, ['pageviews']);
+
+    await expect(
+      listAnalyticsPage(admin, {
+        ...range,
+        siteId: 'not-a-uuid',
+        from: today(),
+        to: today(),
+        page: 1,
+        perPage: 20,
+      }),
+    ).resolves.toEqual({ items: [], total: 0 });
+  });
 });
 
 /**
@@ -1760,6 +1937,19 @@ describe('内訳', () => {
 
     expect(page.items).toEqual([{ key: '/same', value: 1 }]);
     expect(page.total).toBe(1);
+  });
+
+  /**
+   * UUID でない `siteId` は空結果（028 の検証で追記）。
+   * `GET /api/v1/analytics/breakdown?siteId=abc` が `uuid` キャストの PG エラーで 500 になっていた。
+   */
+  it('UUID でない siteId なら items が空で total は 0', async () => {
+    const site = await makeSite();
+    await seedTwoDays(site.id);
+
+    await expect(
+      listAnalyticsBreakdown(admin, { ...base, siteId: 'not-a-uuid', perPage: 50 }),
+    ).resolves.toEqual({ items: [], total: 0 });
   });
 
   /** #32 */

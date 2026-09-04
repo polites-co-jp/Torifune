@@ -99,6 +99,10 @@ export interface AnalyticsPointView {
   readonly siteId: string;
   readonly metricDate: string;
   readonly source: string;
+  /**
+   * 指標名。Torifune 自身の `sessions` は 30 分無操作で区切ったセッション数
+   * （以前は `visitors` と同値だった）。
+   */
   readonly metric: string;
   /**
    * 内訳キー（パス・参照元ホスト・時間帯など）。キーを持たない指標は `''`。

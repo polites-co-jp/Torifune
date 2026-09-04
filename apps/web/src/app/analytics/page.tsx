@@ -12,6 +12,7 @@ import {
 import type { AuthorizationContext } from '@/application/authorization/authorize';
 import { analyticsTimeZone } from '@/application/analytics/timezone';
 import {
+  isValidBreakdownKey,
   isValidRange,
   KEYLESS_CORE_METRICS,
   MAX_RANGE_DAYS,
@@ -169,6 +170,16 @@ async function breakdown(
     perPage: input.perPage,
     ...(input.keys === undefined ? {} : { keys: input.keys }),
   });
+}
+
+/**
+ * 内訳の行から、key として妥当でないもの（制御文字を含む等）を落とす（設計 §5.3.6 (c)）。
+ *
+ * 受け口とロールアップで止めているが、`analytics` に直接入った key への防御。
+ * 残すと `keys` に渡したときに `ValidationError` になり画面ごと落ちる。
+ */
+function validItems(items: readonly BreakdownItem[]): readonly BreakdownItem[] {
+  return items.filter((item) => isValidBreakdownKey(item.key));
 }
 
 /** 表の 1 ページ分の key に限って、付随する指標を引く。key が無ければ引かない。 */
@@ -349,8 +360,8 @@ export default async function AnalyticsPage({
                   pageviews: dailyByDate.get(date)?.pageviews ?? 0,
                   visitors: dailyByDate.get(date)?.visitors ?? 0,
                 })),
-          topPages: topPages.items,
-          topReferrers: topReferrers.items,
+          topPages: validItems(topPages.items),
+          topReferrers: validItems(topReferrers.items),
           hours: hoursOf(hours.items),
           devices: deviceRows(devices.items, { ...summaryOptions, botPageviews }),
           botPageviews,
@@ -365,7 +376,8 @@ export default async function AnalyticsPage({
           page: query.page,
           perPage: TABLE_PER_PAGE,
         });
-        const keys = page.items.map((item) => item.key);
+        const items = validItems(page.items);
+        const keys = items.map((item) => item.key);
         const [visitors, landing, bounces, dwellMs, dwellSamples] = await Promise.all([
           valuesByKey(context, range, 'path_visitors', keys),
           valuesByKey(context, range, 'landing', keys),
@@ -375,7 +387,7 @@ export default async function AnalyticsPage({
         ]);
 
         const data: PagesData = {
-          rows: page.items.map((item) => ({
+          rows: items.map((item) => ({
             path: item.key,
             pageviews: item.value,
             visitors: visitors.get(item.key) ?? 0,
@@ -397,7 +409,8 @@ export default async function AnalyticsPage({
           page: query.page,
           perPage: TABLE_PER_PAGE,
         });
-        const keys = page.items.map((item) => item.key);
+        const items = validItems(page.items);
+        const keys = items.map((item) => item.key);
         const [visitors, bounces] = await Promise.all([
           valuesByKey(context, range, 'referrer_visitors', keys),
           valuesByKey(context, range, 'referrer_bounces', keys),
@@ -406,7 +419,7 @@ export default async function AnalyticsPage({
         const sessions = summarize(currentPoints, { includeBots: false }).sessions;
 
         const data: ReferrersData = {
-          rows: page.items.map((item) => ({
+          rows: items.map((item) => ({
             host: item.key,
             sessions: item.value,
             visitors: visitors.get(item.key) ?? 0,

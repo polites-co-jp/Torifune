@@ -24,6 +24,32 @@ import type { SiteStatus } from '../domain/site/site';
 /** UUID の形をしているか。不正な値で 500 にせず、見つからない扱いにする。 */
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * `siteId` の絞り込み。UUID でなければ**どの行にも当たらない条件**にする。
+ *
+ * `site_id` は `uuid` 型なので、そのまま比べると PG のキャストエラーで 500 になる。
+ * `findSiteLastSeen` と同じく「見つからない」扱い（空結果）にする（028 設計 §6.1 / §6.2）。
+ */
+function siteCondition(
+  eb: ExpressionBuilder<Schema, 'analytics'>,
+  siteId: string,
+): Expression<SqlBool> {
+  return UUID_PATTERN.test(siteId) ? eb('site_id', '=', siteId) : sql<SqlBool>`false`;
+}
+
+/**
+ * 制御文字（0x00〜0x1f、0x7f）を含まないパスだけを通す条件（028 設計 §5.3.6 (b)）。
+ *
+ * 受け口で落とす前に記録された生ログへの防御。キー付き指標の key にだけ掛け、
+ * key 無しの指標とセッション判定には掛けない（その PV 自体は数える）。
+ * パターンはバインド値として渡す（`\x..` は PG の正規表現側で解釈される）。
+ */
+const CONTROL_CHAR_SQL_PATTERN = '[\\x00-\\x1f\\x7f]';
+
+function withoutControlChars(column: string) {
+  return sql`${sql.ref(column)} !~ ${CONTROL_CHAR_SQL_PATTERN}`;
+}
+
 /** 集計値を期間・サイト・出所・指標・key で絞る条件。 */
 export interface PointsFilter {
   readonly siteId: string | null;
@@ -51,7 +77,7 @@ function pointConditions(
   ];
 
   if (filter.siteId !== null) {
-    conditions.push(eb('site_id', '=', filter.siteId));
+    conditions.push(siteCondition(eb, filter.siteId));
   }
   if (filter.source !== null) {
     conditions.push(eb('source', '=', filter.source));
@@ -89,7 +115,7 @@ function breakdownConditions(
   ];
 
   if (filter.siteId !== null) {
-    conditions.push(eb('site_id', '=', filter.siteId));
+    conditions.push(siteCondition(eb, filter.siteId));
   }
   if (filter.source !== null) {
     conditions.push(eb('source', '=', filter.source));
@@ -390,6 +416,8 @@ export const analyticsRepository = {
    * * **出力の規則**：key 無しの 8 指標は、その (site, day) に生ログが 1 行でもあれば 0 でも出す
    *   （`days` を土台にした LEFT JOIN）。キー付きの指標は値 > 0 の key だけ出す。
    *   生ログが 1 行も無い (site, day) には何も返さない
+   * * **制御文字を含むパス**は `path_*` / `landing` の key に出さない（§5.3.6 (b)）。
+   *   その PV 自体は `pageviews` 等とセッション判定には数える
    */
   async aggregateDailyBreakdown(
     connection: Connection,
@@ -496,7 +524,7 @@ export const analyticsRepository = {
         FROM human GROUP BY site_id, day, device
         UNION ALL
         SELECT site_id, day, 'landing', landing_path, count(*)
-        FROM visits GROUP BY site_id, day, landing_path
+        FROM visits WHERE ${withoutControlChars('landing_path')} GROUP BY site_id, day, landing_path
         UNION ALL
         SELECT site_id, day, 'referrer', referrer, count(*)
         FROM visits GROUP BY site_id, day, referrer
@@ -508,19 +536,19 @@ export const analyticsRepository = {
         FROM visits GROUP BY site_id, day, referrer
         UNION ALL
         SELECT site_id, day, 'path_pageviews', path, count(*)
-        FROM human GROUP BY site_id, day, path
+        FROM human WHERE ${withoutControlChars('path')} GROUP BY site_id, day, path
         UNION ALL
         SELECT site_id, day, 'path_visitors', path, count(DISTINCT visitor_hash)
-        FROM human GROUP BY site_id, day, path
+        FROM human WHERE ${withoutControlChars('path')} GROUP BY site_id, day, path
         UNION ALL
         SELECT site_id, day, 'path_bounces', landing_path, count(*) FILTER (WHERE pv = 1)
-        FROM visits GROUP BY site_id, day, landing_path
+        FROM visits WHERE ${withoutControlChars('landing_path')} GROUP BY site_id, day, landing_path
         UNION ALL
         SELECT site_id, day, 'path_dwell_ms', path, sum(dwell_ms)
-        FROM dwell GROUP BY site_id, day, path
+        FROM dwell WHERE ${withoutControlChars('path')} GROUP BY site_id, day, path
         UNION ALL
         SELECT site_id, day, 'path_dwell_samples', path, count(*)
-        FROM dwell GROUP BY site_id, day, path
+        FROM dwell WHERE ${withoutControlChars('path')} GROUP BY site_id, day, path
       )
       SELECT site_id, to_char(day, 'YYYY-MM-DD') AS day, metric, key, value
       FROM (

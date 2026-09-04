@@ -577,6 +577,53 @@ test.describe('ページタブ', () => {
 
     await expect(page.getByRole('row', { name: /\/pricing/ })).toBeVisible();
   });
+
+  /**
+   * 制御文字を含むパス（028 の検証で追記）。
+   *
+   * JSON なので U+0001 を含むパスを受け口へ送れる。受け口が記録しない（`normalizePath`）、
+   * ロールアップが key に出さない、画面が `keys` に渡す前に濾す、の三重で守り、
+   * 「ページ」タブが 500 で落ちないこと。
+   */
+  test.describe('制御文字を含むパス', () => {
+    const CONTROL_PATH = `/ctl${String.fromCharCode(0x01)}x`;
+
+    async function makeSiteWithControlPath(page: Page, request: APIRequestContext) {
+      const siteId = await makeTrackedSite(request);
+      const publicKey = await publicKeyOf(page, siteId);
+      await collectHits(request, publicKey, ['/ok', CONTROL_PATH]);
+      await rollupToday(request);
+      return siteId;
+    }
+
+    test('送っても受け口は 204 を返す', async ({ page, request }) => {
+      // 結果を出し分けない（キーの当たりを探らせない）。`collectHits` が 204 を確かめる。
+      const siteId = await makeTrackedSite(request);
+      const publicKey = await publicKeyOf(page, siteId);
+
+      await collectHits(request, publicKey, [CONTROL_PATH]);
+    });
+
+    test('rollup 後に tab=pages が HTTP 200 で列見出しが出る', async ({ page, request }) => {
+      const siteId = await makeSiteWithControlPath(page, request);
+
+      const response = await page.goto(todayUrl(siteId, '&tab=pages'));
+
+      expect(response?.status()).toBe(200);
+      for (const column of ['ページビュー', '訪問者', 'ランディング', '直帰率', '平均滞在']) {
+        await expect(page.getByRole('columnheader', { name: column })).toBeVisible();
+      }
+    });
+
+    test('そのパスの行は出ず、正常な別パスの行は出る', async ({ page, request }) => {
+      const siteId = await makeSiteWithControlPath(page, request);
+
+      await page.goto(todayUrl(siteId, '&tab=pages'));
+
+      await expect(page.getByRole('row', { name: /\/ok/ })).toBeVisible();
+      await expect(page.getByRole('row', { name: /ctl/ })).toHaveCount(0);
+    });
+  });
 });
 
 /**
@@ -1282,6 +1329,18 @@ test.describe('内訳 API', () => {
     expect(response.status()).toBe(422);
   });
 
+  /** UUID でない siteId は 500 にせず空結果（028 の検証で追記）。 */
+  test('UUID でない siteId なら 200 で data が空', async ({ request }) => {
+    const response = await request.get(
+      `/api/v1/analytics/breakdown?siteId=abc&from=${today()}&to=${today()}&metric=pageviews`,
+    );
+    expect(response.status(), await response.text()).toBe(200);
+
+    const body = (await response.json()) as BreakdownBody;
+    expect(body.data).toEqual([]);
+    expect(body.meta.total).toBe(0);
+  });
+
   /** §6.2。`keys` は画面の内部都合で API に出さない。 */
   test('OpenAPI の breakdown のクエリに keys が無い', async ({ request }) => {
     const document = (await (await request.get('/api/v1/openapi.json')).json()) as {
@@ -1376,6 +1435,18 @@ test.describe('GET /analytics の絞り込み', () => {
       `/api/v1/analytics?from=${today()}&to=${today()}&metric=${encodeURIComponent('Page Views')}`,
     );
     expect(response.status()).toBe(422);
+  });
+
+  /** UUID でない siteId は 500 にせず空結果（028 の検証で追記）。 */
+  test('UUID でない siteId なら 200 で data が空', async ({ request }) => {
+    const response = await request.get(
+      `/api/v1/analytics?siteId=abc&from=${today()}&to=${today()}`,
+    );
+    expect(response.status(), await response.text()).toBe(200);
+
+    const body = (await response.json()) as PointBody;
+    expect(body.data).toEqual([]);
+    expect(body.meta.total).toBe(0);
   });
 });
 

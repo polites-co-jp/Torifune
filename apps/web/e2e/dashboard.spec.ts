@@ -240,6 +240,10 @@ test.describe('直近7日のアクセス', () => {
   /**
    * #68。SVG だけだと読み上げも拡大も効かない（014 設計 §3.1、028 設計 §7.4.1）。
    * データがあるときは、PV と訪問者の 2 系列が同じ値の表としても読める。
+   *
+   * 代替表はアナリティクスの概要タブと同じく `<details>`（summary「日ごとの値を表で見る」）で
+   * 畳む（裁定：§7.4.1 の「必ず描く」は「展開して表示」ではない）。閉じた `<details>` の中身は
+   * role 検索に掛からないので、summary を開いてから列見出しを見る。
    */
   test('チャートに読み上げ用の名前があり、同じ値が表としても読める', async ({ page, request }) => {
     await makeRolledUpSite(page, request, ['/']);
@@ -248,6 +252,12 @@ test.describe('直近7日のアクセス', () => {
 
     await expect(page.getByRole('img', { name: CHART_TITLE })).toBeVisible();
     const chart = accessChart(page);
+
+    // `<details>` が無ければここで落ちる（表を常時展開しない）。
+    const summary = chart.locator('summary', { hasText: '日ごとの値を表で見る' });
+    await expect(summary).toBeVisible();
+    await summary.click();
+
     await expect(chart.getByRole('columnheader', { name: 'ページビュー' })).toBeVisible();
     await expect(chart.getByRole('columnheader', { name: '訪問者' })).toBeVisible();
   });

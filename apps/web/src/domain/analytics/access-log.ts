@@ -59,14 +59,21 @@ export function visitorHash(input: {
  *
  * **クエリ文字列とフラグメントを落とす。** トークンや個人情報が URL に
  * 入ることがある。長すぎるパスも切る。
+ *
+ * **制御文字（0x00〜0x1f、0x7f）を含むパスは記録しない。** パスは集計値の key になり、
+ * 画面に出て、絞り込みの key として戻ってくる。入口で落とすのが最も安い
+ * （028 設計 §5.3.6 (a)）。前後の空白は先に trim で落ちるので、先頭の改行だけなら通る。
  */
 export const PATH_MAX_LENGTH = 500;
+
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHAR_PATTERN = /[\u0000-\u001f\u007f]/;
 
 export function normalizePath(raw: string): string | null {
   const withoutQuery = raw.split(/[?#]/)[0] ?? '';
   const trimmed = withoutQuery.trim();
 
-  if (trimmed === '') {
+  if (trimmed === '' || CONTROL_CHAR_PATTERN.test(trimmed)) {
     return null;
   }
   // 絶対URLを渡されても、パスだけを取り出す。
