@@ -9,12 +9,56 @@
 export const CORE_SOURCE = 'core';
 
 /**
- * Core が出す指標。
+ * Core が出す指標（028-analytics-dashboard-redesign 設計 §5.2）。
  *
  * **固定の列にしない。** 列にすると Plugin が別の指標を持てない。
+ *
+ * Bot（`device = 'bot'`）はセッション化の対象外で、`bot_*` にだけ数える。
+ * `key = ''` の 8 指標（`KEYLESS_CORE_METRICS`）は、その日に生ログが 1 行でもあれば 0 でも出す。
+ * キー付きの指標は値 > 0 の key だけ出す。
  */
-export const CORE_METRICS = ['pageviews', 'visitors', 'sessions'] as const;
+export const CORE_METRICS = [
+  'pageviews',
+  'visitors',
+  'sessions',
+  'bounces',
+  'dwell_ms',
+  'dwell_samples',
+  'bot_pageviews',
+  'bot_visitors',
+  'pageviews_hour',
+  'pageviews_device',
+  'landing',
+  'referrer',
+  'referrer_visitors',
+  'referrer_bounces',
+  'path_pageviews',
+  'path_visitors',
+  'path_bounces',
+  'path_dwell_ms',
+  'path_dwell_samples',
+] as const;
 export type CoreMetric = (typeof CORE_METRICS)[number];
+
+/**
+ * key を持たない Core の指標。
+ *
+ * 「集計したが 0 だった」と「集計していない」を区別するため、
+ * 生ログのある日にはこの 8 つを必ず出す。
+ */
+export const KEYLESS_CORE_METRICS = [
+  'pageviews',
+  'visitors',
+  'sessions',
+  'bounces',
+  'dwell_ms',
+  'dwell_samples',
+  'bot_pageviews',
+  'bot_visitors',
+] as const satisfies readonly CoreMetric[];
+
+/** 参照元が無いセッションを表す key。 */
+export const DIRECT_REFERRER_KEY = '(direct)';
 
 export interface AnalyticsPoint {
   readonly siteId: string;
@@ -22,6 +66,14 @@ export interface AnalyticsPoint {
   readonly metricDate: string;
   readonly source: string;
   readonly metric: string;
+  /** 内訳キー（パス・ホスト・時間帯など）。キーを持たない指標は `''`。 */
+  readonly key: string;
+  readonly value: number;
+}
+
+/** 内訳の 1 行（key ごとの期間合計）。 */
+export interface BreakdownItem {
+  readonly key: string;
   readonly value: number;
 }
 
@@ -30,6 +82,28 @@ export const METRIC_NAME_MAX_LENGTH = 100;
 /** 指標名として受け付けるか。Plugin が任意の名前を入れられるため形式だけ見る。 */
 export function isValidMetricName(value: string): boolean {
   return /^[a-z][a-z0-9_]*$/.test(value) && value.length <= METRIC_NAME_MAX_LENGTH;
+}
+
+/** 内訳キーの長さの上限。`PATH_MAX_LENGTH` と同じ（パスを key に入れるため）。 */
+export const BREAKDOWN_KEY_MAX_LENGTH = 500;
+
+/**
+ * 内訳キーとして受け付けるか。
+ *
+ * **空文字は可**（キーを持たない指標）。制御文字（0x00〜0x1f、0x7f）は
+ * 画面やログで崩れるので拒む。
+ */
+export function isValidBreakdownKey(value: string): boolean {
+  if (value.length > BREAKDOWN_KEY_MAX_LENGTH) {
+    return false;
+  }
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code < 0x20 || code === 0x7f) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**

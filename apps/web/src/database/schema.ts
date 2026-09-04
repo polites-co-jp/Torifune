@@ -128,6 +128,11 @@ export interface SitesTable {
   created_at: CreatedAt;
   updated_at: UpdatedAt;
   created_by: string | null;
+  /**
+   * 計測タグからの最終受信時刻（028-analytics-dashboard-redesign）。
+   * collect のたびに更新せず、rollup が `max(occurred_at)` を書き戻す。未受信は null。
+   */
+  analytics_last_seen_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
 }
 
 /** キャンペーン（02_データベース設計.md §5.7）。設計は docs/設計/017-campaigns/。 */
@@ -173,6 +178,8 @@ export interface AnalyticsTable {
   metric_date: ColumnType<Date | string, Date | string, Date | string>;
   source: Generated<string>;
   metric: string;
+  /** 内訳キー（パス・ホスト・時間帯など）。キーを持たない指標は空文字。 */
+  key: Generated<string>;
   value: Generated<number | bigint | string>;
   updated_at: UpdatedAt;
 }

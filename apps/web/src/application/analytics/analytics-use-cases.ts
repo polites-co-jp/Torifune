@@ -1,6 +1,7 @@
 import { defineUseCase } from '@/application/authorization/use-case';
 import {
   isReservedSource,
+  isValidBreakdownKey,
   isValidMetricName,
   isValidRange,
   isValidSource,
@@ -157,6 +158,8 @@ export interface RecordAnalyticsInput {
   readonly metricDate: string;
   readonly source: string;
   readonly metric: string;
+  /** 内訳キー（パス・ホストなど）。省略は `''`（キーを持たない指標）。 */
+  readonly key?: string;
   readonly value: number;
 }
 
@@ -181,6 +184,10 @@ export const recordAnalytics = defineUseCase<RecordAnalyticsInput, void>({
     if (!isValidSource(input.source) || isReservedSource(input.source)) {
       throw new ValidationError('Analytics', 'source', 'この出所は指定できません。');
     }
+    const key = input.key ?? '';
+    if (!isValidBreakdownKey(key)) {
+      throw new ValidationError('Analytics', 'key', '内訳キーの形式が不正です。');
+    }
     if (!Number.isFinite(input.value) || input.value < 0) {
       throw new ValidationError('Analytics', 'value', '0以上の数値を指定してください。');
     }
@@ -191,6 +198,7 @@ export const recordAnalytics = defineUseCase<RecordAnalyticsInput, void>({
         metricDate: input.metricDate,
         source: input.source,
         metric: input.metric,
+        key,
         value: Math.floor(input.value),
       }),
     );

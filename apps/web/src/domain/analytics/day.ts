@@ -76,6 +76,106 @@ export function daysAgoInTimeZone(days: number, timeZone: string, now: Date = ne
 }
 
 /**
+ * `YYYY-MM-DD` を日数だけ動かす。
+ *
+ * 日付だけを UTC の暦で動かすので、タイムゾーンや夏時間でずれない。
+ */
+export function shiftDays(date: string, days: number): string {
+  const [year, month, day] = date.split('-').map(Number) as [number, number, number];
+  const shifted = new Date(Date.UTC(year, month - 1, day));
+  shifted.setUTCDate(shifted.getUTCDate() + days);
+  return shifted.toISOString().slice(0, 10);
+}
+
+/**
+ * 期間プリセット（028-analytics-dashboard-redesign 設計 §7.3.1）。
+ *
+ * `custom` は from / to を直接受けるので、ここには含めない。
+ */
+export type PeriodPreset = '7d' | '30d' | '90d' | 'month' | 'prev-month';
+
+export const PERIOD_PRESETS: readonly PeriodPreset[] = ['7d', '30d', '90d', 'month', 'prev-month'];
+
+export function isPeriodPreset(value: string): value is PeriodPreset {
+  return (PERIOD_PRESETS as readonly string[]).includes(value);
+}
+
+export interface DateRange {
+  /** `YYYY-MM-DD`。 */
+  readonly from: string;
+  /** `YYYY-MM-DD`。 */
+  readonly to: string;
+}
+
+/**
+ * プリセットから期間を出す。
+ *
+ * **`today` は引数で受ける。** 「今日」は運用タイムゾーンで決まる（`todayInTimeZone`）ので、
+ * ここで時計を読むと境目の時間帯だけずれる。
+ *
+ * | preset | from | to |
+ * | --- | --- | --- |
+ * | `7d` / `30d` / `90d` | `today − 6 / 29 / 89` 日 | `today` |
+ * | `month` | 今月 1 日 | `today` |
+ * | `prev-month` | 前月 1 日 | 前月末日 |
+ */
+export function presetRange(preset: PeriodPreset, today: string): DateRange {
+  switch (preset) {
+    case '7d':
+      return { from: shiftDays(today, -6), to: today };
+    case '30d':
+      return { from: shiftDays(today, -29), to: today };
+    case '90d':
+      return { from: shiftDays(today, -89), to: today };
+    case 'month':
+      return { from: `${today.slice(0, 7)}-01`, to: today };
+    case 'prev-month': {
+      // 今月 1 日の前日が前月末。そこから月初を取る。
+      const previousMonthEnd = shiftDays(`${today.slice(0, 7)}-01`, -1);
+      return { from: `${previousMonthEnd.slice(0, 7)}-01`, to: previousMonthEnd };
+    }
+  }
+}
+
+/**
+ * 直前の同じ長さの期間 `[from − len, from − 1]`（`len = to − from + 1` 日）。
+ *
+ * **月の期間でも日数で戻す**（前月そのものにはしない）。すべてのプリセットで同じ規則。
+ */
+export function previousRange(from: string, to: string): DateRange {
+  const length = Math.round(
+    (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / (24 * 60 * 60 * 1000),
+  );
+  return { from: shiftDays(from, -(length + 1)), to: shiftDays(from, -1) };
+}
+
+/**
+ * ある瞬間を、そのタイムゾーンの `YYYY-MM-DD HH:mm` にする（最終受信・最終集計の表示用）。
+ *
+ * 24 時間表記。`hour12: false` は環境によって 0 時を `24` と出すので `hourCycle: 'h23'` を使う。
+ */
+export function formatDateTimeInTimeZone(instant: Date, timeZone: string): string {
+  if (!isValidTimeZone(timeZone)) {
+    throw new InvalidTimeZoneError(timeZone);
+  }
+
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(instant);
+
+  const part = (type: Intl.DateTimeFormatPartTypes): string =>
+    parts.find((entry) => entry.type === type)?.value ?? '';
+
+  return `${part('year')}-${part('month')}-${part('day')} ${part('hour')}:${part('minute')}`;
+}
+
+/**
  * PostgreSQL から返る `date` を `YYYY-MM-DD` に直す。
  *
  * **node-postgres は `date` をサーバープロセスのローカル0時として `Date` にする。**
