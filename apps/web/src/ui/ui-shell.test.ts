@@ -46,8 +46,28 @@ describe('デザイントークン', () => {
       '--tf-radius-md',
       '--tf-shadow-1',
       '--tf-font-sans',
+      // 028-analytics-dashboard-redesign §7.4.4 で足したトークン（受け入れ条件 #91）。
+      '--tf-color-border-weak',
+      '--tf-color-chart-1',
+      '--tf-color-chart-2',
+      '--tf-color-primary-hover',
+      '--tf-color-primary-disabled',
+      '--tf-color-primary-soft',
+      '--tf-color-surface-strong',
+      '--tf-color-text-subtle',
+      '--tf-radius-pill',
+      '--tf-radius-2xl',
+      '--tf-size-control',
+      '--tf-size-input',
+      '--tf-size-header',
+      '--tf-size-content',
+      '--tf-size-chart-md',
+      '--tf-font-mono',
+      '--tf-text-kpi',
+      '--tf-text-label',
     ]) {
-      expect(css, `${token} が定義されていない`).toContain(token);
+      // `--tf-size-control` が `--tf-size-control-x` の部分一致で通らないよう、定義行（`名前:`）で見る。
+      expect(css, `${token} が定義されていない`).toMatch(new RegExp(`${token}\\s*:`));
     }
   });
 
@@ -62,6 +82,81 @@ describe('デザイントークン', () => {
           match[1],
         );
       }
+    }
+  });
+});
+
+describe('フォント', () => {
+  /**
+   * フォントのセルフホスト（028-analytics-dashboard-redesign 設計 §7.4.5、受け入れ条件 #92）。
+   *
+   * **ビルド時にも実行時にも外部（Google Fonts）へ接続しない。**
+   * `next/font/google` はビルド時に取りに行くため採らず、`next/font/local` で
+   * フォントファイルを OFL の LICENSE とともに同梱する。
+   */
+  const APP_DIR = join(UI_DIR, '..', 'app');
+  const FONTS_DIR = join(APP_DIR, 'fonts');
+  const layoutSource = (): string => readFileSync(join(APP_DIR, 'layout.tsx'), 'utf8');
+
+  it('layout.tsx が next/font/local でフォントを読む', () => {
+    expect(layoutSource()).toContain('next/font/local');
+  });
+
+  it.each(['--font-inter', '--font-jetbrains-mono', '--font-noto-sans-jp'])(
+    'layout.tsx が CSS 変数 %s を定義する',
+    (variable) => {
+      // tokens.css の `--tf-font-sans` / `--tf-font-mono` がこの名前を参照する（§7.4.4）。
+      expect(layoutSource()).toContain(variable);
+    },
+  );
+
+  it('Noto Sans JP は preload しない（ファイルが大きく、初回描画を待たせない）', () => {
+    expect(layoutSource()).toMatch(/preload:\s*false/);
+  });
+
+  it.each(['Inter[wght].woff2', 'JetBrainsMono[wght].woff2'])(
+    'フォントファイル %s が同梱されている',
+    (file) => {
+      expect(existsSync(join(FONTS_DIR, file)), `${file} が無い`).toBe(true);
+    },
+  );
+
+  it('Noto Sans JP の woff2 が同梱されている', async () => {
+    // Noto は配布元が可変 woff2 を出しておらず変換して置く（実装プラン T14）。
+    // ファイル名の細部（`[wght]` の有無）に依存しないよう、接頭辞と拡張子で見る。
+    const entries = existsSync(FONTS_DIR) ? await readdir(FONTS_DIR) : [];
+    const noto = entries.filter((name) => name.startsWith('NotoSansJP') && name.endsWith('.woff2'));
+    expect(noto.length, 'NotoSansJP*.woff2 が無い').toBeGreaterThanOrEqual(1);
+  });
+
+  it.each(['LICENSE-Inter.txt', 'LICENSE-JetBrainsMono.txt', 'LICENSE-NotoSansJP.txt'])(
+    '%s が OFL の本文である',
+    (file) => {
+      const path = join(FONTS_DIR, file);
+      expect(existsSync(path), `${file} が無い`).toBe(true);
+      expect(readFileSync(path, 'utf8')).toMatch(/SIL Open Font License/i);
+    },
+  );
+
+  it('fonts/README.md に出所とライセンスが書かれている', () => {
+    const path = join(FONTS_DIR, 'README.md');
+    expect(existsSync(path), 'README.md が無い').toBe(true);
+    const readme = readFileSync(path, 'utf8');
+    for (const name of ['Inter', 'JetBrains Mono', 'Noto Sans JP']) {
+      expect(readme, `${name} の記載が無い`).toContain(name);
+    }
+    expect(readme).toMatch(/OFL|Open Font License/);
+    expect(readme).toMatch(/https?:\/\//);
+  });
+
+  it.each([
+    ['app/layout.tsx', join(APP_DIR, 'layout.tsx')],
+    ['app/globals.css', join(APP_DIR, 'globals.css')],
+    ['ui/tokens.css', join(UI_DIR, 'tokens.css')],
+  ])('%s が外部のフォント配信を参照していない', (_name, path) => {
+    const source = readFileSync(path, 'utf8');
+    for (const forbidden of ['fonts.googleapis.com', 'fonts.gstatic.com', 'next/font/google']) {
+      expect(source, `${forbidden} への参照がある`).not.toContain(forbidden);
     }
   });
 });

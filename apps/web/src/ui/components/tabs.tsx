@@ -33,9 +33,9 @@ export function Tabs({ items, current, hrefFor, label }: TabsProps) {
       aria-label={label}
       style={{
         display: 'flex',
-        gap: 'var(--tf-space-4)',
+        gap: 'var(--tf-space-8)',
         borderBottom: '1px solid var(--tf-color-border)',
-        marginBottom: 'var(--tf-space-4)',
+        marginBottom: 'var(--tf-space-6)',
         flexWrap: 'wrap',
       }}
     >
@@ -47,12 +47,16 @@ export function Tabs({ items, current, hrefFor, label }: TabsProps) {
             href={hrefFor(item.key)}
             aria-current={active ? 'page' : undefined}
             style={{
-              padding: 'var(--tf-space-2) 0',
+              padding: 'var(--tf-space-3) 0',
+              // 下線と枠線が重なるよう、枠線ぶんだけ下へ食い込ませる。
+              marginBottom: '-1px',
               color: active ? 'var(--tf-color-text)' : 'var(--tf-color-text-muted)',
+              fontWeight: active ? 600 : 400,
               borderBottom: active
                 ? 'var(--tf-border-emphasis) solid var(--tf-color-primary)'
                 : 'var(--tf-border-emphasis) solid transparent',
               textDecoration: 'none',
+              whiteSpace: 'nowrap',
             }}
           >
             {item.label}

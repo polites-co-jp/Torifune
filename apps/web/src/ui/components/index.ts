@@ -30,10 +30,26 @@ export { Pagination, Table, type Column, type PaginationProps, type TableProps }
 
 export { Tabs, type TabItem, type TabsProps } from './tabs';
 
-export { Chart, type ChartProps } from './chart';
-export type { ChartPoint } from './chart-geometry';
+export { Chart, type ChartHeight, type ChartProps } from './chart';
+export type { ChartPoint, ChartSeries, ChartTone } from './chart-geometry';
+
+export { BarChart, type BarChartBar, type BarChartProps } from './bar-chart';
 
 export { DateField, type DateFieldProps } from './date-field';
+
+export { Switch, type SwitchProps } from './switch';
+
+export { Badge, type BadgeProps, type BadgeTone } from './badge';
+
+export { Stat, type StatDelta, type StatProps, type StatTone } from './stat';
+
+export {
+  SegmentedControl,
+  type SegmentedControlItem,
+  type SegmentedControlProps,
+} from './segmented-control';
+
+export { Meter, type MeterProps } from './meter';
 
 export {
   ConfirmDialog,

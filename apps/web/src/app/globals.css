@@ -5,6 +5,13 @@ body {
   background: var(--tf-color-bg);
   color: var(--tf-color-text);
   font-family: var(--tf-font-sans);
+  font-size: var(--tf-text-body);
+}
+
+h1 {
+  font-size: var(--tf-text-h1);
+  font-weight: 400;
+  letter-spacing: -0.4px;
 }
 
 /*
@@ -16,6 +23,10 @@ body {
  *
  * **断点は1つだけ。** 増やすほど、どの画面でどう見えるかを確かめる組み合わせが増える。
  */
+
+.tf-header {
+  min-height: var(--tf-size-header);
+}
 
 /* 広い画面：ナビゲーションを左、本文を右。 */
 .tf-shell {
@@ -36,20 +47,37 @@ body {
 }
 
 .tf-nav-item {
-  margin-bottom: var(--tf-space-2);
+  margin-bottom: var(--tf-space-1);
 }
 
+/* ピル型。選択中は灰の面で示す（028 設計 §7.4.3）。 */
 .tf-nav-link {
   display: block;
-  padding: var(--tf-space-2) var(--tf-space-3);
-  border-radius: var(--tf-radius-md);
+  padding: var(--tf-space-2) var(--tf-space-4);
+  border-radius: var(--tf-radius-pill);
+  color: var(--tf-color-text-muted);
+  text-decoration: none;
+}
+
+.tf-nav-link:hover {
+  background: var(--tf-color-surface);
   color: var(--tf-color-text);
+}
+
+.tf-nav-link[aria-current='page'] {
+  background: var(--tf-color-surface-strong);
+  color: var(--tf-color-text);
+  font-weight: 600;
 }
 
 .tf-main {
   padding: var(--tf-space-6);
   /* 中身が広くても、本文の枠を超えて伸びない。 */
   min-width: 0;
+  /* 広い画面では読みやすい幅で止め、中央に寄せる。 */
+  width: 100%;
+  max-width: var(--tf-size-content);
+  margin-inline: auto;
 }
 
 /*
@@ -93,6 +121,24 @@ body {
   .tf-header {
     padding: var(--tf-space-2) var(--tf-space-3);
   }
+}
+
+/*
+ * ボタンの hover。インラインの style では書けないので、ここで variant ごとに受け持つ。
+ * 色・寸法そのものは primitives.tsx が持つ。
+ */
+.tf-button-primary:hover:not(:disabled) {
+  background: var(--tf-color-primary-hover);
+  border-color: var(--tf-color-primary-hover);
+}
+
+.tf-button-secondary:hover:not(:disabled),
+.tf-button-ghost:hover:not(:disabled) {
+  background: var(--tf-color-surface);
+}
+
+.tf-button-danger:hover:not(:disabled) {
+  filter: brightness(0.9);
 }
 
 /*

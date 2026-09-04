@@ -1,7 +1,34 @@
 import type { Metadata, Viewport } from 'next';
+import localFont from 'next/font/local';
 import type { ReactNode } from 'react';
 import { loadSystemSettings } from '@/application/system-settings/system-settings-use-cases';
 import './globals.css';
+
+/**
+ * 書体はリポジトリに同梱してセルフホストする（028 設計 §7.4.5、`app/fonts/README.md`）。
+ *
+ * **ビルド時にも実行時にも外部のフォント配信へ接続しない。**
+ * 各 CSS 変数は `ui/tokens.css` の `--tf-font-sans` / `--tf-font-mono` が参照する。
+ */
+const inter = localFont({
+  src: './fonts/Inter[wght].woff2',
+  variable: '--font-inter',
+  display: 'swap',
+});
+
+const jetBrainsMono = localFont({
+  src: './fonts/JetBrainsMono[wght].woff2',
+  variable: '--font-jetbrains-mono',
+  display: 'swap',
+});
+
+// ファイルが大きい。先読みして初回描画を待たせるより、出てから差し替えるほうが速い。
+const notoSansJp = localFont({
+  src: './fonts/NotoSansJP[wght].woff2',
+  variable: '--font-noto-sans-jp',
+  display: 'swap',
+  preload: false,
+});
 
 /**
  * モバイルでの表示幅（06_画面設計.md §31）。
@@ -45,7 +72,10 @@ export const dynamic = 'force-dynamic';
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="ja">
+    <html
+      lang="ja"
+      className={`${inter.variable} ${jetBrainsMono.variable} ${notoSansJp.variable}`}
+    >
       <body>{children}</body>
     </html>
   );

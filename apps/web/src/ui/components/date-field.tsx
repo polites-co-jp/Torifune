@@ -20,9 +20,10 @@ export function DateField(props: DateFieldProps) {
       type="date"
       style={{
         width: '100%',
-        padding: 'var(--tf-space-2)',
+        height: 'var(--tf-size-input)',
+        padding: 'var(--tf-space-2) var(--tf-space-4)',
         border: '1px solid var(--tf-color-border)',
-        borderRadius: 'var(--tf-radius-sm)',
+        borderRadius: 'var(--tf-radius-lg)',
         background: 'var(--tf-color-bg)',
         color: 'var(--tf-color-text)',
         font: 'inherit',
