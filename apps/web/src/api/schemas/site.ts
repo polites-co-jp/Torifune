@@ -68,6 +68,22 @@ export const siteResponseSchema = z.object({
 export const siteEnvelopeSchema = dataEnvelope(siteResponseSchema);
 export const sitePageSchema = pageEnvelope(siteResponseSchema);
 
+/** 公開キーの再発行。本文は CSRF トークンだけ。 */
+export const regenerateSitePublicKeySchema = z.object({
+  csrfToken: z.string().optional(),
+});
+
+/**
+ * 再発行の応答。公開キーは秘密ではない（計測タグに埋まる）ため、
+ * ここでだけ返す。`SiteResponse` には含めない。
+ */
+export const sitePublicKeyResponseSchema = z.object({
+  siteId: z.string(),
+  publicKey: z.string(),
+});
+
+export const sitePublicKeyEnvelopeSchema = dataEnvelope(sitePublicKeyResponseSchema);
+
 /** API が返す形。内部の項目をそのまま返さず、明示的に選ぶ。 */
 export interface SiteResponse {
   readonly id: string;

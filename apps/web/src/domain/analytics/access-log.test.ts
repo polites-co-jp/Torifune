@@ -13,8 +13,12 @@ describe('generateSitePublicKey', () => {
     expect(generateSitePublicKey()).not.toBe(generateSitePublicKey());
   });
 
-  it('推測できない長さがある', () => {
-    expect(generateSitePublicKey().length).toBeGreaterThanOrEqual(32);
+  /**
+   * 028 設計 §6.6（受け入れ条件 #43 の Domain 側）。
+   * `randomBytes(32).toString('hex')` で 64 桁にし、DB の既定値と長さを揃える。
+   */
+  it('64 桁の 16 進になる', () => {
+    expect(generateSitePublicKey()).toMatch(/^[0-9a-f]{64}$/);
   });
 });
 

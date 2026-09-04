@@ -16,7 +16,7 @@ import { pruneAccessLogs, rollupAnalytics } from '@/application/analytics/rollup
 import { ForbiddenError, type AuthorizationContext } from '@/application/authorization/authorize';
 import { authorizationContextFor } from '@/application/authorization/context';
 import { resetEventHandlers, subscribe } from '@/application/events';
-import { createSite } from '@/application/site/site-use-cases';
+import { createSite, regenerateSitePublicKey } from '@/application/site/site-use-cases';
 import { withConnection } from '@/application/transaction';
 import type { UserIdentity } from '@/authentication/identity';
 import type { AnalyticsPoint } from '@/domain/analytics/analytics';
@@ -2163,5 +2163,86 @@ describe('外部サービスからの取り込み', () => {
         value: -1,
       }),
     ).rejects.toThrow(ValidationError);
+  });
+});
+
+/**
+ * 公開キーの再発行と計測（028 設計 §6.6、受け入れ条件 #44）。
+ *
+ * 旧キーは即時に無効。`findSiteByPublicKey` が引けなくなるので、
+ * 旧タグからの `collect` は `{ ok: false }` で、何も記録されない。
+ */
+describe('公開キーの再発行と計測', () => {
+  async function hit(publicKey: string): Promise<{ ok: boolean }> {
+    return collectAccess({
+      publicKey,
+      path: '/',
+      referrer: null,
+      ipAddress: '203.0.113.5',
+      userAgent: BROWSER,
+    });
+  }
+
+  async function accessLogCount(): Promise<number> {
+    const rows = await withConnection((connection) =>
+      connection.db.selectFrom('access_logs').select('id').execute(),
+    );
+    return rows.length;
+  }
+
+  /** #44 */
+  it('再発行後、旧キーで collectAccess を呼んでも ok: false になる', async () => {
+    const site = await makeSite();
+    await regenerateSitePublicKey(admin, { id: site.id });
+
+    const outcome = await hit(site.publicKey);
+
+    expect(outcome.ok).toBe(false);
+  });
+
+  /** #44 */
+  it('再発行後、旧キーでは access_logs が増えない', async () => {
+    const site = await makeSite();
+    await regenerateSitePublicKey(admin, { id: site.id });
+
+    await hit(site.publicKey);
+
+    expect(await accessLogCount()).toBe(0);
+  });
+
+  /** #44 */
+  it('再発行後、新キーでは ok: true で記録される', async () => {
+    const site = await makeSite();
+    const { publicKey } = await regenerateSitePublicKey(admin, { id: site.id });
+
+    const outcome = await hit(publicKey);
+
+    expect(outcome.ok).toBe(true);
+    const rows = await withConnection((connection) =>
+      connection.db.selectFrom('access_logs').select('site_id').execute(),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.site_id).toBe(site.id);
+  });
+
+  /** #44。再発行前に旧キーで積んだ記録は残る（キーの切り替えで過去の記録は消えない）。 */
+  it('再発行前に旧キーで記録した分は残る', async () => {
+    const site = await makeSite();
+    await hit(site.publicKey);
+
+    await regenerateSitePublicKey(admin, { id: site.id });
+
+    expect(await accessLogCount()).toBe(1);
+  });
+
+  /** 他のサイトのキーは無効にならない。 */
+  it('別のサイトを再発行しても、このサイトの旧キーは有効なまま', async () => {
+    const site = await makeSite();
+    const other = await makeSite();
+
+    await regenerateSitePublicKey(admin, { id: other.id });
+
+    const outcome = await hit(site.publicKey);
+    expect(outcome.ok).toBe(true);
   });
 });

@@ -21,9 +21,14 @@ export interface AccessLog {
   readonly device: DeviceKind;
 }
 
-/** サイトを識別する公開キー。推測できない長さにする。 */
+/**
+ * サイトを識別する公開キー。推測できない長さにする。
+ *
+ * 32 バイト = 64 桁の 16 進。DB が初期値として払い出すキーと同じ長さにし、
+ * 再発行したキーだけ見た目が違う、ということが起きないようにする。
+ */
 export function generateSitePublicKey(): string {
-  return randomBytes(16).toString('hex');
+  return randomBytes(32).toString('hex');
 }
 
 /** 訪問者ハッシュの長さ。総当たりで元を割り出せない程度に短くする。 */

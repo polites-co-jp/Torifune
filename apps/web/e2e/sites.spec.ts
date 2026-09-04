@@ -1,4 +1,10 @@
-import { expect, test, type APIRequestContext } from '@playwright/test';
+import {
+  expect,
+  test,
+  type APIRequestContext,
+  type Page,
+  type PlaywrightWorkerArgs,
+} from '@playwright/test';
 
 /** Webサイト管理の E2E。API と画面の両方を確かめる。 */
 
@@ -12,6 +18,61 @@ async function csrf(request: APIRequestContext): Promise<string> {
   const response = await request.get('/api/v1/auth/csrf');
   const body = (await response.json()) as { data: { csrfToken: string } };
   return body.data.csrfToken;
+}
+
+/**
+ * 指定したロールの利用者を作り、その利用者でログインした request context を返す。
+ * 使い終わったら `dispose()` する。
+ */
+async function loginAsNewUser(
+  request: APIRequestContext,
+  playwright: PlaywrightWorkerArgs['playwright'],
+  roles: readonly string[],
+): Promise<APIRequestContext> {
+  const token = await csrf(request);
+  const loginId = `e2e_site_${unique()}`;
+  const password = 'e2e sites regenerate key user password';
+  const created = await request.post('/api/v1/users', {
+    headers: { 'X-CSRF-Token': token, Origin: origin },
+    data: {
+      loginId,
+      displayName: `E2E ${loginId}`,
+      email: `${loginId}@example.com`,
+      password,
+      roles,
+      csrfToken: token,
+    },
+  });
+  expect(created.status(), await created.text()).toBe(201);
+
+  const context = await playwright.request.newContext({ baseURL: origin });
+  const loginToken = await csrf(context);
+  const login = await context.post('/api/v1/auth/login', {
+    headers: { 'X-CSRF-Token': loginToken, Origin: origin },
+    data: { loginId, password, csrfToken: loginToken },
+  });
+  expect(login.status(), await login.text()).toBe(200);
+  return context;
+}
+
+/** 画面の計測タグから公開キーを読む（一般 API では返していない）。 */
+async function publicKeyOf(page: Page, siteId: string): Promise<string> {
+  await page.goto(`/analytics?siteId=${siteId}&tab=settings`);
+  const snippet = await page
+    .locator(`[data-tracking-snippet][data-site-id="${siteId}"]`)
+    .textContent();
+  const publicKey = /data-site="([^"]+)"/.exec(snippet ?? '')?.[1];
+  expect(publicKey).toBeDefined();
+  return publicKey ?? '';
+}
+
+/** `POST /sites/{id}/public-key` を CSRF 付きで呼ぶ。 */
+async function regeneratePublicKey(request: APIRequestContext, siteId: string) {
+  const token = await csrf(request);
+  return request.post(`/api/v1/sites/${siteId}/public-key`, {
+    headers: { 'X-CSRF-Token': token, Origin: origin },
+    data: { csrfToken: token },
+  });
 }
 
 async function createSite(
@@ -59,6 +120,13 @@ test('サイトを作成して一覧・取得できる', async ({ request }) => 
   const listBody = (await list.json()) as { data: unknown[]; meta: { total: number } };
   expect(listBody.data.length).toBeGreaterThan(0);
   expect(listBody.meta.total).toBeGreaterThan(0);
+
+  // #49。公開キーを再発行した後も、一般の取得には publicKey が出ない。
+  expect((await regeneratePublicKey(request, created.id)).status()).toBe(200);
+  const after = (await (await request.get(`/api/v1/sites/${created.id}`)).json()) as {
+    data: Record<string, unknown>;
+  };
+  expect(Object.keys(after.data)).not.toContain('publicKey');
 });
 
 test('入力エラーが 422 とフィールド単位の説明を返す', async ({ request }) => {
@@ -152,6 +220,124 @@ test('CSRF なしの作成は 403', async ({ request }) => {
     data: { name: 'x', url: 'https://example.com' },
   });
   expect(response.status()).toBe(403);
+});
+
+/**
+ * 公開キーの再発行 API（028 設計 §6.6、受け入れ条件 #48・#49）。
+ *
+ * `POST /api/v1/sites/{id}/public-key`（`operationId: regenerateSitePublicKey`、`site.write`）。
+ */
+test.describe('公開キーの再発行 API', () => {
+  const HEX_64 = /^[0-9a-f]{64}$/;
+
+  /** #48 */
+  test('200 で { data: { siteId, publicKey } } を返す', async ({ request }) => {
+    const created = await createSite(request);
+
+    const response = await regeneratePublicKey(request, created.id);
+
+    expect(response.status(), await response.text()).toBe(200);
+    const body = (await response.json()) as { data: Record<string, unknown> };
+    expect(Object.keys(body.data).sort()).toEqual(['publicKey', 'siteId']);
+    expect(body.data['siteId']).toBe(created.id);
+    expect(body.data['publicKey']).toMatch(HEX_64);
+  });
+
+  /** #48。以前の計測タグに埋まっていた値と異なる。 */
+  test('再発行したキーが以前の計測タグの値と異なる', async ({ page, request }) => {
+    const created = await createSite(request);
+    const before = await publicKeyOf(page, created.id);
+
+    const response = await regeneratePublicKey(request, created.id);
+
+    expect(response.status()).toBe(200);
+    const body = (await response.json()) as { data: { publicKey: string } };
+    expect(body.data.publicKey).not.toBe(before);
+    // 画面の計測タグも新しいキーに切り替わる。
+    expect(await publicKeyOf(page, created.id)).toBe(body.data.publicKey);
+  });
+
+  /** #48 */
+  test('未認証では 401', async ({ request, playwright }) => {
+    const created = await createSite(request);
+
+    // ログインしていない context。`playwright.config.ts` の `storageState`（管理者セッション）を
+    // 継承しないよう空の storageState を明示する。CSRF トークンだけは付けて、認証の判定に到達させる。
+    const anonymous = await playwright.request.newContext({
+      baseURL: origin,
+      storageState: { cookies: [], origins: [] },
+    });
+    try {
+      const token = await csrf(anonymous);
+      const response = await anonymous.post(`/api/v1/sites/${created.id}/public-key`, {
+        headers: { 'X-CSRF-Token': token, Origin: origin },
+        data: { csrfToken: token },
+      });
+      expect(response.status()).toBe(401);
+    } finally {
+      await anonymous.dispose();
+    }
+  });
+
+  /** #48。`viewer` は `site.read` を持つが `site.write` を持たない。 */
+  test('viewer ロールでは 403', async ({ request, playwright }) => {
+    const created = await createSite(request);
+
+    const viewer = await loginAsNewUser(request, playwright, ['viewer']);
+    try {
+      const response = await regeneratePublicKey(viewer, created.id);
+      expect(response.status()).toBe(403);
+    } finally {
+      await viewer.dispose();
+    }
+  });
+
+  /** #48。`editor` は `site.write` を持つ。 */
+  test('editor ロールでは 200', async ({ request, playwright }) => {
+    const created = await createSite(request);
+
+    const editor = await loginAsNewUser(request, playwright, ['editor']);
+    try {
+      const response = await regeneratePublicKey(editor, created.id);
+      expect(response.status(), await response.text()).toBe(200);
+    } finally {
+      await editor.dispose();
+    }
+  });
+
+  /** #48 */
+  test('存在しない ID は 404', async ({ request }) => {
+    const response = await regeneratePublicKey(request, '01900000-0000-7000-8000-0000000000ff');
+    expect(response.status()).toBe(404);
+  });
+
+  /** #48。不正な形式でも 500 にしない。 */
+  test('UUID でない ID は 404', async ({ request }) => {
+    const response = await regeneratePublicKey(request, 'not-a-uuid');
+    expect(response.status()).toBe(404);
+  });
+
+  /** #48 */
+  test('CSRF トークン無しは 403', async ({ request }) => {
+    const created = await createSite(request);
+
+    const response = await request.post(`/api/v1/sites/${created.id}/public-key`, {
+      headers: { Origin: origin },
+      data: {},
+    });
+    expect(response.status()).toBe(403);
+  });
+
+  /** #48。他のサイトの ID を指定しても、そのサイトのキーだけが変わる。 */
+  test('他のサイトのキーは変わらない', async ({ page, request }) => {
+    const target = await createSite(request);
+    const other = await createSite(request);
+    const otherBefore = await publicKeyOf(page, other.id);
+
+    expect((await regeneratePublicKey(request, target.id)).status()).toBe(200);
+
+    expect(await publicKeyOf(page, other.id)).toBe(otherBefore);
+  });
 });
 
 test('画面から作成・編集・削除ができる', async ({ page }) => {

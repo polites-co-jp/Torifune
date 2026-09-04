@@ -65,6 +65,8 @@ describe('応答スキーマの網羅', () => {
       'listSites',
       'getSite',
       'createSite',
+      // 028 設計 §6.6（受け入れ条件 #48 の静的側）。
+      'regenerateSitePublicKey',
       'listUsers',
       'getUser',
       'createUser',

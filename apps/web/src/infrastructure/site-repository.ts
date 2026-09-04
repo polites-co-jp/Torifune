@@ -162,6 +162,19 @@ export const siteRepository: SiteRepository = {
     return row === undefined ? null : toSite(row as SiteRow);
   },
 
+  async updatePublicKey(connection: Connection, id: string, publicKey: string): Promise<boolean> {
+    if (!UUID_PATTERN.test(id)) {
+      return false;
+    }
+    // 変えるのは公開キーだけ。`updated_at` は `Site` として見える項目の更新に限る。
+    const result = await connection.db
+      .updateTable('sites')
+      .set({ public_key: publicKey })
+      .where('id', '=', id)
+      .executeTakeFirst();
+    return Number(result.numUpdatedRows) > 0;
+  },
+
   async delete(connection: Connection, id: string): Promise<boolean> {
     if (!UUID_PATTERN.test(id)) {
       return false;

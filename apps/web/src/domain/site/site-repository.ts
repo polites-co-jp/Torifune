@@ -38,6 +38,13 @@ export interface SiteRepository {
   findById(connection: Connection, id: string): Promise<Site | null>;
   insert(connection: Connection, site: NewSite): Promise<Site>;
   update(connection: Connection, id: string, patch: SiteUpdate): Promise<Site | null>;
+  /**
+   * 公開キーを差し替える。更新できたら true。存在しなければ false。
+   *
+   * `update` とは分ける。公開キーは `Site` にも `SiteUpdate` にも出さず、
+   * 利用者が任意の値を指定できる項目にしない。
+   */
+  updatePublicKey(connection: Connection, id: string, publicKey: string): Promise<boolean>;
   /** 削除できたら true。存在しなければ false。 */
   delete(connection: Connection, id: string): Promise<boolean>;
 }
