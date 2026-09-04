@@ -1,20 +1,105 @@
-import { sql } from 'kysely';
+import { sql, type Expression, type ExpressionBuilder, type SqlBool } from 'kysely';
 import type { Connection } from '../database/provider';
+import type { Schema } from '../database/schema';
 import type { DeviceKind } from '../domain/analytics/access-log';
 import {
   CORE_SOURCE,
   DIRECT_REFERRER_KEY,
   type AnalyticsPoint,
-  type TopPath,
+  type BreakdownItem,
   type TrackedSite,
 } from '../domain/analytics/analytics';
 import { dateOnly } from '../domain/analytics/day';
+import type { SiteStatus } from '../domain/site/site';
 
 /**
  * アクセス・分析データの保存（018-analytics、028-analytics-dashboard-redesign）。
  *
  * 生ログ（`access_logs`）と集計値（`analytics`）の両方を扱う。
+ *
+ * **生ログに触れるのは、記録・日次集計・最終受信の書き戻し・保持期間の削除・公開キーの照合だけ。**
+ * 画面・API が読むのは集計値（`analytics`）に限る（018 設計 §4.1、028 設計 §6.3）。
  */
+
+/** UUID の形をしているか。不正な値で 500 にせず、見つからない扱いにする。 */
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** 集計値を期間・サイト・出所・指標・key で絞る条件。 */
+export interface PointsFilter {
+  readonly siteId: string | null;
+  readonly from: string;
+  readonly to: string;
+  readonly source: string | null;
+  /** 指標名で絞る。省略は全指標。 */
+  readonly metrics?: readonly string[];
+  /** key で絞る。`''` はキー無しの行だけ。省略は全 key。 */
+  readonly key?: string;
+}
+
+/**
+ * 一覧と件数で使う共通の条件。
+ *
+ * 片方だけ直すと「1件も出ないのに total が 100」のような食い違いが起きる。
+ */
+function pointConditions(
+  eb: ExpressionBuilder<Schema, 'analytics'>,
+  filter: PointsFilter,
+): Expression<SqlBool>[] {
+  const conditions: Expression<SqlBool>[] = [
+    sql<SqlBool>`metric_date >= ${filter.from}::date`,
+    sql<SqlBool>`metric_date <= ${filter.to}::date`,
+  ];
+
+  if (filter.siteId !== null) {
+    conditions.push(eb('site_id', '=', filter.siteId));
+  }
+  if (filter.source !== null) {
+    conditions.push(eb('source', '=', filter.source));
+  }
+  if (filter.metrics !== undefined) {
+    // `IN ()` は SQL として成立しないので、空配列でも通る `= ANY` にする。
+    conditions.push(sql<SqlBool>`metric = ANY(${[...filter.metrics]})`);
+  }
+  if (filter.key !== undefined) {
+    conditions.push(eb('key', '=', filter.key));
+  }
+
+  return conditions;
+}
+
+/** 内訳（key ごとの期間合計）の条件。 */
+export interface BreakdownFilter {
+  readonly siteId: string | null;
+  readonly from: string;
+  readonly to: string;
+  readonly metric: string;
+  readonly source: string | null;
+  /** 指定した key に限る。省略は全 key。 */
+  readonly keys?: readonly string[];
+}
+
+function breakdownConditions(
+  eb: ExpressionBuilder<Schema, 'analytics'>,
+  filter: BreakdownFilter,
+): Expression<SqlBool>[] {
+  const conditions: Expression<SqlBool>[] = [
+    eb('metric', '=', filter.metric),
+    sql<SqlBool>`metric_date >= ${filter.from}::date`,
+    sql<SqlBool>`metric_date <= ${filter.to}::date`,
+  ];
+
+  if (filter.siteId !== null) {
+    conditions.push(eb('site_id', '=', filter.siteId));
+  }
+  if (filter.source !== null) {
+    conditions.push(eb('source', '=', filter.source));
+  }
+  if (filter.keys !== undefined) {
+    conditions.push(sql<SqlBool>`key = ANY(${[...filter.keys]})`);
+  }
+
+  return conditions;
+}
 
 /** 生ログを「サイト × 日 × 指標 × key」へ畳んだ1行（ロールアップの中間結果）。 */
 export interface DailyBreakdownRow {
@@ -44,21 +129,6 @@ export interface NewAccessLog {
   readonly device: DeviceKind;
 }
 
-/**
- * 生ログの期間を絞る条件。
- *
- * **`occurred_at >= '2026-09-03'::date` と書かない。**
- * `timestamptz` と `date` を比べると、PostgreSQL は接続の TimeZone 設定で
- * 日付を時刻へ直す。設定は環境に左右されるため、同じ SQL が環境ごとに
- * 別の範囲を指してしまう。境目に使うタイムゾーンを必ず明示する。
- */
-function withinDays(from: string, to: string, timeZone: string) {
-  return {
-    start: sql<boolean>`occurred_at >= (${from}::date::timestamp AT TIME ZONE ${timeZone})`,
-    end: sql<boolean>`occurred_at < ((${to}::date + interval '1 day')::timestamp AT TIME ZONE ${timeZone})`,
-  };
-}
-
 export const analyticsRepository = {
   /** 生ログを1件記録する。**受け口は認証しない**ので、呼ぶ前に検証を済ませること。 */
   async recordAccess(connection: Connection, entry: NewAccessLog): Promise<void> {
@@ -82,34 +152,20 @@ export const analyticsRepository = {
    *
    * `limit` / `offset` を渡すとその範囲だけを返す（05_API設計.md §33 の Pagination）。
    * 省略すると期間内の全件を返す。画面と Plugin Data API は全件を使う。
+   *
+   * `metrics` / `key` で絞れる（028 設計 §6.1）。画面は `key: ''` と `metrics` を必ず渡す。
+   * 渡さないとパス別の行を全部読むことになる。
    */
   async listPoints(
     connection: Connection,
-    query: {
-      readonly siteId: string | null;
-      readonly from: string;
-      readonly to: string;
-      readonly source: string | null;
-      readonly limit?: number;
-      readonly offset?: number;
-    },
+    query: PointsFilter & { readonly limit?: number; readonly offset?: number },
   ): Promise<readonly AnalyticsPoint[]> {
     let rows = connection.db
       .selectFrom('analytics')
       .select(['site_id', 'metric_date', 'source', 'metric', 'key', 'value'])
-      .where(sql<boolean>`metric_date >= ${query.from}::date`)
-      .where(sql<boolean>`metric_date <= ${query.to}::date`);
-
-    if (query.siteId !== null) {
-      rows = rows.where('site_id', '=', query.siteId);
-    }
-    if (query.source !== null) {
-      rows = rows.where('source', '=', query.source);
-    }
-
-    // **並び順を一意にする。** 同じ日に複数の指標・出所・key があるので、
-    // metric_date だけでは順序が定まらず、ページの境目で取りこぼしが出る。
-    rows = rows
+      .where((eb) => eb.and(pointConditions(eb, query)))
+      // **並び順を一意にする。** 同じ日に複数の指標・出所・key があるので、
+      // metric_date だけでは順序が定まらず、ページの境目で取りこぼしが出る。
       .orderBy('metric_date', 'asc')
       .orderBy('source', 'asc')
       .orderBy('metric', 'asc')
@@ -135,30 +191,94 @@ export const analyticsRepository = {
   },
 
   /** 条件に合う集計値の全件数（Pagination の `meta.total`）。 */
-  async countPoints(
-    connection: Connection,
-    query: {
-      readonly siteId: string | null;
-      readonly from: string;
-      readonly to: string;
-      readonly source: string | null;
-    },
-  ): Promise<number> {
-    let rows = connection.db
+  async countPoints(connection: Connection, query: PointsFilter): Promise<number> {
+    const row = await connection.db
       .selectFrom('analytics')
       .select((eb) => eb.fn.countAll<string>().as('total'))
-      .where(sql<boolean>`metric_date >= ${query.from}::date`)
-      .where(sql<boolean>`metric_date <= ${query.to}::date`);
+      .where((eb) => eb.and(pointConditions(eb, query)))
+      .executeTakeFirst();
 
-    if (query.siteId !== null) {
-      rows = rows.where('site_id', '=', query.siteId);
-    }
-    if (query.source !== null) {
-      rows = rows.where('source', '=', query.source);
-    }
-
-    const row = await rows.executeTakeFirst();
     return Number(row?.total ?? 0);
+  },
+
+  /**
+   * 内訳：期間内の値を key ごとに合算する（028 設計 §6.2）。
+   *
+   * value 降順・key 昇順。`analytics_site_metric_idx`（site_id, metric, metric_date）で引く。
+   */
+  async sumByKey(
+    connection: Connection,
+    query: BreakdownFilter & { readonly limit: number; readonly offset: number },
+  ): Promise<readonly BreakdownItem[]> {
+    const rows = await connection.db
+      .selectFrom('analytics')
+      .select(['key'])
+      .select((eb) => eb.fn.sum<string>('value').as('value'))
+      .where((eb) => eb.and(breakdownConditions(eb, query)))
+      .groupBy('key')
+      .orderBy(sql`sum(value)`, 'desc')
+      .orderBy('key', 'asc')
+      .limit(query.limit)
+      .offset(query.offset)
+      .execute();
+
+    return rows.map((row) => ({ key: row.key, value: Number(row.value) }));
+  },
+
+  /**
+   * 内訳の全件数（Pagination の `meta.total`）。
+   *
+   * 数えるのは**行数ではなく key の種類**。`GROUP BY key` の結果の件数と一致させる。
+   */
+  async countKeys(connection: Connection, query: BreakdownFilter): Promise<number> {
+    const row = await connection.db
+      .selectFrom('analytics')
+      .select((eb) => eb.fn.count<string>('key').distinct().as('total'))
+      .where((eb) => eb.and(breakdownConditions(eb, query)))
+      .executeTakeFirst();
+
+    return Number(row?.total ?? 0);
+  },
+
+  /**
+   * サイトの最終受信（`sites.analytics_last_seen_at`）。サイトが無ければ null。
+   *
+   * 「最終受信が無い」と「サイトが無い」を区別するため、行の有無で返し分ける。
+   */
+  async findSiteLastSeen(
+    connection: Connection,
+    siteId: string,
+  ): Promise<{ readonly analyticsLastSeenAt: Date | null } | null> {
+    if (!UUID_PATTERN.test(siteId)) {
+      return null;
+    }
+    const row = await connection.db
+      .selectFrom('sites')
+      .select(['analytics_last_seen_at'])
+      .where('id', '=', siteId)
+      .executeTakeFirst();
+
+    return row === undefined ? null : { analyticsLastSeenAt: row.analytics_last_seen_at };
+  },
+
+  /**
+   * Core の集計値を最後に書いた時刻（028 設計 §6.4）。
+   *
+   * **`source = 'core'` に限る。** Plugin の `record` で `updated_at` が動いても、
+   * ロールアップを流した時刻とは別の話。
+   */
+  async findLastRollupAt(connection: Connection, siteId: string): Promise<Date | null> {
+    if (!UUID_PATTERN.test(siteId)) {
+      return null;
+    }
+    const row = await connection.db
+      .selectFrom('analytics')
+      .select((eb) => eb.fn.max('updated_at').as('last_rollup_at'))
+      .where('site_id', '=', siteId)
+      .where('source', '=', CORE_SOURCE)
+      .executeTakeFirst();
+
+    return row?.last_rollup_at ?? null;
   },
 
   /**
@@ -231,97 +351,29 @@ export const analyticsRepository = {
   },
 
   /**
-   * 上位ページ。
-   *
-   * 生ログから直接引く。**期間を区切る**ので重くならない。
-   * Bot は数えない。
-   */
-  async topPaths(
-    connection: Connection,
-    query: {
-      readonly siteId: string | null;
-      readonly from: string;
-      readonly to: string;
-      /** 1日の境目に使うタイムゾーン。 */
-      readonly timeZone: string;
-      readonly limit: number;
-      readonly offset?: number;
-    },
-  ): Promise<readonly TopPath[]> {
-    const days = withinDays(query.from, query.to, query.timeZone);
-
-    let rows = connection.db
-      .selectFrom('access_logs')
-      .select(['path'])
-      .select((eb) => eb.fn.countAll<string>().as('pageviews'))
-      .where('device', '!=', 'bot')
-      .where(days.start)
-      .where(days.end);
-
-    if (query.siteId !== null) {
-      rows = rows.where('site_id', '=', query.siteId);
-    }
-
-    let grouped = rows
-      .groupBy('path')
-      .orderBy('pageviews', 'desc')
-      .orderBy('path', 'asc')
-      .limit(query.limit);
-
-    if (query.offset !== undefined) {
-      grouped = grouped.offset(query.offset);
-    }
-
-    const result = await grouped.execute();
-
-    return result.map((row) => ({ path: row.path, pageviews: Number(row.pageviews) }));
-  },
-
-  /**
-   * 上位ページの全件数（Pagination の `meta.total`）。
-   *
-   * 数えるのは**行数ではなくパスの種類**。`GROUP BY path` の結果の件数と一致させる。
-   */
-  async countTopPaths(
-    connection: Connection,
-    query: {
-      readonly siteId: string | null;
-      readonly from: string;
-      readonly to: string;
-      readonly timeZone: string;
-    },
-  ): Promise<number> {
-    const days = withinDays(query.from, query.to, query.timeZone);
-
-    let rows = connection.db
-      .selectFrom('access_logs')
-      .select((eb) => eb.fn.count<string>(eb.ref('path')).distinct().as('total'))
-      .where('device', '!=', 'bot')
-      .where(days.start)
-      .where(days.end);
-
-    if (query.siteId !== null) {
-      rows = rows.where('site_id', '=', query.siteId);
-    }
-
-    const row = await rows.executeTakeFirst();
-    return Number(row?.total ?? 0);
-  },
-  /**
    * 計測タグを出すためのサイト一覧。
    *
    * **公開キーは Site の一覧 API では返していない。** 画面でしか使わない値を
    * 通常のレスポンスへ載せないため、参照口をここに分けている。
+   *
+   * 状態で絞らない。計測タグを貼ったままの `archived` のサイトも受信状況を見られるようにする。
    */
   async listTrackedSites(connection: Connection, limit: number): Promise<readonly TrackedSite[]> {
     const rows = await connection.db
       .selectFrom('sites')
-      .select(['id', 'name', 'public_key'])
+      .select(['id', 'name', 'url', 'status', 'public_key', 'analytics_last_seen_at'])
       .orderBy('name')
       .limit(limit)
       .execute();
 
-    return rows.map((row) => ({ id: row.id, name: row.name, publicKey: row.public_key }));
+    return rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      url: row.url,
+      status: row.status as SiteStatus,
+      publicKey: row.public_key,
+      analyticsLastSeenAt: row.analytics_last_seen_at,
+    }));
   },
   /**
    * 生ログを「サイト × 日 × 指標 × key」へ畳む（028 設計 §5.2 / §5.3.2）。

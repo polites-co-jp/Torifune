@@ -72,6 +72,7 @@ export default async function CampaignAnalyticsPage({
 
   // サイトごとに引く。`listAnalytics` は siteId を1つしか受けないため。
   // 対象サイトは多くて数件で、1件ずつでも往復は増えない。
+  // 使う指標だけを、キー無しの行に絞って読む（028 設計 §6.1）。
   const points = canReadAnalytics
     ? (
         await Promise.all(
@@ -81,6 +82,8 @@ export default async function CampaignAnalyticsPage({
               from: range.from,
               to: range.to,
               source: null,
+              metrics: ['pageviews', 'visitors'],
+              key: '',
             }),
           ),
         )

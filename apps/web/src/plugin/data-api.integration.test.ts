@@ -6,6 +6,7 @@ import { ForbiddenError } from '@/application/authorization/authorize';
 import { authorizationContextFor } from '@/application/authorization/context';
 import { withConnection } from '@/application/transaction';
 import type { UserIdentity } from '@/authentication/identity';
+import { ValidationError } from '@/domain/repository';
 import { roleRepository } from '@/infrastructure/role-repository';
 import { useScratchDatabase, type ScratchDatabase } from '@/test-support/database';
 import { sanitizeLogDetail } from './logger';
@@ -340,6 +341,244 @@ describe('Analytics', () => {
         value: 1,
       }),
     ).rejects.toThrowError(PluginPermissionError);
+  });
+
+  /**
+   * 内訳キー（028 設計 §9、受け入れ条件 #50〜#52）。
+   *
+   * すべて後方互換の追加。`key` を省略した既存の呼び出しはそのまま通る。
+   */
+  describe('内訳キー', () => {
+    const DAY = '2026-03-01';
+
+    async function makeSite(api: PluginDataApi): Promise<string> {
+      const site = await api.sites.create({ name: 'x', url: 'https://example.com' });
+      return site.id;
+    }
+
+    /** DB に保存された行を直接読む（`key` が保存されていることの確認用）。 */
+    async function storedRows(siteId: string) {
+      return withConnection((connection) =>
+        connection.db
+          .selectFrom('analytics')
+          .select(['source', 'metric', 'key', 'value'])
+          .where('site_id', '=', siteId)
+          .orderBy('metric')
+          .orderBy('key')
+          .execute(),
+      );
+    }
+
+    /** #50 */
+    it("key を省略した record は key = '' で保存される", async () => {
+      const api = apiFor(['site.read', 'site.write', 'analytics.read']);
+      const siteId = await makeSite(api);
+
+      await api.analytics.record({ siteId, metricDate: DAY, metric: 'pageviews', value: 42 });
+
+      const rows = await storedRows(siteId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.key).toBe('');
+    });
+
+    /** #51 */
+    it('key を渡した record は key 付きで保存され、source は Plugin ID', async () => {
+      const api = apiFor(['site.read', 'site.write', 'analytics.read']);
+      const siteId = await makeSite(api);
+
+      await api.analytics.record({
+        siteId,
+        metricDate: DAY,
+        metric: 'path_pageviews',
+        key: '/pricing',
+        value: 7,
+      });
+
+      const rows = await storedRows(siteId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        source: 'seo-plugin',
+        metric: 'path_pageviews',
+        key: '/pricing',
+      });
+      expect(Number(rows[0]?.value)).toBe(7);
+    });
+
+    /** #51。同じ指標で key だけ違う行を並べて持てる。 */
+    it('同じ指標で key だけ違う行を持てる', async () => {
+      const api = apiFor(['site.read', 'site.write', 'analytics.read']);
+      const siteId = await makeSite(api);
+
+      await api.analytics.record({
+        siteId,
+        metricDate: DAY,
+        metric: 'path_pageviews',
+        key: '/a',
+        value: 1,
+      });
+      await api.analytics.record({
+        siteId,
+        metricDate: DAY,
+        metric: 'path_pageviews',
+        key: '/b',
+        value: 2,
+      });
+
+      const rows = await storedRows(siteId);
+      expect(rows.map((row) => row.key)).toEqual(['/a', '/b']);
+    });
+
+    /** #51。制御文字は ValidationError。 */
+    it('key に制御文字があれば ValidationError', async () => {
+      const api = apiFor(['site.read', 'site.write', 'analytics.read']);
+      const siteId = await makeSite(api);
+
+      await expect(
+        api.analytics.record({
+          siteId,
+          metricDate: DAY,
+          metric: 'path_pageviews',
+          key: '/bad\u0000',
+          value: 1,
+        }),
+      ).rejects.toThrowError(ValidationError);
+    });
+
+    /** #51。境界：500 文字は通り、501 文字は ValidationError。 */
+    it('key は 500 文字まで受け付ける', async () => {
+      const api = apiFor(['site.read', 'site.write', 'analytics.read']);
+      const siteId = await makeSite(api);
+
+      await api.analytics.record({
+        siteId,
+        metricDate: DAY,
+        metric: 'path_pageviews',
+        key: 'x'.repeat(500),
+        value: 1,
+      });
+
+      expect((await storedRows(siteId))[0]?.key).toHaveLength(500);
+    });
+
+    it('key が 501 文字なら ValidationError', async () => {
+      const api = apiFor(['site.read', 'site.write', 'analytics.read']);
+      const siteId = await makeSite(api);
+
+      await expect(
+        api.analytics.record({
+          siteId,
+          metricDate: DAY,
+          metric: 'path_pageviews',
+          key: 'x'.repeat(501),
+          value: 1,
+        }),
+      ).rejects.toThrowError(ValidationError);
+    });
+
+    /** #52 */
+    it('list の各要素に key がある', async () => {
+      const api = apiFor(['site.read', 'site.write', 'analytics.read']);
+      const siteId = await makeSite(api);
+      await api.analytics.record({ siteId, metricDate: DAY, metric: 'pageviews', value: 1 });
+      await api.analytics.record({
+        siteId,
+        metricDate: DAY,
+        metric: 'path_pageviews',
+        key: '/a',
+        value: 1,
+      });
+
+      const points = await api.analytics.list({ siteId, from: DAY, to: DAY });
+
+      expect(points).toHaveLength(2);
+      expect(points.map((point) => point.key).sort()).toEqual(['', '/a']);
+    });
+
+    /** #52 */
+    it('list を metric で絞れる', async () => {
+      const api = apiFor(['site.read', 'site.write', 'analytics.read']);
+      const siteId = await makeSite(api);
+      await api.analytics.record({ siteId, metricDate: DAY, metric: 'pageviews', value: 1 });
+      await api.analytics.record({ siteId, metricDate: DAY, metric: 'visitors', value: 1 });
+
+      const points = await api.analytics.list({ siteId, from: DAY, to: DAY, metric: 'visitors' });
+
+      expect(points).toHaveLength(1);
+      expect(points[0]?.metric).toBe('visitors');
+    });
+
+    /** #52 */
+    it('list を key で絞れる', async () => {
+      const api = apiFor(['site.read', 'site.write', 'analytics.read']);
+      const siteId = await makeSite(api);
+      await api.analytics.record({
+        siteId,
+        metricDate: DAY,
+        metric: 'path_pageviews',
+        key: '/a',
+        value: 1,
+      });
+      await api.analytics.record({
+        siteId,
+        metricDate: DAY,
+        metric: 'path_pageviews',
+        key: '/b',
+        value: 2,
+      });
+
+      const points = await api.analytics.list({ siteId, from: DAY, to: DAY, key: '/b' });
+
+      expect(points).toHaveLength(1);
+      expect(points[0]).toMatchObject({ key: '/b', value: 2 });
+    });
+
+    /** #52。`key: ''` でキー無しの行だけ。 */
+    it("list に key: '' を渡すとキー無しの行だけになる", async () => {
+      const api = apiFor(['site.read', 'site.write', 'analytics.read']);
+      const siteId = await makeSite(api);
+      await api.analytics.record({ siteId, metricDate: DAY, metric: 'pageviews', value: 1 });
+      await api.analytics.record({
+        siteId,
+        metricDate: DAY,
+        metric: 'path_pageviews',
+        key: '/a',
+        value: 1,
+      });
+
+      const points = await api.analytics.list({ siteId, from: DAY, to: DAY, key: '' });
+
+      expect(points).toHaveLength(1);
+      expect(points[0]).toMatchObject({ metric: 'pageviews', key: '' });
+    });
+
+    /** #52。省略時は従来どおり全件。 */
+    it('metric / key を省略すると全件返す', async () => {
+      const api = apiFor(['site.read', 'site.write', 'analytics.read']);
+      const siteId = await makeSite(api);
+      await api.analytics.record({ siteId, metricDate: DAY, metric: 'pageviews', value: 1 });
+      await api.analytics.record({ siteId, metricDate: DAY, metric: 'visitors', value: 1 });
+      await api.analytics.record({
+        siteId,
+        metricDate: DAY,
+        metric: 'path_pageviews',
+        key: '/a',
+        value: 1,
+      });
+
+      const points = await api.analytics.list({ siteId, from: DAY, to: DAY });
+
+      expect(points).toHaveLength(3);
+    });
+
+    /** #52。list に不正な metric を渡せば ValidationError。 */
+    it('list の metric が指標名の形式でなければ ValidationError', async () => {
+      const api = apiFor(['site.read', 'site.write', 'analytics.read']);
+      const siteId = await makeSite(api);
+
+      await expect(
+        api.analytics.list({ siteId, from: DAY, to: DAY, metric: 'Page Views' }),
+      ).rejects.toThrowError(ValidationError);
+    });
   });
 });
 

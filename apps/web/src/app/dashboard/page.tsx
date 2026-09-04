@@ -43,8 +43,17 @@ export default async function DashboardPage() {
   const from = daysAgo(6);
   const to = daysAgo(0);
 
+  // 使う指標だけを、キー無しの行に絞って読む（028 設計 §6.1）。
+  // 絞らないとパス別の行を全部読むことになる。
   const points = canReadAnalytics
-    ? await listAnalytics(context, { siteId: null, from, to, source: null })
+    ? await listAnalytics(context, {
+        siteId: null,
+        from,
+        to,
+        source: null,
+        metrics: ['pageviews', 'visitors'],
+        key: '',
+      })
     : [];
 
   // 日ごとに畳む。出所（core / Plugin）をまたいで足す。

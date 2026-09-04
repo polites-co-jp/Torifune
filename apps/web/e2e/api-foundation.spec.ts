@@ -89,6 +89,7 @@ test('OpenAPI に登録済みエンドポイントが含まれる', async ({ req
 
   expect(Object.keys(document.paths).sort()).toEqual([
     '/analytics',
+    '/analytics/breakdown',
     '/analytics/rollup',
     '/api-tokens',
     '/api-tokens/{id}',

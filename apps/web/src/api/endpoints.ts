@@ -14,6 +14,7 @@ import '@/app/api/v1/auth/me/route';
 import '@/app/api/v1/auth/password-reset/confirm/route';
 import '@/app/api/v1/auth/password-reset/request/route';
 import '@/app/api/v1/analytics/route';
+import '@/app/api/v1/analytics/breakdown/route';
 import '@/app/api/v1/analytics/rollup/route';
 import '@/app/api/v1/api-tokens/route';
 import '@/app/api/v1/api-tokens/[id]/route';

@@ -4,7 +4,7 @@ import { daysAgoInTimeZone } from '@/domain/analytics/day';
 import { originFromHeaders } from '@/api/absolute-url';
 import {
   listAnalytics,
-  listTopPaths,
+  listAnalyticsBreakdown,
   listTrackedSites,
 } from '@/application/analytics/analytics-use-cases';
 import { AnalyticsView } from '@/ui/analytics/analytics-view';
@@ -49,10 +49,13 @@ export default async function AnalyticsPage({
 
   const range = { siteId, from, to, source: null };
 
-  const [points, topPaths] = await Promise.all([
-    listAnalytics(context, range),
-    listTopPaths(context, { ...range, limit: 20 }),
+  // 日次の表に要る指標だけを、キー無しの行に絞って読む（028 設計 §6.1）。
+  // 上位ページは集計値（`path_pageviews`）の内訳から引く。生ログは読まない。
+  const [points, topPathsPage] = await Promise.all([
+    listAnalytics(context, { ...range, metrics: ['pageviews', 'visitors'], key: '' }),
+    listAnalyticsBreakdown(context, { ...range, metric: 'path_pageviews', page: 1, perPage: 20 }),
   ]);
+  const topPaths = topPathsPage.items.map((item) => ({ path: item.key, pageviews: item.value }));
 
   // 計測タグを出すために公開キーが要る（Site の一覧 API は公開キーを返さない）。
   const sites = permissions.has('site.read') ? await listTrackedSites(context, {}) : [];

@@ -1,3 +1,5 @@
+import type { SiteStatus } from '../site/site';
+
 /**
  * 日次の集計値（02_データベース設計.md §5.8、018-analytics）。
  *
@@ -152,9 +154,26 @@ export interface TopPath {
   readonly pageviews: number;
 }
 
-/** 計測タグを出すためのサイト。 */
+/**
+ * 計測タグを出すためのサイト。
+ *
+ * 計測タグを貼ったままの `archived` のサイトも含む（受信状況を見るため）。
+ */
 export interface TrackedSite {
   readonly id: string;
   readonly name: string;
+  readonly url: string;
+  readonly status: SiteStatus;
   readonly publicKey: string;
+  /** 最終受信。ロールアップが書き戻す。計測したことが無ければ null。 */
+  readonly analyticsLastSeenAt: Date | null;
+}
+
+/** サイトの受信状況。 */
+export interface AnalyticsStatus {
+  readonly siteId: string;
+  /** 最終受信（`sites.analytics_last_seen_at`）。 */
+  readonly analyticsLastSeenAt: Date | null;
+  /** Core の集計値を最後に書いた時刻。Plugin の値は数えない。 */
+  readonly lastRollupAt: Date | null;
 }

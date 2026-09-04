@@ -100,6 +100,13 @@ export interface AnalyticsPointView {
   readonly metricDate: string;
   readonly source: string;
   readonly metric: string;
+  /**
+   * 内訳キー（パス・参照元ホスト・時間帯など）。キーを持たない指標は `''`。
+   *
+   * 指標名は開いた集合であり、Torifune 自身の指標も増える
+   * （`path_pageviews` / `referrer` / `bounces` など）。知らない指標は無視してよい。
+   */
+  readonly key: string;
   readonly value: number;
 }
 
@@ -109,12 +116,21 @@ export interface AnalyticsQuery {
   readonly to: string;
   /** 出所で絞る。省略すると全部。 */
   readonly source?: string;
+  /** 指標名で絞る。省略すると全指標。 */
+  readonly metric?: string;
+  /**
+   * 内訳キーで絞る。`''` を渡すとキー無しの行だけになる。省略すると全 key
+   * （キー付きの行も含む。日次の値だけが要るなら `''` を渡す）。
+   */
+  readonly key?: string;
 }
 
 export interface AnalyticsInput {
   readonly siteId: string;
   readonly metricDate: string;
   readonly metric: string;
+  /** 内訳キー。省略すると `''`（キーを持たない指標）。500 文字以内、制御文字は不可。 */
+  readonly key?: string;
   readonly value: number;
 }
 

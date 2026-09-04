@@ -15,10 +15,13 @@ import { analyticsListQuerySchema, analyticsPageSchema } from '@/api/schemas/ana
  * 期間指定・絞り込み・Pagination を提供する。**期間の上限を設けている**（設計 §5）。
  *
  * **`GET /analytics/{id}` は無い。** analytics は
- * `(site_id, metric_date, source, metric)` の複合キーで保存する集計値の集合で、
+ * `(site_id, metric_date, source, metric, key)` の複合キーで保存する集計値の集合で、
  * 単一リソースを指す id が存在しない。id を発明すると、
  * 「集計をやり直すと id が変わる」か「集計値と id の対応表を別に持つ」ことになり、
  * どちらも利用者に何の得も無い（仕様書 §20 / `改訂履歴.md` 2026-09-01）。
+ *
+ * `kind=topPaths` は互換のために残す（028 設計 §6.3）。中身は `path_pageviews` の内訳で、
+ * 新しい呼び出しは `GET /analytics/breakdown` を使う。
  */
 
 export const GET = defineRoute({
@@ -35,6 +38,9 @@ export const GET = defineRoute({
       from: query.from,
       to: query.to,
       source: query.source ?? null,
+      // `metric` は 1 つだけ受ける。`key` は空文字（キー無しの行だけ）も指定のうち。
+      ...(query.metric === undefined ? {} : { metrics: [query.metric] }),
+      ...(query.key === undefined ? {} : { key: query.key }),
     };
 
     // `limit` は `perPage` の旧名。**明示された `perPage` を優先する。**

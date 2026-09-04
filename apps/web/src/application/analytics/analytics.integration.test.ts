@@ -2,9 +2,10 @@ import { sql } from 'kysely';
 import { uuidv7 } from 'uuidv7';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
+  getAnalyticsStatus,
   listAnalytics,
+  listAnalyticsBreakdown,
   listAnalyticsPage,
-  listTopPaths,
   listTopPathsPage,
   listTrackedSites,
   recordAnalytics,
@@ -20,7 +21,7 @@ import { withConnection } from '@/application/transaction';
 import type { UserIdentity } from '@/authentication/identity';
 import type { AnalyticsPoint } from '@/domain/analytics/analytics';
 import { daysAgoInTimeZone, todayInTimeZone } from '@/domain/analytics/day';
-import { ValidationError } from '@/domain/repository';
+import { NotFoundError, ValidationError } from '@/domain/repository';
 import { roleRepository } from '@/infrastructure/role-repository';
 import { useScratchDatabase, type ScratchDatabase } from '@/test-support/database';
 
@@ -66,12 +67,14 @@ async function contextFor(roleName: string): Promise<AuthorizationContext> {
   return withConnection(async (connection) => authorizationContextFor(connection, identity));
 }
 
-async function makeSite(): Promise<{ id: string; publicKey: string }> {
+async function makeSite(
+  overrides: { readonly status?: 'active' | 'paused' | 'archived'; readonly url?: string } = {},
+): Promise<{ id: string; publicKey: string }> {
   const site = await createSite(admin, {
     name: `site-${Math.random().toString(36).slice(2, 8)}`,
-    url: 'https://example.com',
+    url: overrides.url ?? 'https://example.com',
     description: '',
-    status: 'active',
+    status: overrides.status ?? 'active',
   });
 
   const row = await withConnection((connection) =>
@@ -344,6 +347,55 @@ describe('計測タグを出すためのサイト一覧', () => {
 
     expect(tracked).toEqual([]);
   });
+
+  /**
+   * 028 設計 §6.5 / 受け入れ条件 #42。
+   * 画面のサイト選択と受信状況のために `url` / `status` / `analyticsLastSeenAt` を足す。
+   */
+
+  /** #42 */
+  it('url と status を添えて返す', async () => {
+    const site = await makeSite({ url: 'https://tracked.example.com', status: 'paused' });
+
+    const tracked = await listTrackedSites(admin, {});
+    const entry = tracked.find((row) => row.id === site.id);
+
+    expect(entry?.url).toBe('https://tracked.example.com');
+    expect(entry?.status).toBe('paused');
+  });
+
+  /** #42。計測したことが無いサイトは null（画面で「（未設置）」を付ける）。 */
+  it('計測したことが無いサイトの analyticsLastSeenAt は null', async () => {
+    const site = await makeSite();
+
+    const tracked = await listTrackedSites(admin, {});
+
+    expect(tracked.find((row) => row.id === site.id)?.analyticsLastSeenAt).toBeNull();
+  });
+
+  /** #42。ロールアップ後は最終受信が入る。 */
+  it('ロールアップ後は analyticsLastSeenAt に最終受信が入る', async () => {
+    const site = await makeSite();
+    await insertLogs(site.id, [{ at: at('10:00'), visitor: 'v1' }]);
+    await rollup(DAY);
+
+    const tracked = await listTrackedSites(admin, {});
+
+    expect(tracked.find((row) => row.id === site.id)?.analyticsLastSeenAt?.toISOString()).toBe(
+      '2026-06-10T10:00:00.000Z',
+    );
+  });
+
+  /** #42。計測タグを貼ったままの archived サイトの受信状況も見られる。 */
+  it('archived のサイトも返す', async () => {
+    const archived = await makeSite({ status: 'archived' });
+
+    const tracked = await listTrackedSites(admin, {});
+    const entry = tracked.find((row) => row.id === archived.id);
+
+    expect(entry).toBeDefined();
+    expect(entry?.status).toBe('archived');
+  });
 });
 
 describe('計測', () => {
@@ -525,22 +577,50 @@ describe('ロールアップ', () => {
     expect(points.find((point) => point.metric === 'pageviews')?.value).toBe(1);
   });
 
+  /**
+   * 028 設計 §6.3。上位ページは生ログではなく集計値（`path_pageviews`）から引く。
+   * 集計を流してから読む。
+   */
   it('上位ページを出す', async () => {
     const site = await makeSite();
     await hit(site.publicKey, '/popular', '203.0.113.1');
     await hit(site.publicKey, '/popular', '203.0.113.2');
     await hit(site.publicKey, '/rare', '203.0.113.3');
 
-    const top = await listTopPaths(admin, {
+    await withConnection((connection) =>
+      rollupAnalytics(connection, { from: today(), to: today() }),
+    );
+
+    const top = await listTopPathsPage(admin, {
       siteId: site.id,
       from: today(),
       to: today(),
       source: null,
-      limit: 10,
+      page: 1,
+      perPage: 10,
     });
 
-    expect(top.map((row) => row.path)).toEqual(['/popular', '/rare']);
-    expect(top[0]?.pageviews).toBe(2);
+    expect(top.items.map((row) => row.path)).toEqual(['/popular', '/rare']);
+    expect(top.items[0]?.pageviews).toBe(2);
+    expect(top.total).toBe(2);
+  });
+
+  /** 028 設計 §6.3 / 影響範囲。生ログを読まなくなるため、集計を流すまで上位ページは出ない。 */
+  it('集計を流す前は上位ページが出ない', async () => {
+    const site = await makeSite();
+    await hit(site.publicKey, '/popular', '203.0.113.1');
+
+    const top = await listTopPathsPage(admin, {
+      siteId: site.id,
+      from: today(),
+      to: today(),
+      source: null,
+      page: 1,
+      perPage: 10,
+    });
+
+    expect(top.items).toEqual([]);
+    expect(top.total).toBe(0);
   });
 
   /** 集計値は小さく、過去との比較に要る。生ログだけ消す。 */
@@ -910,7 +990,7 @@ describe('冪等な差し替え', () => {
         key,
         value,
       }))
-      .sort((a, b) => `${a.metric} ${a.key}`.localeCompare(`${b.metric} ${b.key}`));
+      .sort((a, b) => `${a.metric}\u0000${a.key}`.localeCompare(`${b.metric}\u0000${b.key}`));
   }
 
   const LOGS: readonly LogInput[] = [
@@ -1162,6 +1242,252 @@ describe('参照', () => {
       }),
     ).rejects.toThrow(ValidationError);
   });
+
+  /**
+   * 絞り込みの追加（028 設計 §6.1、受け入れ条件 #27〜#29）。
+   *
+   * 画面は必ず `key: ''` と `metrics` を渡す。渡さないとパス別の行を全部読むことになる。
+   */
+  describe('絞り込み', () => {
+    /** Plugin の値として key 付き・key 無しを混ぜて入れる。 */
+    async function seedMixed(siteId: string): Promise<void> {
+      const rows = [
+        { metric: 'pageviews', key: '', value: 10 },
+        { metric: 'visitors', key: '', value: 5 },
+        { metric: 'path_pageviews', key: '/a', value: 7 },
+        { metric: 'path_pageviews', key: '/b', value: 3 },
+      ];
+      for (const row of rows) {
+        await recordAnalytics(admin, {
+          siteId,
+          metricDate: DAY,
+          source: 'com.example.ga',
+          ...row,
+        });
+      }
+    }
+
+    /** #27 */
+    it("key: '' でキー付きの行を返さない", async () => {
+      const site = await makeSite();
+      await seedMixed(site.id);
+
+      const points = await listAnalytics(admin, {
+        siteId: site.id,
+        from: DAY,
+        to: DAY,
+        source: null,
+        key: '',
+      });
+
+      expect(points.every((point) => point.key === '')).toBe(true);
+      expect(points.map((point) => point.metric).sort()).toEqual(['pageviews', 'visitors']);
+    });
+
+    /** #27。key を指定すると、その key の行だけ。 */
+    it('key を指定するとその key の行だけを返す', async () => {
+      const site = await makeSite();
+      await seedMixed(site.id);
+
+      const points = await listAnalytics(admin, {
+        siteId: site.id,
+        from: DAY,
+        to: DAY,
+        source: null,
+        key: '/a',
+      });
+
+      expect(points).toHaveLength(1);
+      expect(points[0]).toMatchObject({ metric: 'path_pageviews', key: '/a', value: 7 });
+    });
+
+    /** #27。省略は既存の挙動（全行）。 */
+    it('key を省略すると key 付きの行も返す', async () => {
+      const site = await makeSite();
+      await seedMixed(site.id);
+
+      const points = await listAnalytics(admin, {
+        siteId: site.id,
+        from: DAY,
+        to: DAY,
+        source: null,
+      });
+
+      expect(points).toHaveLength(4);
+      expect(points.filter((point) => point.key !== '')).toHaveLength(2);
+    });
+
+    /** #28 */
+    it('metrics で指標を絞ると他の指標を返さない', async () => {
+      const site = await makeSite();
+      await seedMixed(site.id);
+
+      const points = await listAnalytics(admin, {
+        siteId: site.id,
+        from: DAY,
+        to: DAY,
+        source: null,
+        metrics: ['pageviews'],
+      });
+
+      expect(points).toHaveLength(1);
+      expect(points[0]?.metric).toBe('pageviews');
+    });
+
+    /** #28。複数の指標を並べて絞れる。 */
+    it('metrics に複数並べると、そのどれかに当たる行だけを返す', async () => {
+      const site = await makeSite();
+      await seedMixed(site.id);
+
+      const points = await listAnalytics(admin, {
+        siteId: site.id,
+        from: DAY,
+        to: DAY,
+        source: null,
+        metrics: ['pageviews', 'visitors'],
+      });
+
+      expect(points.map((point) => point.metric).sort()).toEqual(['pageviews', 'visitors']);
+    });
+
+    /** #28。境界：20 個までは受け付ける。 */
+    it('metrics は 20 個まで受け付ける', async () => {
+      const site = await makeSite();
+      const metrics = Array.from({ length: 20 }, (_, index) => `metric_${index}`);
+
+      await expect(
+        listAnalytics(admin, { siteId: site.id, from: DAY, to: DAY, source: null, metrics }),
+      ).resolves.toEqual([]);
+    });
+
+    /** #28。境界：21 個は 422。 */
+    it('metrics が 21 個以上なら拒否する', async () => {
+      const site = await makeSite();
+      const metrics = Array.from({ length: 21 }, (_, index) => `metric_${index}`);
+
+      await expect(
+        listAnalytics(admin, { siteId: site.id, from: DAY, to: DAY, source: null, metrics }),
+      ).rejects.toThrow(ValidationError);
+    });
+
+    /** #28。各要素は指標名として妥当でなければならない。 */
+    it('metrics に不正な指標名があれば拒否する', async () => {
+      const site = await makeSite();
+
+      await expect(
+        listAnalytics(admin, {
+          siteId: site.id,
+          from: DAY,
+          to: DAY,
+          source: null,
+          metrics: ['pageviews', 'Page Views'],
+        }),
+      ).rejects.toThrow(ValidationError);
+    });
+
+    /** #27 + #28。画面が渡す組み合わせ。 */
+    it("metrics と key: '' を同時に渡せる", async () => {
+      const site = await makeSite();
+      await seedMixed(site.id);
+
+      const points = await listAnalytics(admin, {
+        siteId: site.id,
+        from: DAY,
+        to: DAY,
+        source: null,
+        metrics: ['pageviews', 'path_pageviews'],
+        key: '',
+      });
+
+      expect(points).toHaveLength(1);
+      expect(points[0]).toMatchObject({ metric: 'pageviews', key: '' });
+    });
+
+    /** #27 の前提。別サイトの同じ key の行が混ざらない。 */
+    it('siteId を指定すると他サイトの同じ key の行は返さない', async () => {
+      const mine = await makeSite();
+      const other = await makeSite();
+      await seedMixed(mine.id);
+      await seedMixed(other.id);
+
+      const points = await listAnalytics(admin, {
+        siteId: mine.id,
+        from: DAY,
+        to: DAY,
+        source: null,
+        key: '/a',
+      });
+
+      expect(points).toHaveLength(1);
+      expect(points[0]?.siteId).toBe(mine.id);
+    });
+  });
+
+  /**
+   * 並び（028 設計 §6.1、受け入れ条件 #29）。
+   *
+   * `(metric_date, source, metric, key)` で一意に並ぶ。Pagination のページ境界で
+   * 行が重複・欠落しないための前提。
+   */
+  describe('並び', () => {
+    /** 並び順が決まる 5 行。挿入は意図的にバラバラの順にする。 */
+    const ROWS = [
+      { metricDate: NEXT_DAY, source: 'com.example.a', metric: 'pageviews', key: '' },
+      { metricDate: DAY, source: 'com.example.a', metric: 'path_pageviews', key: '/b' },
+      { metricDate: DAY, source: 'com.example.b', metric: 'pageviews', key: '' },
+      { metricDate: DAY, source: 'com.example.a', metric: 'pageviews', key: '' },
+      { metricDate: DAY, source: 'com.example.a', metric: 'path_pageviews', key: '/a' },
+    ] as const;
+
+    /** (metric_date, source, metric, key) 昇順。 */
+    const EXPECTED_ORDER = [
+      `${DAY} com.example.a pageviews `,
+      `${DAY} com.example.a path_pageviews /a`,
+      `${DAY} com.example.a path_pageviews /b`,
+      `${DAY} com.example.b pageviews `,
+      `${NEXT_DAY} com.example.a pageviews `,
+    ];
+
+    function shape(point: AnalyticsPoint): string {
+      return `${point.metricDate} ${point.source} ${point.metric} ${point.key}`;
+    }
+
+    async function seedRows(siteId: string): Promise<void> {
+      for (const row of ROWS) {
+        await recordAnalytics(admin, { siteId, value: 1, ...row });
+      }
+    }
+
+    /** #29 */
+    it('listAnalytics が (metric_date, source, metric, key) の順で返す', async () => {
+      const site = await makeSite();
+      await seedRows(site.id);
+
+      const points = await listAnalytics(admin, {
+        siteId: site.id,
+        from: DAY,
+        to: NEXT_DAY,
+        source: null,
+      });
+
+      expect(points.map(shape)).toEqual(EXPECTED_ORDER);
+    });
+
+    /** #29。key 付きの行を混ぜて perPage: 2 でページを切っても、重複も欠落も無い。 */
+    it('listAnalyticsPage のページ境界で行が重複・欠落しない', async () => {
+      const site = await makeSite();
+      await seedRows(site.id);
+
+      const query = { siteId: site.id, from: DAY, to: NEXT_DAY, source: null, perPage: 2 };
+      const pages = await Promise.all(
+        [1, 2, 3].map((page) => listAnalyticsPage(admin, { ...query, page })),
+      );
+
+      expect(pages.map((page) => page.total)).toEqual([5, 5, 5]);
+      expect(pages.map((page) => page.items.length)).toEqual([2, 2, 1]);
+      expect(pages.flatMap((page) => page.items.map(shape))).toEqual(EXPECTED_ORDER);
+    });
+  });
 });
 
 /**
@@ -1263,6 +1589,10 @@ describe('Pagination', () => {
         userAgent: BROWSER,
       });
     }
+    // 028 設計 §6.3。上位ページは集計値から引くので、先に集計を流す。
+    await withConnection((connection) =>
+      rollupAnalytics(connection, { from: today(), to: today() }),
+    );
 
     const query = { ...range, siteId: site.id, from: today(), to: today(), perPage: 2 };
     const first = await listTopPathsPage(admin, { ...query, page: 1 });
@@ -1302,6 +1632,440 @@ describe('Pagination', () => {
         perPage: 20,
       }),
     ).rejects.toThrow(ValidationError);
+  });
+});
+
+/**
+ * 内訳（028 設計 §6.2、受け入れ条件 #30〜#35）。
+ *
+ * `listAnalyticsBreakdown` は期間内の日ごとの値を key ごとに合算し、
+ * value 降順・key 昇順で返す。`total` は key の種類数。UseCase 名 `analytics.breakdown`、
+ * Permission `analytics.read`。
+ */
+describe('内訳', () => {
+  const base = { from: DAY, to: NEXT_DAY, metric: 'path_pageviews', source: null, page: 1 };
+
+  /** DAY: /a × 2, /b × 1。NEXT_DAY: /a × 1, /c × 1。合算は /a = 3, /b = 1, /c = 1。 */
+  async function seedTwoDays(siteId: string): Promise<void> {
+    await insertLogs(siteId, [
+      { at: at('10:00'), visitor: 'v1', path: '/a' },
+      { at: at('10:00'), visitor: 'v2', path: '/a' },
+      { at: at('10:00'), visitor: 'v3', path: '/b' },
+      { at: at('10:00', NEXT_DAY), visitor: 'v4', path: '/a' },
+      { at: at('10:00', NEXT_DAY), visitor: 'v5', path: '/c' },
+    ]);
+    await rollup(DAY, NEXT_DAY);
+  }
+
+  /** #30 */
+  it('期間内の日ごとの値を key ごとに合算する', async () => {
+    const site = await makeSite();
+    await seedTwoDays(site.id);
+
+    const page = await listAnalyticsBreakdown(admin, { ...base, siteId: site.id, perPage: 50 });
+
+    expect(page.items.find((item) => item.key === '/a')?.value).toBe(3);
+    expect(page.items.find((item) => item.key === '/b')?.value).toBe(1);
+    expect(page.items.find((item) => item.key === '/c')?.value).toBe(1);
+  });
+
+  /** #30。value 降順・key 昇順。 */
+  it('value 降順・key 昇順で返す', async () => {
+    const site = await makeSite();
+    await seedTwoDays(site.id);
+
+    const page = await listAnalyticsBreakdown(admin, { ...base, siteId: site.id, perPage: 50 });
+
+    expect(page.items).toEqual([
+      { key: '/a', value: 3 },
+      { key: '/b', value: 1 },
+      { key: '/c', value: 1 },
+    ]);
+  });
+
+  /** #30。total は行数ではなく key の種類数。 */
+  it('total は key の種類数', async () => {
+    const site = await makeSite();
+    await seedTwoDays(site.id);
+
+    const page = await listAnalyticsBreakdown(admin, { ...base, siteId: site.id, perPage: 2 });
+
+    expect(page.total).toBe(3);
+    expect(page.items).toHaveLength(2);
+  });
+
+  /** #30。ページ境界。 */
+  it('次のページに残りが出て、前のページと重ならない', async () => {
+    const site = await makeSite();
+    await seedTwoDays(site.id);
+
+    const query = { ...base, siteId: site.id, perPage: 2 };
+    const first = await listAnalyticsBreakdown(admin, { ...query, page: 1 });
+    const second = await listAnalyticsBreakdown(admin, { ...query, page: 2 });
+
+    expect(first.items.map((item) => item.key)).toEqual(['/a', '/b']);
+    expect(second.items.map((item) => item.key)).toEqual(['/c']);
+    expect(second.total).toBe(3);
+  });
+
+  /** #30。期間の外の日は合算に入らない。 */
+  it('期間の外の日の値は合算しない', async () => {
+    const site = await makeSite();
+    await seedTwoDays(site.id);
+
+    const page = await listAnalyticsBreakdown(admin, {
+      ...base,
+      siteId: site.id,
+      from: DAY,
+      to: DAY,
+      perPage: 50,
+    });
+
+    expect(page.items).toEqual([
+      { key: '/a', value: 2 },
+      { key: '/b', value: 1 },
+    ]);
+    expect(page.total).toBe(2);
+  });
+
+  /** #30。値の無い指標は空。 */
+  it('該当する行が無ければ空で total は 0', async () => {
+    const site = await makeSite();
+
+    const page = await listAnalyticsBreakdown(admin, { ...base, siteId: site.id, perPage: 50 });
+
+    expect(page.items).toEqual([]);
+    expect(page.total).toBe(0);
+  });
+
+  /** #31。**ID を差し替えるだけで他サイトの値が取れない。** 同じパスをサイト A・B に入れる。 */
+  it('siteId を指定すると他のサイトの同じ key の値が混ざらない', async () => {
+    const siteA = await makeSite();
+    const siteB = await makeSite();
+    await insertLogs(siteA.id, [{ at: at('10:00'), visitor: 'v1', path: '/same' }]);
+    await insertLogs(siteB.id, [
+      { at: at('10:00'), visitor: 'v1', path: '/same' },
+      { at: at('10:00'), visitor: 'v2', path: '/same' },
+      { at: at('10:00'), visitor: 'v3', path: '/only-b' },
+    ]);
+    await rollup(DAY);
+
+    const page = await listAnalyticsBreakdown(admin, {
+      ...base,
+      siteId: siteA.id,
+      from: DAY,
+      to: DAY,
+      perPage: 50,
+    });
+
+    expect(page.items).toEqual([{ key: '/same', value: 1 }]);
+    expect(page.total).toBe(1);
+  });
+
+  /** #32 */
+  it('siteId が null なら全サイトを合算する', async () => {
+    const siteA = await makeSite();
+    const siteB = await makeSite();
+    await insertLogs(siteA.id, [{ at: at('10:00'), visitor: 'v1', path: '/same' }]);
+    await insertLogs(siteB.id, [
+      { at: at('10:00'), visitor: 'v1', path: '/same' },
+      { at: at('10:00'), visitor: 'v2', path: '/same' },
+      { at: at('10:00'), visitor: 'v3', path: '/only-b' },
+    ]);
+    await rollup(DAY);
+
+    const page = await listAnalyticsBreakdown(admin, {
+      ...base,
+      siteId: null,
+      from: DAY,
+      to: DAY,
+      perPage: 50,
+    });
+
+    expect(page.items).toEqual([
+      { key: '/same', value: 3 },
+      { key: '/only-b', value: 1 },
+    ]);
+    expect(page.total).toBe(2);
+  });
+
+  /** §6.2。source が null なら全出所を合算し、指定すればその出所だけ。 */
+  it('source が null なら全出所を合算し、指定すればその出所だけ', async () => {
+    const site = await makeSite();
+    await insertLogs(site.id, [{ at: at('10:00'), visitor: 'v1', path: '/a' }]);
+    await rollup(DAY);
+    await recordAnalytics(admin, {
+      siteId: site.id,
+      metricDate: DAY,
+      source: 'com.example.ga',
+      metric: 'path_pageviews',
+      key: '/a',
+      value: 100,
+    });
+
+    const all = await listAnalyticsBreakdown(admin, {
+      ...base,
+      siteId: site.id,
+      from: DAY,
+      to: DAY,
+      perPage: 50,
+    });
+    const coreOnly = await listAnalyticsBreakdown(admin, {
+      ...base,
+      siteId: site.id,
+      from: DAY,
+      to: DAY,
+      source: 'core',
+      perPage: 50,
+    });
+
+    expect(all.items).toEqual([{ key: '/a', value: 101 }]);
+    expect(coreOnly.items).toEqual([{ key: '/a', value: 1 }]);
+  });
+
+  /** #33 */
+  it('keys を指定するとその key だけが返る', async () => {
+    const site = await makeSite();
+    await seedTwoDays(site.id);
+
+    const page = await listAnalyticsBreakdown(admin, {
+      ...base,
+      siteId: site.id,
+      perPage: 50,
+      keys: ['/a', '/c'],
+    });
+
+    expect(page.items).toEqual([
+      { key: '/a', value: 3 },
+      { key: '/c', value: 1 },
+    ]);
+    expect(page.total).toBe(2);
+  });
+
+  /** #33。境界：100 個までは受け付ける。 */
+  it('keys は 100 個まで受け付ける', async () => {
+    const site = await makeSite();
+    const keys = Array.from({ length: 100 }, (_, index) => `/k${index}`);
+
+    await expect(
+      listAnalyticsBreakdown(admin, { ...base, siteId: site.id, perPage: 50, keys }),
+    ).resolves.toEqual({ items: [], total: 0 });
+  });
+
+  /** #33。境界：101 個は 422。 */
+  it('keys が 101 個以上なら拒否する', async () => {
+    const site = await makeSite();
+    const keys = Array.from({ length: 101 }, (_, index) => `/k${index}`);
+
+    await expect(
+      listAnalyticsBreakdown(admin, { ...base, siteId: site.id, perPage: 50, keys }),
+    ).rejects.toThrow(ValidationError);
+  });
+
+  /** #34 */
+  it('期間が逆転していれば拒否する', async () => {
+    await expect(
+      listAnalyticsBreakdown(admin, {
+        ...base,
+        siteId: null,
+        from: '2026-05-01',
+        to: '2026-04-01',
+        perPage: 50,
+      }),
+    ).rejects.toThrow(ValidationError);
+  });
+
+  /** #34。境界：400 日（2025-01-01〜2026-02-04）は通る。 */
+  it('期間が 400 日なら受け付ける', async () => {
+    await expect(
+      listAnalyticsBreakdown(admin, {
+        ...base,
+        siteId: null,
+        from: '2025-01-01',
+        to: '2026-02-04',
+        perPage: 50,
+      }),
+    ).resolves.toEqual({ items: [], total: 0 });
+  });
+
+  /** #34。境界：401 日は 422。 */
+  it('期間が 401 日なら拒否する', async () => {
+    await expect(
+      listAnalyticsBreakdown(admin, {
+        ...base,
+        siteId: null,
+        from: '2025-01-01',
+        to: '2026-02-05',
+        perPage: 50,
+      }),
+    ).rejects.toThrow(ValidationError);
+  });
+
+  /** #34 */
+  it('metric が指標名の形式でなければ拒否する', async () => {
+    await expect(
+      listAnalyticsBreakdown(admin, { ...base, siteId: null, metric: 'Path Views', perPage: 50 }),
+    ).rejects.toThrow(ValidationError);
+  });
+
+  /** #34。制御文字を含む key、501 文字の key。 */
+  it('keys に不正な要素があれば拒否する', async () => {
+    await expect(
+      listAnalyticsBreakdown(admin, {
+        ...base,
+        siteId: null,
+        perPage: 50,
+        keys: ['/ok', '/bad\u0000'],
+      }),
+    ).rejects.toThrow(ValidationError);
+    await expect(
+      listAnalyticsBreakdown(admin, {
+        ...base,
+        siteId: null,
+        perPage: 50,
+        keys: ['x'.repeat(501)],
+      }),
+    ).rejects.toThrow(ValidationError);
+  });
+
+  /** #35。Permission あり → 通る（admin）。無し → ForbiddenError。 */
+  it('analytics.read が無ければ ForbiddenError', async () => {
+    const noRole = await contextFor('viewer');
+    const stripped: AuthorizationContext = { ...noRole, permissions: new Set() };
+
+    await expect(
+      listAnalyticsBreakdown(stripped, { ...base, siteId: null, perPage: 50 }),
+    ).rejects.toThrow(ForbiddenError);
+  });
+
+  /** #35 の対。analytics.read を持つ viewer は読める。 */
+  it('analytics.read を持てば読める', async () => {
+    const viewer = await contextFor('viewer');
+    const site = await makeSite();
+    await seedTwoDays(site.id);
+
+    const page = await listAnalyticsBreakdown(viewer, { ...base, siteId: site.id, perPage: 50 });
+
+    expect(page.total).toBe(3);
+  });
+});
+
+/**
+ * 受信状況（028 設計 §6.4、受け入れ条件 #41）。
+ *
+ * `getAnalyticsStatus({ siteId })` → `{ siteId, analyticsLastSeenAt, lastRollupAt }`。
+ * `lastRollupAt` は `source = 'core'` の `max(updated_at)`。UseCase 名 `analytics.status`、
+ * Permission `analytics.read`。
+ */
+describe('受信状況', () => {
+  /** #41。計測も集計もしていないサイトは両方 null。 */
+  it('計測も集計もしていなければ両方 null', async () => {
+    const site = await makeSite();
+
+    const status = await getAnalyticsStatus(admin, { siteId: site.id });
+
+    expect(status).toEqual({ siteId: site.id, analyticsLastSeenAt: null, lastRollupAt: null });
+  });
+
+  /** #41 */
+  it('ロールアップ後、最終受信と最終集計が入る', async () => {
+    const site = await makeSite();
+    await insertLogs(site.id, [{ at: at('10:00'), visitor: 'v1' }]);
+    const before = Date.now();
+
+    await rollup(DAY);
+    const status = await getAnalyticsStatus(admin, { siteId: site.id });
+
+    expect(status.analyticsLastSeenAt?.toISOString()).toBe('2026-06-10T10:00:00.000Z');
+    expect(status.lastRollupAt).toBeInstanceOf(Date);
+    // 最終集計は「いま」に近い（生ログの時刻ではない）。
+    expect(status.lastRollupAt?.getTime() ?? 0).toBeGreaterThanOrEqual(before - 1000);
+  });
+
+  /** #41。Plugin の行の updated_at が新しくても lastRollupAt は動かない。 */
+  it('Plugin の record を後から入れても lastRollupAt が動かない', async () => {
+    const site = await makeSite();
+    await insertLogs(site.id, [{ at: at('10:00'), visitor: 'v1' }]);
+    await rollup(DAY);
+    const rolled = await getAnalyticsStatus(admin, { siteId: site.id });
+
+    await recordAnalytics(admin, {
+      siteId: site.id,
+      metricDate: DAY,
+      source: 'com.example.ga',
+      metric: 'pageviews',
+      value: 999,
+    });
+    // Plugin の行の updated_at を確実に新しくする。
+    await withConnection((connection) =>
+      sql`UPDATE analytics SET updated_at = now() + interval '1 day' WHERE source <> 'core'`.execute(
+        connection.db,
+      ),
+    );
+    const after = await getAnalyticsStatus(admin, { siteId: site.id });
+
+    expect(rolled.lastRollupAt).not.toBeNull();
+    expect(after.lastRollupAt?.getTime()).toBe(rolled.lastRollupAt?.getTime());
+  });
+
+  /** #41。Plugin の値しか無いサイトは lastRollupAt が null。 */
+  it('Plugin の値しか無ければ lastRollupAt は null', async () => {
+    const site = await makeSite();
+    await recordAnalytics(admin, {
+      siteId: site.id,
+      metricDate: DAY,
+      source: 'com.example.ga',
+      metric: 'pageviews',
+      value: 1,
+    });
+
+    const status = await getAnalyticsStatus(admin, { siteId: site.id });
+
+    expect(status.lastRollupAt).toBeNull();
+    expect(status.analyticsLastSeenAt).toBeNull();
+  });
+
+  /** #41 の前提。**ID を差し替えても他サイトの状況にならない。** */
+  it('他のサイトの集計は自分の状況に影響しない', async () => {
+    const mine = await makeSite();
+    const other = await makeSite();
+    await insertLogs(other.id, [{ at: at('10:00'), visitor: 'v1' }]);
+    await rollup(DAY);
+
+    const status = await getAnalyticsStatus(admin, { siteId: mine.id });
+
+    expect(status).toEqual({ siteId: mine.id, analyticsLastSeenAt: null, lastRollupAt: null });
+  });
+
+  /** #41 */
+  it('存在しないサイトは NotFoundError', async () => {
+    await expect(getAnalyticsStatus(admin, { siteId: uuidv7() })).rejects.toThrow(NotFoundError);
+  });
+
+  /** #41。UUID でない ID も NotFoundError（500 にしない）。 */
+  it('UUID でない ID も NotFoundError', async () => {
+    await expect(getAnalyticsStatus(admin, { siteId: 'not-a-uuid' })).rejects.toThrow(
+      NotFoundError,
+    );
+  });
+
+  /** #41 */
+  it('analytics.read が無ければ ForbiddenError', async () => {
+    const site = await makeSite();
+    const noRole = await contextFor('viewer');
+    const stripped: AuthorizationContext = { ...noRole, permissions: new Set() };
+
+    await expect(getAnalyticsStatus(stripped, { siteId: site.id })).rejects.toThrow(ForbiddenError);
+  });
+
+  /** #41 の対。analytics.read を持つ viewer は読める。 */
+  it('analytics.read を持てば読める', async () => {
+    const site = await makeSite();
+    const viewer = await contextFor('viewer');
+
+    await expect(getAnalyticsStatus(viewer, { siteId: site.id })).resolves.toMatchObject({
+      siteId: site.id,
+    });
   });
 });
 

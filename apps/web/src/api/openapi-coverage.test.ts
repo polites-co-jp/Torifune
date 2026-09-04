@@ -75,6 +75,8 @@ describe('応答スキーマの網羅', () => {
       'listApiTokens',
       'createApiToken',
       'listAnalytics',
+      // 028 設計 §6.2（受け入れ条件 #39 の静的側）。
+      'listAnalyticsBreakdown',
       'getCurrentUser',
       'issueCsrfToken',
     ]) {
