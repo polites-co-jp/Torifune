@@ -319,4 +319,29 @@ describe('Core の Extension Point', () => {
       expect(CORE_EXTENSION_POINTS as readonly string[]).toContain(point);
     }
   });
+
+  /**
+   * ダッシュボードの拡張点の順序（028-analytics-dashboard-redesign 設計 §7.2、受け入れ条件 #74）。
+   *
+   * 画面を作り直しても `dashboard.before` → Core Widget → `PluginWidgets location="dashboard"`
+   * → `dashboard.after` の並びを変えない。Plugin は「上に出る」「下に出る」を前提に
+   * 登録しているので、順序が入れ替わると Plugin 側から見て挙動が変わる。
+   */
+  it('dashboard/page.tsx に dashboard.before → location="dashboard" → dashboard.after がこの順で残っている', () => {
+    const source = readFileSync(join(UI_DIR, '..', 'app', 'dashboard', 'page.tsx'), 'utf8');
+    const markers = ['point="dashboard.before"', 'location="dashboard"', 'point="dashboard.after"'];
+    const positions = markers.map((marker) => source.indexOf(marker));
+
+    for (const [index, marker] of markers.entries()) {
+      expect(positions[index], `${marker} が dashboard/page.tsx に無い`).toBeGreaterThanOrEqual(0);
+      // 同じ拡張点を 2 回描かない。
+      expect(source.lastIndexOf(marker), `${marker} が 2 回以上ある`).toBe(positions[index]);
+    }
+    expect(positions[0], 'dashboard.before は location="dashboard" より前').toBeLessThan(
+      positions[1] as number,
+    );
+    expect(positions[1], 'location="dashboard" は dashboard.after より前').toBeLessThan(
+      positions[2] as number,
+    );
+  });
 });

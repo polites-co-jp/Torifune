@@ -152,3 +152,8 @@ h1 {
   /* スクロールできることが分かるよう、はみ出す側に余白を残さない。 */
   max-width: 100%;
 }
+
+/* 行ごとに移動先を持つ表（ダッシュボード）。押せることを hover で示す。 */
+.tf-row-link:hover {
+  background: var(--tf-color-surface);
+}

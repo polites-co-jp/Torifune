@@ -149,6 +149,10 @@ export function Card({ title, actions, children }: CardProps) {
   return (
     <section
       style={{
+        // **minWidth: 0 が要る。** grid / flex の子は既定で min-width:auto のため、
+        // 中の広い表がトラックを押し広げ、ページ全体が横スクロールする。
+        // 表は `.tf-table-scroll` の中でスクロールさせる。
+        minWidth: 0,
         background: 'var(--tf-color-bg)',
         border: '1px solid var(--tf-color-border)',
         borderRadius: 'var(--tf-radius-2xl)',
