@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&family=Noto+Sans+JP:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#ffffff;color:#0a0b0d;font-family:Inter,'Noto Sans JP',-apple-system,system-ui,'Segoe UI',Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased;}
+a{color:#0052ff;} a:hover{color:#003ecc;}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #0052ff;outline-offset:2px;}
+::selection{background:#dbe4ff;}
+</style>
+</helmet>
+<div style="min-height:100vh;display:grid;grid-template-rows:auto 1fr;background:#ffffff;">
+  <header style="height:64px;display:flex;justify-content:space-between;align-items:center;padding:0 32px;border-bottom:1px solid #dee1e6;background:#ffffff;">
+    <a href="#" onClick="{{ goDashboard }}" style="color:#0a0b0d;font-size:18px;font-weight:600;line-height:1.33;text-decoration:none;">とりふね</a>
+    <div style="display:flex;gap:24px;align-items:center;">
+      <span style="color:#5b616e;font-size:14px;line-height:1.5;">管理者</span>
+      <a href="Torifune Screens.dc.html#login" style="color:#0052ff;font-size:14px;font-weight:500;line-height:1.4;text-decoration:none;">ログアウト</a>
+    </div>
+  </header>
+  <div style="display:grid;grid-template-columns:220px 1fr;min-height:0;">
+    <nav aria-label="メインナビゲーション" style="border-right:1px solid #dee1e6;padding:24px 16px;background:#ffffff;">
+      <ul style="list-style:none;margin:0;padding:0;display:grid;gap:4px;">
+        <li><a href="#" onClick="{{ goDashboard }}" style="display:block;padding:10px 16px;border-radius:100px;font-size:14px;font-weight:500;line-height:1.4;text-decoration:none;color:{{ navDash.color }};background:{{ navDash.bg }};">ダッシュボード</a></li>
+        <li><a href="Torifune Screens.dc.html#sites" style="display:block;padding:10px 16px;border-radius:100px;font-size:14px;font-weight:500;line-height:1.4;text-decoration:none;color:#5b616e;" style-hover="background:#f7f7f7;color:#0a0b0d;">Webサイト</a></li>
+        <li><a href="Torifune Screens.dc.html#campaigns" style="display:block;padding:10px 16px;border-radius:100px;font-size:14px;font-weight:500;line-height:1.4;text-decoration:none;color:#5b616e;" style-hover="background:#f7f7f7;color:#0a0b0d;">キャンペーン</a></li>
+        <li><a href="Torifune Screens.dc.html#social" style="display:block;padding:10px 16px;border-radius:100px;font-size:14px;font-weight:500;line-height:1.4;text-decoration:none;color:#5b616e;" style-hover="background:#f7f7f7;color:#0a0b0d;">SNS</a></li>
+        <li><a href="#" onClick="{{ goAnalytics }}" style="display:block;padding:10px 16px;border-radius:100px;font-size:14px;font-weight:500;line-height:1.4;text-decoration:none;color:{{ navAna.color }};background:{{ navAna.bg }};">アナリティクス</a></li>
+        <li><a href="Torifune Screens.dc.html#settings" style="display:block;padding:10px 16px;border-radius:100px;font-size:14px;font-weight:500;line-height:1.4;text-decoration:none;color:#5b616e;" style-hover="background:#f7f7f7;color:#0a0b0d;">設定</a></li>
+        <li><a href="Torifune Screens.dc.html#plugins" style="display:block;padding:10px 16px;border-radius:100px;font-size:14px;font-weight:500;line-height:1.4;text-decoration:none;color:#5b616e;" style-hover="background:#f7f7f7;color:#0a0b0d;">プラグイン</a></li>
+      </ul>
+    </nav>
+    <main style="padding:40px 48px 64px;min-width:0;">
+      <div style="max-width:1200px;margin:0 auto;display:grid;gap:32px;">
+
+        <!-- ===== ダッシュボード ===== -->
+        <sc-if value="{{ isDashboard }}" hint-placeholder-val="{{ false }}">
+          <div data-screen-label="ダッシュボード" style="display:grid;gap:32px;">
+            <h1 style="font-size:32px;font-weight:400;line-height:1.13;letter-spacing:-0.4px;margin:0;">ダッシュボード</h1>
+            <section style="min-width:0;border:1px solid #dee1e6;border-radius:24px;padding:32px;display:grid;gap:24px;">
+              <div style="display:flex;justify-content:space-between;align-items:baseline;gap:16px;">
+                <h2 style="font-size:18px;font-weight:600;line-height:1.33;margin:0;">直近7日のアクセス</h2>
+                <span style="font-size:13px;color:#7c828a;">{{ dash.rangeLabel }} · 前の7日と比較</span>
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:24px;">
+                <div style="display:grid;gap:6px;">
+                  <span style="font-size:13px;color:#7c828a;line-height:1.5;">ページビュー</span>
+                  <span style="font-family:'JetBrains Mono',monospace;font-size:28px;font-weight:500;line-height:1.2;">{{ dash.pv }}</span>
+                  <span style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:500;color:{{ dash.pvColor }};">{{ dash.pvDelta }}</span>
+                </div>
+                <div style="display:grid;gap:6px;">
+                  <span style="font-size:13px;color:#7c828a;line-height:1.5;">訪問者</span>
+                  <span style="font-family:'JetBrains Mono',monospace;font-size:28px;font-weight:500;line-height:1.2;">{{ dash.uv }}</span>
+                  <span style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:500;color:{{ dash.uvColor }};">{{ dash.uvDelta }}</span>
+                </div>
+                <div style="display:grid;gap:6px;">
+                  <span style="font-size:13px;color:#7c828a;line-height:1.5;">直帰率</span>
+                  <span style="font-family:'JetBrains Mono',monospace;font-size:28px;font-weight:500;line-height:1.2;">{{ dash.bounce }}</span>
+                  <span style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:500;color:{{ dash.bounceColor }};">{{ dash.bounceDelta }}</span>
+                </div>
+                <div style="display:grid;gap:6px;">
+                  <span style="font-size:13px;color:#7c828a;line-height:1.5;">SNS投稿（全体）</span>
+                  <span style="font-family:'JetBrains Mono',monospace;font-size:28px;font-weight:500;line-height:1.2;">128</span>
+                  <span style="font-size:13px;color:#7c828a;">配信済み 96</span>
+                </div>
+              </div>
+              <div style="display:grid;gap:12px;">
+                <svg role="img" aria-label="直近7日のページビューと訪問者の推移" viewBox="0 0 600 160" preserveAspectRatio="none" style="width:100%;height:160px;display:block;overflow:visible;">
+                  <line x1="0" y1="8" x2="600" y2="8" stroke="#eef0f3" stroke-width="1" vector-effect="non-scaling-stroke"></line>
+                  <line x1="0" y1="80" x2="600" y2="80" stroke="#eef0f3" stroke-width="1" vector-effect="non-scaling-stroke"></line>
+                  <line x1="0" y1="152" x2="600" y2="152" stroke="#dee1e6" stroke-width="1" vector-effect="non-scaling-stroke"></line>
+                  <polyline points="{{ dash.chart.uv }}" fill="none" stroke="#a8b8cc" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"></polyline>
+                  <polyline points="{{ dash.chart.pv }}" fill="none" stroke="#0052ff" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"></polyline>
+                </svg>
+                <div style="display:flex;justify-content:space-between;font-size:13px;color:#7c828a;">
+                  <span>{{ dash.chart.first }}</span>
+                  <div style="display:flex;gap:20px;">
+                    <span style="display:inline-flex;align-items:center;gap:8px;"><i style="width:12px;height:2px;background:#0052ff;display:inline-block;"></i>ページビュー</span>
+                    <span style="display:inline-flex;align-items:center;gap:8px;"><i style="width:12px;height:2px;background:#a8b8cc;display:inline-block;"></i>訪問者</span>
+                  </div>
+                  <span>{{ dash.chart.last }}</span>
+                </div>
+              </div>
+              <div style="display:grid;gap:0;">
+                <div style="display:grid;grid-template-columns:1fr 120px 120px 100px;gap:16px;padding:0 0 12px;font-size:12px;font-weight:600;color:#7c828a;border-bottom:1px solid #dee1e6;">
+                  <span>サイト</span><span style="text-align:right;">ページビュー</span><span style="text-align:right;">訪問者</span><span style="text-align:right;">前期間比</span>
+                </div>
+                <sc-for list="{{ dash.rows }}" as="r" hint-placeholder-count="3">
+                  <a href="#" onClick="{{ r.open }}" style="display:grid;grid-template-columns:1fr 120px 120px 100px;gap:16px;align-items:center;padding:16px 0;border-bottom:1px solid #eef0f3;text-decoration:none;color:#0a0b0d;font-size:14px;" style-hover="background:#f7f7f7;">
+                    <span style="font-weight:500;">{{ r.name }}</span>
+                    <span style="font-family:'JetBrains Mono',monospace;font-weight:500;text-align:right;">{{ r.pv }}</span>
+                    <span style="font-family:'JetBrains Mono',monospace;font-weight:500;text-align:right;">{{ r.uv }}</span>
+                    <span style="font-family:'JetBrains Mono',monospace;font-weight:500;text-align:right;color:{{ r.color }};">{{ r.delta }}</span>
+                  </a>
+                </sc-for>
+              </div>
+              <p style="margin:0;font-size:14px;"><a href="#" onClick="{{ goAnalytics }}" style="color:#0052ff;font-weight:600;text-decoration:none;">アナリティクスで詳しく見る →</a></p>
+            </section>
+            <section style="min-width:0;border:1px solid #dee1e6;border-radius:24px;padding:32px;display:grid;gap:16px;">
+              <div style="display:flex;justify-content:space-between;align-items:baseline;gap:16px;">
+                <h2 style="font-size:18px;font-weight:600;line-height:1.33;margin:0;">実施中のキャンペーン</h2>
+                <a href="Torifune Screens.dc.html#campaigns" style="font-size:14px;font-weight:600;color:#0052ff;text-decoration:none;">すべて →</a>
+              </div>
+              <div style="display:grid;">
+                <div style="display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr) 120px minmax(0,1fr);gap:16px;padding:0 0 12px;font-size:12px;font-weight:600;color:#7c828a;border-bottom:1px solid #dee1e6;">
+                  <span>キャンペーン</span><span>進行</span><span style="text-align:right;">対象サイトPV（7日）</span><span>SNS投稿</span>
+                </div>
+                <sc-for list="{{ activeCampaigns }}" as="c" hint-placeholder-count="2">
+                  <a href="Torifune Screens.dc.html#campaignAnalytics" style="display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr) 120px minmax(0,1fr);gap:16px;align-items:center;padding:16px 0;border-bottom:1px solid #eef0f3;text-decoration:none;color:#0a0b0d;font-size:14px;" style-hover="background:#f7f7f7;">
+                    <div style="display:grid;gap:4px;min-width:0;">
+                      <span style="font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ c.name }}</span>
+                      <span style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;color:#7c828a;white-space:nowrap;">{{ c.period }}</span>
+                      <span style="font-size:13px;color:#7c828a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ c.sites }}</span>
+                    </div>
+                    <div style="display:grid;gap:6px;min-width:0;">
+                      <div style="height:4px;background:#eef0f3;border-radius:2px;"><div style="height:4px;background:#0052ff;border-radius:2px;width:{{ c.progress }}%;"></div></div>
+                      <span style="font-size:12px;color:#7c828a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ c.progressLabel }}</span>
+                    </div>
+                    <div style="display:grid;gap:4px;text-align:right;">
+                      <span style="font-family:'JetBrains Mono',monospace;font-weight:500;">{{ c.pv }}</span>
+                      <span style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:500;color:{{ c.deltaColor }};">{{ c.delta }}</span>
+                    </div>
+                    <span style="font-size:13px;line-height:1.5;color:{{ c.postsColor }};min-width:0;">{{ c.posts }}</span>
+                  </a>
+                </sc-for>
+              </div>
+            </section>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:24px;">
+              <section style="min-width:0;border:1px solid #dee1e6;border-radius:24px;padding:32px;display:grid;gap:16px;align-content:start;">
+                <h2 style="font-size:18px;font-weight:600;line-height:1.33;margin:0;">最近の投稿</h2>
+                <div style="display:grid;">
+                  <div style="display:grid;grid-template-columns:1fr 72px 110px;gap:16px;padding:0 0 12px;font-size:12px;font-weight:600;color:#7c828a;border-bottom:1px solid #dee1e6;"><span>本文</span><span>状態</span><span>更新</span></div>
+                  <div style="display:grid;grid-template-columns:1fr 72px 110px;gap:16px;padding:16px 0;border-bottom:1px solid #eef0f3;font-size:14px;align-items:center;"><span>秋の新製品発表会のご案内。9月18日、オンラインで開催します…</span><span style="display:inline-block;padding:4px 12px;border-radius:100px;background:#eef0f3;font-size:12px;font-weight:600;text-align:center;">配信済み</span><span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:#5b616e;">2026-09-02 18:00</span></div>
+                  <div style="display:grid;grid-template-columns:1fr 72px 110px;gap:16px;padding:16px 0;border-bottom:1px solid #eef0f3;font-size:14px;align-items:center;"><span>採用イベントを10月に開きます。エンジニア職の方はぜひ…</span><span style="display:inline-block;padding:4px 12px;border-radius:100px;background:#eef0f3;font-size:12px;font-weight:600;text-align:center;">予約</span><span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:#5b616e;">2026-09-02 11:20</span></div>
+                  <div style="display:grid;grid-template-columns:1fr 72px 110px;gap:16px;padding:16px 0;border-bottom:1px solid #eef0f3;font-size:14px;align-items:center;"><span>ブログ更新：私たちがリリースを小さく刻む理由</span><span style="display:inline-block;padding:4px 12px;border-radius:100px;background:#eef0f3;font-size:12px;font-weight:600;text-align:center;">下書き</span><span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:#5b616e;">2026-09-01 09:42</span></div>
+                </div>
+              </section>
+              <section style="min-width:0;border:1px solid #dee1e6;border-radius:24px;padding:32px;display:grid;gap:16px;align-content:start;">
+                <h2 style="font-size:18px;font-weight:600;line-height:1.33;margin:0;">最近の活動</h2>
+                <div style="display:grid;">
+                  <div style="display:grid;grid-template-columns:90px 1fr 110px;gap:16px;padding:0 0 12px;font-size:12px;font-weight:600;color:#7c828a;border-bottom:1px solid #dee1e6;"><span>操作者</span><span>内容</span><span>日時</span></div>
+                  <div style="display:grid;grid-template-columns:90px 1fr 110px;gap:16px;padding:16px 0;border-bottom:1px solid #eef0f3;font-size:14px;"><span>山田</span><span>Webサイトを作成</span><span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:#5b616e;">2026-09-03 10:05</span></div>
+                  <div style="display:grid;grid-template-columns:90px 1fr 110px;gap:16px;padding:16px 0;border-bottom:1px solid #eef0f3;font-size:14px;"><span>佐藤</span><span>SNS投稿を更新</span><span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:#5b616e;">2026-09-02 18:01</span></div>
+                  <div style="display:grid;grid-template-columns:90px 1fr 110px;gap:16px;padding:16px 0;border-bottom:1px solid #eef0f3;font-size:14px;"><span>管理者</span><span>APIトークンを作成</span><span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:#5b616e;">2026-09-01 15:30</span></div>
+                </div>
+              </section>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- ===== サイト詳細 ===== -->
+        <sc-if value="{{ isAnalytics }}" hint-placeholder-val="{{ true }}">
+          <div data-screen-label="アナリティクス" style="display:grid;gap:24px;">
+            <div style="display:grid;gap:8px;">
+              <h1 style="font-size:32px;font-weight:400;line-height:1.13;letter-spacing:-0.4px;margin:0;">アナリティクス</h1>
+              <p style="margin:0;font-size:14px;color:#5b616e;">前期間（{{ prevRangeLabel }}）と比較 · 日付の区切りは Asia/Tokyo</p>
+            </div>
+            <div style="display:flex;gap:16px;align-items:center;flex-wrap:nowrap;">
+              <div style="display:inline-flex;background:#eef0f3;border-radius:100px;padding:4px;gap:2px;flex-shrink:0;">
+                <sc-for list="{{ presets }}" as="p" hint-placeholder-count="6">
+                  <button type="button" onClick="{{ p.select }}" style="border:0;cursor:pointer;font:inherit;font-size:14px;font-weight:500;padding:8px 16px;border-radius:100px;white-space:nowrap;color:{{ p.color }};background:{{ p.bg }};">{{ p.label }}</button>
+                </sc-for>
+              </div>
+              <div style="display:flex;gap:8px;align-items:center;flex-shrink:0;">
+                <input type="date" value="{{ from }}" onChange="{{ setFrom }}" style="font:inherit;font-family:'JetBrains Mono',monospace;font-size:14px;height:40px;padding:0 12px;border:1px solid #dee1e6;border-radius:12px;color:#0a0b0d;background:#ffffff;">
+                <span style="color:#7c828a;">–</span>
+                <input type="date" value="{{ to }}" onChange="{{ setTo }}" style="font:inherit;font-family:'JetBrains Mono',monospace;font-size:14px;height:40px;padding:0 12px;border:1px solid #dee1e6;border-radius:12px;color:#0a0b0d;background:#ffffff;">
+              </div>
+            </div>
+
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;">
+              <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+                <label style="display:inline-flex;align-items:center;gap:12px;font-size:14px;color:#5b616e;">サイト
+                  <select aria-label="サイト" value="{{ siteId }}" onChange="{{ selectSite }}" style="font:inherit;font-size:16px;font-weight:600;color:#0a0b0d;height:48px;padding:0 44px 0 16px;border:1px solid #dee1e6;border-radius:12px;background:#ffffff url('data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2216%22 height=%2216%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%230a0b0d%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22><polyline points=%226 9 12 15 18 9%22/></svg>') no-repeat right 16px center;appearance:none;-webkit-appearance:none;cursor:pointer;min-width:260px;">
+                    <sc-for list="{{ siteTabs }}" as="s" hint-placeholder-count="4">
+                      <option value="{{ s.id }}">{{ s.optionLabel }}</option>
+                    </sc-for>
+                  </select>
+                </label>
+                <a href="#" style="font-size:14px;color:#5b616e;text-decoration:none;">{{ site.url }}</a>
+              </div>
+              <div style="display:flex;align-items:center;gap:20px;">
+                <label style="display:inline-flex;align-items:center;gap:10px;font-size:14px;color:#0a0b0d;cursor:pointer;user-select:none;">
+                  <button type="button" role="switch" aria-checked="{{ includeBotsAria }}" onClick="{{ toggleBots }}" style="position:relative;width:40px;height:24px;border:0;border-radius:100px;cursor:pointer;padding:0;background:{{ botSwitch.bg }};transition:background .15s;">
+                    <span style="position:absolute;top:3px;width:18px;height:18px;border-radius:100px;background:#ffffff;box-shadow:0 1px 2px rgba(0,0,0,0.2);left:{{ botSwitch.left }};transition:left .15s;"></span>
+                  </button>
+                  <span>Bot を集計に含める</span>
+                </label>
+                <span style="font-size:13px;color:#7c828a;">最終受信 {{ site.lastSeen }}</span>
+              </div>
+            </div>
+
+            <nav aria-label="サイト詳細のタブ" style="display:flex;gap:32px;border-bottom:1px solid #dee1e6;">
+              <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="5">
+                <a href="#" onClick="{{ t.select }}" style="padding:12px 0;font-size:14px;font-weight:500;text-decoration:none;color:{{ t.color }};border-bottom:2px solid {{ t.border }};margin-bottom:-1px;" style-hover="color:#0a0b0d;">{{ t.label }}</a>
+              </sc-for>
+            </nav>
+
+            <!-- 未設置 -->
+            <sc-if value="{{ siteEmpty }}" hint-placeholder-val="{{ false }}">
+              <section style="border:1px dashed #dee1e6;border-radius:24px;padding:48px 32px;display:grid;gap:24px;justify-items:center;text-align:center;">
+                <span style="display:inline-block;padding:4px 12px;border-radius:100px;background:#eef0f3;font-size:12px;font-weight:600;">計測タグ未設置</span>
+                <h2 style="font-size:24px;font-weight:400;line-height:1.2;letter-spacing:-0.3px;margin:0;">まだアクセスの記録がありません</h2>
+                <p style="margin:0;max-width:520px;font-size:14px;line-height:1.5;color:#5b616e;">数字が出るには、計測タグをサイトへ貼り、集計を実行する必要があります。集計は毎日 <code style="font-family:'JetBrains Mono',monospace;font-size:13px;background:#eef0f3;padding:2px 6px;border-radius:4px;">torifune analytics rollup</code> で行います（cron から実行できます）。</p>
+                <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:24px;width:100%;max-width:760px;text-align:left;">
+                  <div style="display:grid;gap:8px;"><span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:#0052ff;">01</span><span style="font-size:14px;font-weight:600;">タグを貼る</span><span style="font-size:13px;color:#5b616e;line-height:1.5;">測りたいページの &lt;head&gt; に1行貼ります。Cookie は使いません。</span></div>
+                  <div style="display:grid;gap:8px;"><span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:#0052ff;">02</span><span style="font-size:14px;font-weight:600;">受信を確かめる</span><span style="font-size:13px;color:#5b616e;line-height:1.5;">「設定」タブの最終受信が更新されれば届いています。</span></div>
+                  <div style="display:grid;gap:8px;"><span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:#0052ff;">03</span><span style="font-size:14px;font-weight:600;">集計を待つ</span><span style="font-size:13px;color:#5b616e;line-height:1.5;">日次のロールアップ後に、この画面へ数字が出ます。</span></div>
+                </div>
+                <button type="button" onClick="{{ openSettingsTab }}" style="border:0;cursor:pointer;font:inherit;font-size:16px;font-weight:600;line-height:1.15;height:44px;padding:12px 20px;border-radius:100px;background:#0052ff;color:#ffffff;" style-hover="background:#003ecc;">計測タグを取得</button>
+              </section>
+            </sc-if>
+
+            <!-- 概要 -->
+            <sc-if value="{{ tabOverview }}" hint-placeholder-val="{{ true }}">
+              <div style="display:grid;gap:24px;">
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:24px;">
+                  <sc-for list="{{ kpis }}" as="k" hint-placeholder-count="5">
+                    <div style="border:1px solid #dee1e6;border-radius:24px;padding:24px;display:grid;gap:8px;">
+                      <span style="font-size:13px;color:#7c828a;line-height:1.5;">{{ k.label }}</span>
+                      <span style="font-family:'JetBrains Mono',monospace;font-size:26px;font-weight:500;line-height:1.2;">{{ k.value }}</span>
+                      <span style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:500;color:{{ k.color }};">{{ k.delta }}</span>
+                    </div>
+                  </sc-for>
+                </div>
+                <section style="min-width:0;border:1px solid #dee1e6;border-radius:24px;padding:32px;display:grid;gap:20px;">
+                  <div style="display:flex;justify-content:space-between;align-items:baseline;gap:16px;">
+                    <h2 style="font-size:18px;font-weight:600;line-height:1.33;margin:0;">日次の推移</h2>
+                    <div style="display:flex;gap:20px;font-size:13px;color:#7c828a;">
+                      <span style="display:inline-flex;align-items:center;gap:8px;"><i style="width:12px;height:2px;background:#0052ff;display:inline-block;"></i>ページビュー</span>
+                      <span style="display:inline-flex;align-items:center;gap:8px;"><i style="width:12px;height:2px;background:#a8b8cc;display:inline-block;"></i>訪問者</span>
+                    </div>
+                  </div>
+                  <div style="display:grid;grid-template-columns:56px 1fr;gap:12px;">
+                    <div style="display:flex;flex-direction:column;justify-content:space-between;font-family:'JetBrains Mono',monospace;font-size:12px;color:#7c828a;text-align:right;height:220px;">
+                      <span>{{ chart.yMax }}</span><span>{{ chart.yMid }}</span><span>0</span>
+                    </div>
+                    <svg role="img" aria-label="ページビューと訪問者の日次推移" viewBox="0 0 600 220" preserveAspectRatio="none" style="width:100%;height:220px;display:block;overflow:visible;">
+                      <line x1="0" y1="6" x2="600" y2="6" stroke="#eef0f3" stroke-width="1" vector-effect="non-scaling-stroke"></line>
+                      <line x1="0" y1="110" x2="600" y2="110" stroke="#eef0f3" stroke-width="1" vector-effect="non-scaling-stroke"></line>
+                      <line x1="0" y1="214" x2="600" y2="214" stroke="#dee1e6" stroke-width="1" vector-effect="non-scaling-stroke"></line>
+                      <sc-for list="{{ chart.ticks }}" as="t" hint-placeholder-count="0">
+                        <line x1="{{ t.x }}" y1="6" x2="{{ t.x }}" y2="214" stroke="#eef0f3" stroke-width="1" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"></line>
+                      </sc-for>
+                      <polyline points="{{ chart.uv }}" fill="none" stroke="#a8b8cc" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"></polyline>
+                      <polyline points="{{ chart.pv }}" fill="none" stroke="#0052ff" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"></polyline>
+                    </svg>
+                    <span></span>
+                    <div style="position:relative;height:18px;font-family:'JetBrains Mono',monospace;font-size:12px;color:#7c828a;">
+                      <sc-for list="{{ chart.ticks }}" as="t" hint-placeholder-count="0">
+                        <span style="position:absolute;top:0;transform:translateX(-50%);white-space:nowrap;left:{{ t.xPct }};">{{ t.label }}</span>
+                      </sc-for>
+                    </div>
+                  </div>
+                </section>
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:24px;">
+                  <section style="min-width:0;border:1px solid #dee1e6;border-radius:24px;padding:32px;display:grid;gap:16px;align-content:start;">
+                    <div style="display:flex;justify-content:space-between;align-items:baseline;"><h2 style="font-size:18px;font-weight:600;line-height:1.33;margin:0;">上位ページ</h2><a href="#" onClick="{{ openPagesTab }}" style="font-size:14px;font-weight:600;color:#0052ff;text-decoration:none;">すべて →</a></div>
+                    <div style="display:grid;">
+                      <sc-for list="{{ topPages }}" as="p" hint-placeholder-count="5">
+                        <div style="display:grid;grid-template-columns:1fr 90px;gap:16px;padding:14px 0;border-bottom:1px solid #eef0f3;font-size:14px;align-items:center;">
+                          <div style="display:grid;gap:6px;min-width:0;">
+                            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ p.path }}</span>
+                            <div style="height:3px;background:#eef0f3;border-radius:2px;"><div style="height:3px;background:#0052ff;border-radius:2px;width:{{ p.pct }}%;"></div></div>
+                          </div>
+                          <span style="font-family:'JetBrains Mono',monospace;font-weight:500;text-align:right;">{{ p.pv }}</span>
+                        </div>
+                      </sc-for>
+                    </div>
+                  </section>
+                  <section style="min-width:0;border:1px solid #dee1e6;border-radius:24px;padding:32px;display:grid;gap:16px;align-content:start;">
+                    <div style="display:flex;justify-content:space-between;align-items:baseline;"><h2 style="font-size:18px;font-weight:600;line-height:1.33;margin:0;">参照元</h2><a href="#" onClick="{{ openReferrersTab }}" style="font-size:14px;font-weight:600;color:#0052ff;text-decoration:none;">すべて →</a></div>
+                    <div style="display:grid;">
+                      <sc-for list="{{ topReferrers }}" as="r" hint-placeholder-count="5">
+                        <div style="display:grid;grid-template-columns:1fr 90px;gap:16px;padding:14px 0;border-bottom:1px solid #eef0f3;font-size:14px;align-items:center;">
+                          <div style="display:grid;gap:6px;min-width:0;">
+                            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ r.host }}</span>
+                            <div style="height:3px;background:#eef0f3;border-radius:2px;"><div style="height:3px;background:#0052ff;border-radius:2px;width:{{ r.pct }}%;"></div></div>
+                          </div>
+                          <span style="font-family:'JetBrains Mono',monospace;font-weight:500;text-align:right;">{{ r.sessions }}</span>
+                        </div>
+                      </sc-for>
+                    </div>
+                  </section>
+                </div>
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:24px;">
+                  <section style="min-width:0;border:1px solid #dee1e6;border-radius:24px;padding:32px;display:grid;gap:20px;align-content:start;">
+                    <h2 style="font-size:18px;font-weight:600;line-height:1.33;margin:0;">時間帯別のページビュー</h2>
+                    <div style="display:grid;grid-template-columns:repeat(24,1fr);gap:4px;align-items:end;height:120px;">
+                      <sc-for list="{{ hours }}" as="h" hint-placeholder-count="24">
+                        <div title="{{ h.title }}" style="background:{{ h.bg }};border-radius:2px 2px 0 0;height:{{ h.pct }}%;min-height:2px;"></div>
+                      </sc-for>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;font-family:'JetBrains Mono',monospace;font-size:12px;color:#7c828a;"><span>0時</span><span>6時</span><span>12時</span><span>18時</span><span>23時</span></div>
+                    <p style="margin:0;font-size:13px;color:#7c828a;">最も多い時間帯は {{ peakHour }}。</p>
+                  </section>
+                  <section style="min-width:0;border:1px solid #dee1e6;border-radius:24px;padding:32px;display:grid;gap:20px;align-content:start;">
+                    <h2 style="font-size:18px;font-weight:600;line-height:1.33;margin:0;">デバイス</h2>
+                    <div style="display:grid;gap:16px;">
+                      <sc-for list="{{ devices }}" as="d" hint-placeholder-count="3">
+                        <div style="display:grid;gap:8px;">
+                          <div style="display:flex;justify-content:space-between;font-size:14px;"><span>{{ d.label }}</span><span style="font-family:'JetBrains Mono',monospace;font-weight:500;">{{ d.share }}<span style="color:#7c828a;font-weight:500;"> · {{ d.pv }}</span></span></div>
+                          <div style="height:6px;background:#eef0f3;border-radius:3px;"><div style="height:6px;background:#0052ff;border-radius:3px;width:{{ d.pct }}%;"></div></div>
+                        </div>
+                      </sc-for>
+                    </div>
+                    <sc-if value="{{ showBots }}" hint-placeholder-val="{{ true }}">
+                      <p style="margin:0;font-size:13px;color:#7c828a;border-top:1px solid #eef0f3;padding-top:16px;">{{ botNote }}</p>
+                    </sc-if>
+                  </section>
+                </div>
+                <section style="min-width:0;border:1px solid #dee1e6;border-radius:24px;padding:32px;display:grid;gap:20px;">
+                  <div style="display:flex;justify-content:space-between;align-items:baseline;gap:16px;">
+                    <h2 style="font-size:18px;font-weight:600;line-height:1.33;margin:0;">国別のアクセス</h2>
+                    <span style="font-size:13px;color:#7c828a;">{{ geoNote }}</span>
+                  </div>
+                  <div style="display:grid;grid-template-columns:minmax(0,3fr) minmax(240px,2fr);gap:32px;align-items:start;">
+                    <div style="position:relative;min-width:0;aspect-ratio:2/1;">
+                      <iframe title="国別アクセスの世界地図" src="{{ mapSrc }}" style="position:absolute;inset:0;width:100%;height:100%;border:0;display:block;"></iframe>
+                    </div>
+                    <div style="display:grid;">
+                      <div style="display:grid;grid-template-columns:1fr 90px 64px;gap:12px;padding:0 0 12px;font-size:12px;font-weight:600;color:#7c828a;border-bottom:1px solid #dee1e6;"><span>国 / 地域</span><span style="text-align:right;">ページビュー</span><span style="text-align:right;">割合</span></div>
+                      <sc-for list="{{ countries }}" as="c" hint-placeholder-count="6">
+                        <div style="display:grid;grid-template-columns:1fr 90px 64px;gap:12px;padding:12px 0;border-bottom:1px solid #eef0f3;font-size:14px;align-items:center;">
+                          <div style="display:grid;gap:6px;min-width:0;">
+                            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ c.name }}</span>
+                            <div style="height:3px;background:#eef0f3;border-radius:2px;"><div style="height:3px;background:#0052ff;border-radius:2px;width:{{ c.pct }}%;"></div></div>
+                          </div>
+                          <span style="font-family:'JetBrains Mono',monospace;font-weight:500;text-align:right;">{{ c.pv }}</span>
+                          <span style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:500;text-align:right;color:#5b616e;">{{ c.share }}</span>
+                        </div>
+                      </sc-for>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            </sc-if>
+
+            <!-- ページ -->
+            <sc-if value="{{ tabPages }}" hint-placeholder-val="{{ false }}">
+              <section style="min-width:0;border:1px solid #dee1e6;border-radius:24px;padding:32px;display:grid;gap:16px;">
+                <div style="display:flex;justify-content:space-between;align-items:baseline;gap:16px;">
+                  <h2 style="font-size:18px;font-weight:600;line-height:1.33;margin:0;">ページ</h2>
+                  <span style="font-size:13px;color:#7c828a;">{{ pageCount }} ページ · ページビュー順</span>
+                </div>
+                <div style="display:grid;overflow-x:auto;min-width:0;">
+                  <div style="display:grid;min-width:760px;grid-template-columns:minmax(160px,1fr) 110px 110px 120px 90px 110px;gap:16px;padding:0 0 12px;font-size:12px;font-weight:600;color:#7c828a;border-bottom:1px solid #dee1e6;">
+                    <span>ページ</span><span style="text-align:right;">ページビュー</span><span style="text-align:right;">訪問者</span><span style="text-align:right;">ランディング</span><span style="text-align:right;">直帰率</span><span style="text-align:right;">平均滞在</span>
+                  </div>
+                  <sc-for list="{{ pages }}" as="p" hint-placeholder-count="8">
+                    <div style="display:grid;min-width:760px;grid-template-columns:minmax(160px,1fr) 110px 110px 120px 90px 110px;gap:16px;padding:16px 0;border-bottom:1px solid #eef0f3;font-size:14px;align-items:center;">
+                      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ p.path }}</span>
+                      <span style="font-family:'JetBrains Mono',monospace;font-weight:500;text-align:right;">{{ p.pv }}</span>
+                      <span style="font-family:'JetBrains Mono',monospace;font-weight:500;text-align:right;">{{ p.uv }}</span>
+                      <span style="font-family:'JetBrains Mono',monospace;font-weight:500;text-align:right;">{{ p.landing }}</span>
+                      <span style="font-family:'JetBrains Mono',monospace;font-weight:500;text-align:right;">{{ p.bounce }}</span>
+                      <span style="font-family:'JetBrains Mono',monospace;font-weight:500;text-align:right;">{{ p.dwell }}</span>
+                    </div>
+                  </sc-for>
+                </div>
+                <p style="margin:0;font-size:13px;color:#7c828a;line-height:1.5;">平均滞在は、同じ訪問者の連続したページビューの間隔から求めています。セッション最後のページは測れないため、実際より短めに出ます。</p>
+              </section>
+            </sc-if>
+
+            <!-- 参照元 -->
+            <sc-if value="{{ tabReferrers }}" hint-placeholder-val="{{ false }}">
+              <section style="min-width:0;border:1px solid #dee1e6;border-radius:24px;padding:32px;display:grid;gap:16px;">
+                <div style="display:flex;justify-content:space-between;align-items:baseline;gap:16px;">
+                  <h2 style="font-size:18px;font-weight:600;line-height:1.33;margin:0;">参照元</h2>
+                  <span style="font-size:13px;color:#7c828a;">セッションの最初のページビューの参照元ホスト</span>
+                </div>
+                <div style="display:grid;overflow-x:auto;min-width:0;">
+                  <div style="display:grid;min-width:720px;grid-template-columns:minmax(160px,1fr) 120px 120px 90px 200px;gap:16px;padding:0 0 12px;font-size:12px;font-weight:600;color:#7c828a;border-bottom:1px solid #dee1e6;">
+                    <span>参照元</span><span style="text-align:right;">セッション</span><span style="text-align:right;">訪問者</span><span style="text-align:right;">直帰率</span><span>割合</span>
+                  </div>
+                  <sc-for list="{{ referrers }}" as="r" hint-placeholder-count="8">
+                    <div style="display:grid;min-width:720px;grid-template-columns:minmax(160px,1fr) 120px 120px 90px 200px;gap:16px;padding:16px 0;border-bottom:1px solid #eef0f3;font-size:14px;align-items:center;">
+                      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ r.host }}</span>
+                      <span style="font-family:'JetBrains Mono',monospace;font-weight:500;text-align:right;">{{ r.sessions }}</span>
+                      <span style="font-family:'JetBrains Mono',monospace;font-weight:500;text-align:right;">{{ r.uv }}</span>
+                      <span style="font-family:'JetBrains Mono',monospace;font-weight:500;text-align:right;">{{ r.bounce }}</span>
+                      <div style="display:grid;grid-template-columns:1fr 56px;gap:12px;align-items:center;">
+                        <div style="height:6px;background:#eef0f3;border-radius:3px;"><div style="height:6px;background:#0052ff;border-radius:3px;width:{{ r.pct }}%;"></div></div>
+                        <span style="font-family:'JetBrains Mono',monospace;font-weight:500;font-size:13px;text-align:right;">{{ r.share }}</span>
+                      </div>
+                    </div>
+                  </sc-for>
+                </div>
+                <p style="margin:0;font-size:13px;color:#7c828a;line-height:1.5;">参照元はホスト名だけを保存しています。ページの経路までは記録しません。</p>
+              </section>
+            </sc-if>
+
+            <!-- 訪問者 -->
+            <sc-if value="{{ tabVisitors }}" hint-placeholder-val="{{ false }}">
+              <div style="display:grid;gap:24px;">
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:24px;">
+                  <sc-for list="{{ visitorKpis }}" as="k" hint-placeholder-count="4">
+                    <div style="border:1px solid #dee1e6;border-radius:24px;padding:24px;display:grid;gap:8px;">
+                      <span style="font-size:13px;color:#7c828a;line-height:1.5;">{{ k.label }}</span>
+                      <span style="font-family:'JetBrains Mono',monospace;font-size:26px;font-weight:500;line-height:1.2;">{{ k.value }}</span>
+                      <span style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:500;color:{{ k.color }};">{{ k.delta }}</span>
+                    </div>
+                  </sc-for>
+                </div>
+
+                <section style="min-width:0;border:1px solid #dee1e6;border-radius:24px;padding:32px;display:grid;gap:20px;">
+                  <div style="display:flex;justify-content:space-between;align-items:baseline;gap:16px;">
+                    <h2 style="font-size:18px;font-weight:600;line-height:1.33;margin:0;">国別のアクセス</h2>
+                    <span style="font-size:13px;color:#7c828a;">{{ geoNote }}</span>
+                  </div>
+                  <div style="display:grid;grid-template-columns:minmax(0,3fr) minmax(240px,2fr);gap:32px;align-items:start;">
+                    <div style="position:relative;min-width:0;aspect-ratio:2/1;">
+                      <iframe title="国別アクセスの世界地図" src="{{ mapSrc }}" style="position:absolute;inset:0;width:100%;height:100%;border:0;display:block;"></iframe>
+                    </div>
+                    <div style="display:grid;">
+                      <div style="display:grid;grid-template-columns:1fr 90px 64px;gap:12px;padding:0 0 12px;font-size:12px;font-weight:600;color:#7c828a;border-bottom:1px solid #dee1e6;"><span>国 / 地域</span><span style="text-align:right;">ページビュー</span><span style="text-align:right;">割合</span></div>
+                      <sc-for list="{{ countries }}" as="c" hint-placeholder-count="8">
+                        <div style="display:grid;grid-template-columns:1fr 90px 64px;gap:12px;padding:12px 0;border-bottom:1px solid #eef0f3;font-size:14px;align-items:center;">
+                          <div style="display:grid;gap:6px;min-width:0;">
+                            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ c.name }}</span>
+                            <div style="height:3px;background:#eef0f3;border-radius:2px;"><div style="height:3px;background:#0052ff;border-radius:2px;width:{{ c.pct }}%;"></div></div>
+                          </div>
+                          <span style="font-family:'JetBrains Mono',monospace;font-weight:500;text-align:right;">{{ c.pv }}</span>
+                          <span style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:500;text-align:right;color:#5b616e;">{{ c.share }}</span>
+                        </div>
+                      </sc-for>
+                    </div>
+                  </div>
+                </section>
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:24px;">
+                  <section style="min-width:0;border:1px solid #dee1e6;border-radius:24px;padding:32px;display:grid;gap:20px;align-content:start;">
+                    <h2 style="font-size:18px;font-weight:600;line-height:1.33;margin:0;">デバイス</h2>
+                    <div style="display:grid;gap:16px;">
+                      <sc-for list="{{ devices }}" as="d" hint-placeholder-count="3">
+                        <div style="display:grid;gap:8px;">
+                          <div style="display:flex;justify-content:space-between;font-size:14px;"><span>{{ d.label }}</span><span style="font-family:'JetBrains Mono',monospace;font-weight:500;">{{ d.share }}<span style="color:#7c828a;"> · {{ d.pv }}</span></span></div>
+                          <div style="height:6px;background:#eef0f3;border-radius:3px;"><div style="height:6px;background:#0052ff;border-radius:3px;width:{{ d.pct }}%;"></div></div>
+                        </div>
+                      </sc-for>
+                    </div>
+                  </section>
+                  <section style="min-width:0;border:1px solid #dee1e6;border-radius:24px;padding:32px;display:grid;gap:20px;align-content:start;">
+                    <h2 style="font-size:18px;font-weight:600;line-height:1.33;margin:0;">時間帯別のページビュー</h2>
+                    <div style="display:grid;grid-template-columns:repeat(24,1fr);gap:4px;align-items:end;height:120px;">
+                      <sc-for list="{{ hours }}" as="h" hint-placeholder-count="24">
+                        <div title="{{ h.title }}" style="background:{{ h.bg }};border-radius:2px 2px 0 0;height:{{ h.pct }}%;min-height:2px;"></div>
+                      </sc-for>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;font-family:'JetBrains Mono',monospace;font-size:12px;color:#7c828a;"><span>0時</span><span>6時</span><span>12時</span><span>18時</span><span>23時</span></div>
+                  </section>
+                </div>
+                <sc-if value="{{ showBots }}" hint-placeholder-val="{{ true }}">
+                  <section style="min-width:0;border:1px solid #dee1e6;border-radius:24px;padding:32px;display:grid;gap:16px;">
+                    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:16px;">
+                      <h2 style="font-size:18px;font-weight:600;line-height:1.33;margin:0;">Bot のアクセス</h2>
+                      <span style="font-size:13px;color:#7c828a;">{{ botTabNote }}</span>
+                    </div>
+                    <div style="display:flex;gap:48px;align-items:baseline;">
+                      <div style="display:grid;gap:4px;"><span style="font-size:13px;color:#7c828a;">Bot のページビュー</span><span style="font-family:'JetBrains Mono',monospace;font-size:26px;font-weight:500;">{{ botCount }}</span></div>
+                      <div style="display:grid;gap:4px;"><span style="font-size:13px;color:#7c828a;">人のページビュー</span><span style="font-family:'JetBrains Mono',monospace;font-size:26px;font-weight:500;">{{ humanPv }}</span></div>
+                      <div style="display:grid;gap:4px;"><span style="font-size:13px;color:#7c828a;">Bot の割合（人 + Bot に対して）</span><span style="font-family:'JetBrains Mono',monospace;font-size:26px;font-weight:500;">{{ botShare }}</span></div>
+                      <div style="display:grid;gap:4px;"><span style="font-size:13px;color:#7c828a;">Bot が最も多かった日</span><span style="font-family:'JetBrains Mono',monospace;font-size:26px;font-weight:500;">{{ botPeakDay }}</span></div>
+                    </div>
+                    <p style="margin:0;font-size:13px;color:#7c828a;line-height:1.5;">User-Agent から Bot と判定したアクセスの内訳です。この欄の数値は「Bot を集計に含める」スイッチに左右されません。急にアクセスが増えたときは、ここで Bot かどうかを確かめられます。</p>
+                  </section>
+                </sc-if>
+              </div>
+            </sc-if>
+
+            <!-- 設定 -->
+            <sc-if value="{{ tabSettings }}" hint-placeholder-val="{{ false }}">
+              <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:24px;align-items:start;">
+                <section style="min-width:0;border:1px solid #dee1e6;border-radius:24px;padding:32px;display:grid;gap:20px;">
+                  <h2 style="font-size:18px;font-weight:600;line-height:1.33;margin:0;">計測タグ</h2>
+                  <p style="margin:0;font-size:14px;line-height:1.5;color:#5b616e;">測りたいページの <code style="font-family:'JetBrains Mono',monospace;font-size:13px;background:#eef0f3;padding:2px 6px;border-radius:4px;">&lt;head&gt;</code> に貼ってください。</p>
+                  <pre style="margin:0;padding:20px 24px;background:#f7f7f7;border-radius:12px;font-family:'JetBrains Mono',monospace;font-size:13px;line-height:1.6;color:#0a0b0d;overflow-x:auto;white-space:pre-wrap;word-break:break-all;">{{ snippet }}</pre>
+                  <div style="display:flex;gap:12px;align-items:center;">
+                    <button type="button" onClick="{{ copySnippet }}" style="border:0;cursor:pointer;font:inherit;font-size:16px;font-weight:600;line-height:1.15;height:44px;padding:12px 20px;border-radius:100px;background:#0052ff;color:#ffffff;" style-hover="background:#003ecc;">{{ copyLabel }}</button>
+                    <button type="button" style="border:0;cursor:pointer;font:inherit;font-size:16px;font-weight:600;line-height:1.15;height:44px;padding:12px 20px;border-radius:100px;background:#eef0f3;color:#0a0b0d;" style-hover="background:#dee1e6;">公開キーを再発行</button>
+                  </div>
+                  <p style="margin:0;font-size:13px;color:#7c828a;line-height:1.5;">Cookie は使いません。IPアドレスとブラウザ情報は保存せず、日ごとに変わるハッシュだけを記録します。公開キーが漏れても、偽のアクセスを送られる以上の被害はありません。</p>
+                </section>
+                <section style="min-width:0;border:1px solid #dee1e6;border-radius:24px;padding:32px;display:grid;gap:20px;">
+                  <h2 style="font-size:18px;font-weight:600;line-height:1.33;margin:0;">受信状況</h2>
+                  <div style="display:grid;gap:14px;font-size:14px;">
+                    <div style="display:flex;justify-content:space-between;gap:16px;border-bottom:1px solid #eef0f3;padding-bottom:14px;"><span style="color:#5b616e;">状態</span><span style="font-weight:600;color:{{ site.statusColor }};">{{ site.statusLabel }}</span></div>
+                    <div style="display:flex;justify-content:space-between;gap:16px;border-bottom:1px solid #eef0f3;padding-bottom:14px;"><span style="color:#5b616e;">最終受信</span><span style="font-family:'JetBrains Mono',monospace;font-weight:500;">{{ site.lastSeen }}</span></div>
+                    <div style="display:flex;justify-content:space-between;gap:16px;border-bottom:1px solid #eef0f3;padding-bottom:14px;"><span style="color:#5b616e;">最終集計</span><span style="font-family:'JetBrains Mono',monospace;font-weight:500;">{{ site.lastRollup }}</span></div>
+                    <div style="display:flex;justify-content:space-between;gap:16px;border-bottom:1px solid #eef0f3;padding-bottom:14px;"><span style="color:#5b616e;">日付の区切り</span><span style="font-family:'JetBrains Mono',monospace;font-weight:500;">Asia/Tokyo</span></div>
+                    <div style="display:flex;justify-content:space-between;gap:16px;"><span style="color:#5b616e;">生ログの保持</span><span style="font-family:'JetBrains Mono',monospace;font-weight:500;">90 日</span></div>
+                  </div>
+                  <p style="margin:0;font-size:13px;color:#7c828a;line-height:1.5;">集計は <code style="font-family:'JetBrains Mono',monospace;font-size:12px;background:#eef0f3;padding:2px 6px;border-radius:4px;">torifune analytics rollup</code> を cron から毎日実行します。集計値は消しません。</p>
+                </section>
+              </div>
+            </sc-if>
+          </div>
+        </sc-if>
+      </div>
+    </main>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;compare&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;表示&quot;},&quot;showBots&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;表示&quot;},&quot;includeBots&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;集計&quot;}}">
+class Component extends DCLogic {
+  state = { screen: 'analytics', siteId: 'corp', tab: 'overview', period: '30日', from: '2026-08-05', to: '2026-09-03', copied: false };
+
+  constructor(props) {
+    super(props);
+    this.data = this.buildData();
+  }
+
+  rng(seed) {
+    let a = seed >>> 0;
+    return () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  }
+
+  buildData() {
+    const DAYS = 130;
+    const end = new Date(2026, 8, 3);
+    const dates = [];
+    for (let i = DAYS - 1; i >= 0; i--) { const d = new Date(end); d.setDate(end.getDate() - i); dates.push(d); }
+    const defs = [
+      { id: 'corp', name: 'コーポレートサイト', url: 'https://www.example.co.jp', key: '3f9a1c7e0b2d4f6a8c1e3b5d7f9a2c4e6b8d0f1a3c5e7b9d2f4a6c8e0b1d3f5a', base: 1400, trend: 0.0006, weekend: 0.55, uvRatio: 0.42, bounce: 0.46, dwell: 62, bot: 0.07, tracked: true,
+        hours: [1,1,1,1,1,2,3,5,8,10,11,10,8,10,11,10,9,8,6,5,4,3,2,1], devices: [0.68, 0.27, 0.05],
+        countries: [['392', '日本', 0.86], ['840', 'アメリカ', 0.05], ['156', '中国', 0.02], ['158', '台湾', 0.02], ['410', '韓国', 0.015], ['702', 'シンガポール', 0.01], ['276', 'ドイツ', 0.008], ['826', 'イギリス', 0.007], ['036', 'オーストラリア', 0.005], ['356', 'インド', 0.005]],
+        pages: [['/', 0.27], ['/products', 0.14], ['/company', 0.09], ['/news/2026-09-launch', 0.11], ['/contact', 0.06], ['/products/spec-sheet', 0.08], ['/careers', 0.05], ['/company/history', 0.04], ['/news', 0.06], ['/privacy', 0.02], ['/products/pricing', 0.05], ['/company/access', 0.03]],
+        refs: [['(direct)', 0.36], ['www.google.com', 0.34], ['search.yahoo.co.jp', 0.09], ['www.bing.com', 0.04], ['x.com', 0.05], ['www.linkedin.com', 0.03], ['news.example-media.jp', 0.04], ['b.hatena.ne.jp', 0.02], ['duckduckgo.com', 0.01], ['www.facebook.com', 0.02]],
+        lastSeen: '2026-09-03 10:41' },
+      { id: 'recruit', name: '採用サイト', url: 'https://recruit.example.co.jp', key: 'b71e04d9c2a6f8e1b3d5c7a9e2f4b6d8c0a2e4f6b8d1c3a5e7f9b2d4c6a8e0f1', base: 380, trend: 0.0025, weekend: 0.7, uvRatio: 0.48, bounce: 0.39, dwell: 95, bot: 0.05, tracked: true,
+        hours: [2,1,1,1,1,1,2,4,6,7,7,8,9,7,7,7,7,8,9,10,10,8,5,3], devices: [0.41, 0.55, 0.04],
+        countries: [['392', '日本', 0.93], ['704', 'ベトナム', 0.02], ['840', 'アメリカ', 0.015], ['356', 'インド', 0.012], ['410', '韓国', 0.01], ['156', '中国', 0.008], ['608', 'フィリピン', 0.005]],
+        pages: [['/', 0.22], ['/jobs', 0.18], ['/jobs/engineer', 0.13], ['/culture', 0.1], ['/jobs/designer', 0.07], ['/interviews/01', 0.08], ['/benefits', 0.06], ['/faq', 0.05], ['/entry', 0.07], ['/interviews/02', 0.04]],
+        refs: [['(direct)', 0.22], ['www.google.com', 0.31], ['www.wantedly.com', 0.14], ['x.com', 0.09], ['www.linkedin.com', 0.08], ['search.yahoo.co.jp', 0.06], ['www.example.co.jp', 0.07], ['note.com', 0.03]],
+        lastSeen: '2026-09-03 10:39' },
+      { id: 'media', name: 'オウンドメディア', url: 'https://media.example.co.jp', key: '9c02d8f4a1e6b3c7d5f9a2e8b4c0d6f1a3e7b9c5d2f8a4e0b6c1d7f3a9e5b2c8', base: 2600, trend: 0.004, weekend: 0.85, uvRatio: 0.55, bounce: 0.61, dwell: 148, bot: 0.09, tracked: true,
+        hours: [3,2,1,1,1,1,2,4,6,6,6,7,9,7,6,6,6,7,8,9,10,10,8,5], devices: [0.33, 0.62, 0.05],
+        countries: [['392', '日本', 0.71], ['840', 'アメリカ', 0.12], ['826', 'イギリス', 0.03], ['276', 'ドイツ', 0.025], ['124', 'カナダ', 0.02], ['356', 'インド', 0.02], ['036', 'オーストラリア', 0.015], ['250', 'フランス', 0.012], ['528', 'オランダ', 0.01], ['076', 'ブラジル', 0.01], ['158', '台湾', 0.01], ['410', '韓国', 0.008], ['702', 'シンガポール', 0.006], ['752', 'スウェーデン', 0.004]],
+        pages: [['/articles/how-we-ship-small', 0.16], ['/', 0.12], ['/articles/design-tokens-in-practice', 0.11], ['/articles/postgres-timezones', 0.1], ['/articles/marketing-stack-2026', 0.09], ['/articles/plugin-architecture', 0.08], ['/tags/engineering', 0.05], ['/articles/analytics-without-cookies', 0.09], ['/articles/hiring-2026', 0.06], ['/about', 0.03], ['/articles/oss-license-guide', 0.05], ['/newsletter', 0.03], ['/tags/design', 0.03]],
+        refs: [['www.google.com', 0.38], ['(direct)', 0.18], ['x.com', 0.13], ['b.hatena.ne.jp', 0.08], ['news.ycombinator.com', 0.05], ['search.yahoo.co.jp', 0.05], ['www.bing.com', 0.03], ['t.co', 0.03], ['zenn.dev', 0.03], ['www.linkedin.com', 0.02], ['www.facebook.com', 0.02]],
+        lastSeen: '2026-09-03 10:42' },
+      { id: 'lp', name: 'キャンペーンLP 2026秋', url: 'https://lp.example.co.jp/autumn', key: 'e5a7c9b1d3f5a7e9c1b3d5f7a9e1c3b5d7f9a1e3c5b7d9f1a3e5c7b9d1f3a5e7', tracked: false, lastSeen: null },
+    ];
+    const sites = defs.map((s, si) => {
+      if (!s.tracked) return { ...s, days: [] };
+      const r = this.rng(1000 + si);
+      const days = dates.map((d, i) => {
+        const dow = d.getDay();
+        const wk = dow === 0 || dow === 6 ? s.weekend : 1;
+        const noise = 0.82 + 0.36 * r();
+        const spike = r() > 0.97 ? 1.6 : 1;
+        const pv = Math.round(s.base * (1 + s.trend * i) * wk * noise * spike);
+        const uv = Math.round(pv * (s.uvRatio + 0.06 * (r() - 0.5)));
+        const sessions = Math.round(uv * 1.16);
+        const bounces = Math.round(sessions * (s.bounce + 0.08 * (r() - 0.5)));
+        const samples = Math.max(0, pv - sessions);
+        const dwellMs = Math.round(samples * s.dwell * 1000 * (0.85 + 0.3 * r()));
+        const bot = Math.round(pv * s.bot * (0.5 + r()) * (r() > 0.96 ? 4 : 1));
+        return { date: d, pv, uv, sessions, bounces, samples, dwellMs, bot };
+      });
+      return { ...s, days };
+    });
+    return { dates, sites };
+  }
+
+  iso(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+  short(d) { return `${d.getMonth() + 1}/${d.getDate()}`; }
+  fmt(n) { return Math.round(n).toLocaleString('ja-JP'); }
+  pct(n) { return `${(n * 100).toFixed(1)}%`; }
+  dur(ms) { const s = Math.round(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
+
+  range() {
+    const { dates } = this.data;
+    const last = dates.length - 1;
+    const idxOf = (isoStr) => dates.findIndex((d) => this.iso(d) === isoStr);
+    const p = this.state.period;
+    let a, b;
+    if (p === '7日') { a = last - 6; b = last; }
+    else if (p === '30日') { a = last - 29; b = last; }
+    else if (p === '90日') { a = last - 89; b = last; }
+    else if (p === '今月') { a = idxOf('2026-09-01'); b = last; }
+    else if (p === '前月') { a = idxOf('2026-08-01'); b = idxOf('2026-08-31'); }
+    else { a = idxOf(this.state.from); b = idxOf(this.state.to); if (a < 0) a = 0; if (b < 0) b = last; if (a > b) { const t = a; a = b; b = t; } }
+    a = Math.max(0, a);
+    return { a, b, len: b - a + 1 };
+  }
+
+  agg(site, a, b) {
+    const t = { pv: 0, uv: 0, sessions: 0, bounces: 0, samples: 0, dwellMs: 0, bot: 0 };
+    for (let i = Math.max(0, a); i <= b && i < site.days.length; i++) { const d = site.days[i]; for (const k in t) t[k] += d[k]; }
+    if (this.includeBots()) {
+      // Bot は 1 アクセス = 1 セッション = 直帰として数える（クローラは連続閲覧の間隔を持たない）。
+      t.pv += t.bot; t.uv += Math.round(t.bot * 0.6); t.sessions += t.bot; t.bounces += t.bot;
+    }
+    t.bounceRate = t.sessions ? t.bounces / t.sessions : 0;
+    t.dwellAvg = t.samples ? t.dwellMs / t.samples : 0;
+    t.perVisitor = t.uv ? t.pv / t.uv : 0;
+    return t;
+  }
+
+  delta(cur, prev, lowerIsBetter) {
+    if (!prev) return { text: '—', color: '#7c828a' };
+    const d = (cur - prev) / prev;
+    const up = d >= 0;
+    const good = lowerIsBetter ? !up : up;
+    return { text: `${up ? '+' : '−'}${Math.abs(d * 100).toFixed(1)}%`, color: Math.abs(d) < 0.0005 ? '#7c828a' : good ? '#05b169' : '#cf202f' };
+  }
+
+  deltaPt(cur, prev, lowerIsBetter) {
+    const d = (cur - prev) * 100;
+    const good = lowerIsBetter ? d <= 0 : d >= 0;
+    return { text: `${d >= 0 ? '+' : '−'}${Math.abs(d).toFixed(1)}pt`, color: Math.abs(d) < 0.05 ? '#7c828a' : good ? '#05b169' : '#cf202f' };
+  }
+
+  poly(vals, w, h, pad, max) {
+    if (!vals.length) return '';
+    const m = max ?? Math.max(...vals, 1);
+    const step = vals.length === 1 ? 0 : (w - pad * 2) / (vals.length - 1);
+    return vals.map((v, i) => `${(pad + step * i).toFixed(1)},${(pad + (h - pad * 2) * (1 - v / m)).toFixed(1)}`).join(' ');
+  }
+
+  niceMax(v) { const p = Math.pow(10, Math.floor(Math.log10(Math.max(v, 1)))); return Math.ceil(v / p) * p; }
+
+  chartFor(site, a, b, h) {
+    const days = site.days.slice(a, b + 1);
+    const ib = this.includeBots();
+    const pv = days.map((d) => d.pv + (ib ? d.bot : 0)), uv = days.map((d) => d.uv + (ib ? Math.round(d.bot * 0.6) : 0));
+    const yMax = this.niceMax(Math.max(...pv, 1));
+    // X 軸の目盛り: 日数に応じて間隔を選ぶ（7日以下は毎日、31日以下は数日おき、それ以上は週ごと）。
+    const n = days.length;
+    const stepDays = n <= 8 ? 1 : n <= 16 ? 2 : n <= 35 ? 3 : n <= 70 ? 7 : 14;
+    const ticks = [];
+    for (let i = n - 1; i >= 0; i -= stepDays) {
+      const x = n === 1 ? 300 : 6 + (600 - 12) * (i / (n - 1));
+      ticks.unshift({ x: x.toFixed(1), xPct: `${(x / 6).toFixed(2)}%`, label: this.short(days[i].date) });
+    }
+    return { pv: this.poly(pv, 600, h, 6, yMax), uv: this.poly(uv, 600, h, 6, yMax), yMax: this.fmt(yMax), yMid: this.fmt(yMax / 2), ticks,
+      first: days.length ? this.short(days[0].date) : '', mid: days.length ? this.short(days[Math.floor((days.length - 1) / 2)].date) : '', last: days.length ? this.short(days[days.length - 1].date) : '' };
+  }
+
+  sumSites(a, b) {
+    const t = { pv: 0, uv: 0, sessions: 0, bounces: 0 };
+    for (const s of this.data.sites) { if (!s.tracked) continue; const g = this.agg(s, a, b); t.pv += g.pv; t.uv += g.uv; t.sessions += g.sessions; t.bounces += g.bounces; }
+    t.bounceRate = t.sessions ? t.bounces / t.sessions : 0;
+    return t;
+  }
+
+  includeBots() { return this.state.includeBots ?? (this.props.includeBots ?? false); }
+
+  go(screen, extra) { this.setState({ screen: screen === 'site' ? 'analytics' : screen, copied: false, ...(extra || {}) }); }
+
+  kd(d) { return { delta: d.text, color: d.color }; }
+
+  renderVals() {
+    const { dates, sites } = this.data;
+    const st = this.state;
+    const { a, b, len } = this.range();
+    const pa = a - len, pb = a - 1;
+    const rangeLabel = `${this.iso(dates[a])} 〜 ${this.iso(dates[b])}`;
+    const prevRangeLabel = pa >= 0 ? `${this.iso(dates[pa])} 〜 ${this.iso(dates[pb])}` : '—';
+    const compare = this.props.compare ?? true;
+    const showBots = this.props.showBots ?? true;
+    const prevent = (fn) => (e) => { if (e && e.preventDefault) e.preventDefault(); fn(); };
+    const dl = (cur, prev, low) => compare ? this.delta(cur, prev, low) : { text: '', color: '#7c828a' };
+    const dp = (cur, prev, low) => compare ? this.deltaPt(cur, prev, low) : { text: '', color: '#7c828a' };
+
+    const navOn = { color: '#0a0b0d', bg: '#eef0f3' }, navOff = { color: '#5b616e', bg: 'transparent' };
+    const presets = ['7日', '30日', '90日', '今月', '前月', 'カスタム'].map((label) => ({
+      label, color: st.period === label ? '#0a0b0d' : '#5b616e', bg: st.period === label ? '#ffffff' : 'transparent',
+      select: () => this.setState({ period: label }),
+    }));
+
+    const cur = this.sumSites(a, b), prev = this.sumSites(pa, pb);
+    const total = {
+      pv: this.fmt(cur.pv), pvDelta: dl(cur.pv, prev.pv).text, pvColor: dl(cur.pv, prev.pv).color,
+      uv: this.fmt(cur.uv), uvDelta: dl(cur.uv, prev.uv).text, uvColor: dl(cur.uv, prev.uv).color,
+      sessions: this.fmt(cur.sessions), sessionsDelta: dl(cur.sessions, prev.sessions).text, sessionsColor: dl(cur.sessions, prev.sessions).color,
+      trackedCount: sites.filter((s) => s.tracked).length,
+    };
+    const siteCards = sites.map((s) => {
+      const open = prevent(() => this.go('site', { siteId: s.id, tab: 'overview' }));
+      const openSettings = prevent(() => this.go('site', { siteId: s.id, tab: 'settings' }));
+      if (!s.tracked) return { name: s.name, url: s.url, tracked: false, untracked: true, open, openSettings };
+      const c = this.agg(s, a, b), p = this.agg(s, pa, pb);
+      const days = s.days.slice(a, b + 1);
+      const mx = Math.max(...days.map((d) => d.pv), 1);
+      return { name: s.name, url: s.url, tracked: true, untracked: false, open, openSettings,
+        spark: this.poly(days.map((d) => d.pv), 400, 64, 3, mx), sparkUv: this.poly(days.map((d) => d.uv), 400, 64, 3, mx),
+        pv: this.fmt(c.pv), pvDelta: dl(c.pv, p.pv).text, pvColor: dl(c.pv, p.pv).color,
+        uv: this.fmt(c.uv), uvDelta: dl(c.uv, p.uv).text, uvColor: dl(c.uv, p.uv).color,
+        bounce: this.pct(c.bounceRate), bounceDelta: dp(c.bounceRate, p.bounceRate, true).text, bounceColor: dp(c.bounceRate, p.bounceRate, true).color };
+    });
+
+    const last = dates.length - 1, da = last - 6, dpa = da - 7, dpb = da - 1;
+    const dc = this.sumSites(da, last), dpv = this.sumSites(dpa, dpb);
+    const dashDays = sites.filter((s) => s.tracked).map((s) => s.days.slice(da, last + 1));
+    const ib = this.includeBots();
+    const dashPv = Array.from({ length: 7 }, (_, i) => dashDays.reduce((acc, d) => acc + d[i].pv + (ib ? d[i].bot : 0), 0));
+    const dashUv = Array.from({ length: 7 }, (_, i) => dashDays.reduce((acc, d) => acc + d[i].uv, 0));
+    const dmx = Math.max(...dashPv, 1);
+    const dash = {
+      rangeLabel: `${this.short(dates[da])} 〜 ${this.short(dates[last])}`,
+      pv: this.fmt(dc.pv), pvDelta: this.delta(dc.pv, dpv.pv).text, pvColor: this.delta(dc.pv, dpv.pv).color,
+      uv: this.fmt(dc.uv), uvDelta: this.delta(dc.uv, dpv.uv).text, uvColor: this.delta(dc.uv, dpv.uv).color,
+      bounce: this.pct(dc.bounceRate), bounceDelta: this.deltaPt(dc.bounceRate, dpv.bounceRate, true).text, bounceColor: this.deltaPt(dc.bounceRate, dpv.bounceRate, true).color,
+      chart: { pv: this.poly(dashPv, 600, 160, 8, dmx), uv: this.poly(dashUv, 600, 160, 8, dmx), first: this.short(dates[da]), last: this.short(dates[last]) },
+      rows: sites.filter((s) => s.tracked).map((s) => { const c = this.agg(s, da, last), p = this.agg(s, dpa, dpb); const d = this.delta(c.pv, p.pv);
+        return { name: s.name, pv: this.fmt(c.pv), uv: this.fmt(c.uv), delta: d.text, color: d.color, open: prevent(() => this.go('site', { siteId: s.id, tab: 'overview', period: '7日' })) }; }),
+    };
+
+    // 実施中のキャンペーン（ダッシュボード）: 対象サイトの直近7日 PV を合算し、期間の進み具合を出す。
+    const today = dates[last];
+    const campaignDefs = [
+      { name: '秋の新製品キャンペーン', siteIds: ['corp', 'lp'], start: new Date(2026, 8, 1), end: new Date(2026, 9, 31), posts: { published: 3, scheduled: 1, failed: 1 } },
+      { name: 'エンジニア採用強化 2026', siteIds: ['recruit'], start: new Date(2026, 6, 1), end: null, posts: { published: 4, scheduled: 0, failed: 0 } },
+    ];
+    const activeCampaigns = campaignDefs.map((cp) => {
+      const targets = sites.filter((s) => cp.siteIds.includes(s.id));
+      let pvC = 0, pvP = 0;
+      for (const s of targets) { if (!s.tracked) continue; pvC += this.agg(s, da, last).pv; pvP += this.agg(s, dpa, dpb).pv; }
+      const d = this.delta(pvC, pvP);
+      const dayMs = 86400000;
+      const elapsed = Math.max(0, Math.floor((today - cp.start) / dayMs) + 1);
+      const totalDays = cp.end ? Math.floor((cp.end - cp.start) / dayMs) + 1 : null;
+      const remain = cp.end ? Math.max(0, Math.floor((cp.end - today) / dayMs)) : null;
+      const untracked = targets.filter((s) => !s.tracked).length;
+      return { name: cp.name, sites: targets.map((s) => s.name).join('、') + (untracked ? `（未計測 ${untracked}）` : ''),
+        period: `${this.iso(cp.start)} 〜 ${cp.end ? this.iso(cp.end) : '（未定）'}`,
+        progress: totalDays ? Math.min(100, Math.round(elapsed / totalDays * 100)) : 100,
+        progressLabel: totalDays ? `${elapsed} / ${totalDays} 日 · 残り ${remain} 日` : `${elapsed} 日目 · 終了日未定`,
+        pv: this.fmt(pvC), delta: d.text, deltaColor: d.color,
+        posts: `配信 ${cp.posts.published} · 予約 ${cp.posts.scheduled}` + (cp.posts.failed ? ` · 失敗 ${cp.posts.failed}` : ''), postsColor: cp.posts.failed ? '#cf202f' : '#5b616e' };
+    });
+
+    const site = sites.find((s) => s.id === st.siteId) || sites[0];
+    const siteEmpty = !site.tracked;
+    const siteTabs = sites.map((s) => ({ id: s.id, name: s.name, optionLabel: s.tracked ? s.name : `${s.name}（未設置）` }));
+    const selectSite = (e) => { const s = sites.find((x) => x.id === e.target.value) || sites[0]; this.setState({ siteId: s.id, tab: s.tracked || st.tab === 'settings' ? st.tab : 'overview', copied: false }); };
+    const tabDefs = [['overview', '概要'], ['pages', 'ページ'], ['referrers', '参照元'], ['visitors', '訪問者'], ['settings', '設定']];
+    const tabs = tabDefs.map(([key, label]) => ({ label, color: st.tab === key ? '#0a0b0d' : '#7c828a', border: st.tab === key ? '#0052ff' : 'transparent', select: prevent(() => this.setState({ tab: key, copied: false })) }));
+    const tabIs = (k) => st.tab === k && !siteEmpty;
+    const c = site.tracked ? this.agg(site, a, b) : this.agg({ days: [] }, 0, -1);
+    const p = site.tracked ? this.agg(site, pa, pb) : c;
+    const kpis = [
+      { label: 'ページビュー', value: this.fmt(c.pv), ...this.kd(dl(c.pv, p.pv)) },
+      { label: '訪問者', value: this.fmt(c.uv), ...this.kd(dl(c.uv, p.uv)) },
+      { label: 'セッション', value: this.fmt(c.sessions), ...this.kd(dl(c.sessions, p.sessions)) },
+      { label: '直帰率', value: this.pct(c.bounceRate), ...this.kd(dp(c.bounceRate, p.bounceRate, true)) },
+      { label: '平均滞在時間', value: this.dur(c.dwellAvg), ...this.kd(dl(c.dwellAvg, p.dwellAvg)) },
+    ];
+    const visitorKpis = [
+      { label: '訪問者', value: this.fmt(c.uv), ...this.kd(dl(c.uv, p.uv)) },
+      { label: 'セッション', value: this.fmt(c.sessions), ...this.kd(dl(c.sessions, p.sessions)) },
+      { label: '訪問者あたりページビュー', value: c.perVisitor.toFixed(2), ...this.kd(dl(c.perVisitor, p.perVisitor)) },
+      { label: '1日あたり訪問者', value: this.fmt(c.uv / len), ...this.kd(dl(c.uv / len, p.uv / len)) },
+    ];
+    const chart = site.tracked ? this.chartFor(site, a, b, 220) : { pv: '', uv: '', yMax: '0', yMid: '0', first: '', mid: '', last: '', ticks: [] };
+    const r2 = this.rng(77);
+    const pagesAll = site.tracked ? site.pages.map(([path, w]) => { const pv = Math.round(c.pv * w); const landing = Math.round(c.sessions * w * (0.6 + 0.8 * r2())); const br = Math.min(0.92, Math.max(0.12, site.bounce + (r2() - 0.5) * 0.3));
+      return { path, pvN: pv, pv: this.fmt(pv), uv: this.fmt(pv * (0.55 + 0.35 * r2())), landing: this.fmt(landing), bounce: this.pct(br), dwell: this.dur(site.dwell * 1000 * (0.5 + r2())) }; }).sort((x, y) => y.pvN - x.pvN) : [];
+    const pMax = pagesAll.length ? pagesAll[0].pvN : 1;
+    const pages = pagesAll.map((pg) => ({ ...pg, pct: Math.round(pg.pvN / pMax * 100) }));
+    const refsAll = site.tracked ? site.refs.map(([host, w]) => { const s = Math.round(c.sessions * w); const br = Math.min(0.92, Math.max(0.12, site.bounce + (r2() - 0.5) * 0.3));
+      return { host, sN: s, sessions: this.fmt(s), uv: this.fmt(s * 0.88), bounce: this.pct(br), share: this.pct(w) }; }).sort((x, y) => y.sN - x.sN) : [];
+    const rMax = refsAll.length ? refsAll[0].sN : 1;
+    const referrers = refsAll.map((r) => ({ ...r, pct: Math.round(r.sN / rMax * 100) }));
+    const hw = site.tracked ? site.hours : [];
+    const hSum = hw.reduce((x, y) => x + y, 0) || 1, hMax = Math.max(...hw, 1);
+    let peak = 0; hw.forEach((v, i) => { if (v > hw[peak]) peak = i; });
+    const hours = hw.map((v, i) => ({ pct: Math.round(v / hMax * 100), bg: i === peak ? '#0052ff' : '#a8b8cc', title: `${i}時 ${this.fmt(c.pv * v / hSum)}` }));
+    const devLabels = ['デスクトップ', 'モバイル', 'タブレット'];
+    const dv = site.tracked ? site.devices : [];
+    // デバイス別: 人の PV を desktop/mobile/tablet に配分し、スイッチがオンなら Bot を1行足す。
+    const humanPvN = c.pv - (ib ? c.bot : 0);
+    const devRows = dv.map((w, i) => ({ label: devLabels[i], n: humanPvN * w }));
+    if (ib && site.tracked) devRows.push({ label: 'Bot', n: c.bot });
+    const devTotal = devRows.reduce((x, r) => x + r.n, 0) || 1, devMax = Math.max(...devRows.map((r) => r.n), 1);
+    const devices = devRows.map((r) => ({ label: r.label, share: this.pct(r.n / devTotal), pv: this.fmt(r.n), pct: Math.round(r.n / devMax * 100) }));
+    // 国別: 人の PV を国ごとの重みで配分。地図は別ファイル（d3）に hash で渡す。
+    const geoRows = site.tracked ? site.countries.map(([id, name, w]) => ({ id, name, w, n: humanPvN * w })) : [];
+    const geoMax = Math.max(...geoRows.map((r) => r.n), 1);
+    const countries = geoRows.map((r) => ({ name: r.name, pv: this.fmt(r.n), share: this.pct(r.w), pct: Math.round(r.n / geoMax * 100) }));
+    const mapData = {}; for (const r of geoRows) mapData[r.id] = { name: r.name, pv: Math.round(r.n), share: this.pct(r.w) };
+    const mapSrc = 'world-map.html#' + encodeURIComponent(JSON.stringify(mapData));
+    const geoNote = site.tracked ? `${geoRows.length} か国 · IP から国だけを推定し、IP は保存しません` : '';
+    let botPeak = a; if (site.tracked) for (let i = a; i <= b; i++) if (site.days[i].bot > site.days[botPeak].bot) botPeak = i;
+    const snippet = '<' + 'script src="https://torifune.example.com/t.js" data-site="' + site.key + '"></' + 'script>';
+
+    return {
+      isDashboard: st.screen === 'dashboard', isAnalytics: st.screen !== 'dashboard',
+      navDash: st.screen === 'dashboard' ? navOn : navOff, navAna: st.screen !== 'dashboard' ? navOn : navOff,
+      goDashboard: prevent(() => this.go('dashboard')), goAnalytics: prevent(() => this.go('analytics')),
+      presets, isCustom: st.period === 'カスタム', from: this.iso(dates[a]), to: this.iso(dates[b]),
+      // 日付を直接触ったら「カスタム」へ切り替える。もう片方は現在の期間の値を引き継ぐ。
+      setFrom: (e) => this.setState({ period: 'カスタム', from: e.target.value, to: this.iso(dates[b]) }),
+      setTo: (e) => this.setState({ period: 'カスタム', from: this.iso(dates[a]), to: e.target.value }),
+      rangeLabel, prevRangeLabel, total, siteCards, dash, showBots, activeCampaigns,
+      site: { name: site.name, url: site.url, lastSeen: site.lastSeen || '—', lastRollup: site.tracked ? '2026-09-03 03:00' : '—', statusLabel: site.tracked ? '受信中' : '未受信', statusColor: site.tracked ? '#05b169' : '#7c828a' },
+      siteEmpty: siteEmpty && st.tab !== 'settings', tabs, siteTabs, siteId: site.id, selectSite,
+      includeBotsAria: ib ? 'true' : 'false', botSwitch: { bg: ib ? '#0052ff' : '#dee1e6', left: ib ? '19px' : '3px' },
+      toggleBots: () => this.setState({ includeBots: !ib }),
+      botTabNote: ib ? '現在、他の指標にも Bot を含めています' : '現在、他の指標から Bot を除いています',
+      botNote: ib ? `Bot と判定したアクセス ${this.fmt(c.bot)} 件を集計に含めています。` : `Bot と判定したアクセス ${this.fmt(c.bot)} 件は集計に含めていません。`,
+      tabOverview: tabIs('overview'), tabPages: tabIs('pages'), tabReferrers: tabIs('referrers'), tabVisitors: tabIs('visitors'), tabSettings: st.tab === 'settings',
+      openSettingsTab: () => this.setState({ tab: 'settings' }),
+      openPagesTab: prevent(() => this.setState({ tab: 'pages' })), openReferrersTab: prevent(() => this.setState({ tab: 'referrers' })),
+      kpis, visitorKpis, chart, topPages: pages.slice(0, 5), topReferrers: referrers.slice(0, 5), pages, pageCount: pages.length, referrers,
+      hours, peakHour: `${peak}時台`, devices, countries, mapSrc, geoNote,
+      botCount: this.fmt(c.bot), botShare: this.pct((c.pv - (ib ? c.bot : 0)) + c.bot ? c.bot / ((c.pv - (ib ? c.bot : 0)) + c.bot) : 0), humanPv: this.fmt(c.pv - (ib ? c.bot : 0)), botPeakDay: site.tracked ? this.short(site.days[botPeak].date) : '—',
+      snippet, copyLabel: st.copied ? 'コピーしました' : 'タグをコピー',
+      copySnippet: () => { try { if (navigator.clipboard) navigator.clipboard.writeText(snippet); } catch (e) {} this.setState({ copied: true }); },
+    };
+  }
+}
+</script>
+</body>
+</html>
