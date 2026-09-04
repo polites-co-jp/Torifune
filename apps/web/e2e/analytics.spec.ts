@@ -2,14 +2,21 @@ import {
   expect,
   test,
   type APIRequestContext,
+  type Locator,
   type Page,
   type PlaywrightWorkerArgs,
 } from '@playwright/test';
+import pg from 'pg';
 
 /**
- * アクセス解析（05_API設計.md §20、06_画面設計.md §15、018-analytics）。
+ * アクセス解析（05_API設計.md §20、06_画面設計.md §15、018-analytics、
+ * 028-analytics-dashboard-redesign 設計 §7.3、受け入れ条件 #36〜#39・#75〜#89）。
  *
  * 「サイトアクセスをすべて集める」を Torifune 自身が行う経路を通しで見る。
+ *
+ * `/analytics` は `028` で「1 サイトずつ・期間プリセットと前期間比較つき・5 タブ」になった。
+ * 状態はすべて URL パラメータ（`siteId` / `tab` / `period` / `from` / `to` / `bots` / `page`）で持つ。
+ * 計測タグは「設定」タブに移った。
  */
 
 const origin = 'http://127.0.0.1:3000';
@@ -42,32 +49,97 @@ function today(): string {
   }).format(new Date());
 }
 
-/** サイトを作り、画面から公開キーを読む。 */
+/** `YYYY-MM-DD` を日数ぶんずらす（文字列の日付演算。タイムゾーンに依らない）。 */
+function shiftDate(date: string, days: number): string {
+  const time = Date.parse(`${date}T00:00:00Z`) + days * 86_400_000;
+  return new Date(time).toISOString().slice(0, 10);
+}
+
+/** `period=custom&from=今日&to=今日` の前期間は「昨日〜昨日」（設計 §7.3.1）。 */
+function yesterday(): string {
+  return shiftDate(today(), -1);
+}
+
+function unique(): string {
+  return Math.random().toString(36).slice(2, 8);
+}
+
+/** サイトを作る。名前は `analytics-` で始める。 */
 async function makeTrackedSite(request: APIRequestContext): Promise<string> {
   const token = await csrf(request);
   const response = await request.post('/api/v1/sites', {
     headers: headers(token),
     data: {
-      name: `analytics-${Math.random().toString(36).slice(2, 8)}`,
+      name: `analytics-${unique()}`,
       url: 'https://analytics.example.com',
       description: '',
       status: 'active',
       csrfToken: token,
     },
   });
-  expect(response.status()).toBe(201);
+  expect(response.status(), await response.text()).toBe(201);
   return ((await response.json()) as { data: { id: string } }).data.id;
 }
 
-/** 画面から公開キーを読む（API では返していない）。 */
-async function publicKeyOf(page: Page, siteId: string): Promise<string> {
-  await page.goto(`/analytics?siteId=${siteId}`);
-  const snippet = await page
-    .locator(`[data-tracking-snippet][data-site-id="${siteId}"]`)
-    .textContent();
+/** 設定タブに描いた計測タグ。 */
+function snippetOf(page: Page, siteId: string): Locator {
+  return page.locator(`[data-tracking-snippet][data-site-id="${siteId}"]`);
+}
+
+/** 計測タグの文字列から `data-site` の値（公開キー）を取り出す。 */
+function publicKeyIn(snippet: string | null): string {
   const publicKey = /data-site="([^"]+)"/.exec(snippet ?? '')?.[1];
   expect(publicKey).toBeDefined();
   return publicKey ?? '';
+}
+
+/**
+ * 画面から公開キーを読む（API では返していない）。
+ * 計測タグは `/analytics?siteId=…&tab=settings`（設計 §10 末尾）。
+ */
+async function publicKeyOf(page: Page, siteId: string): Promise<string> {
+  await page.goto(`/analytics?siteId=${siteId}&tab=settings`);
+  return publicKeyIn(await snippetOf(page, siteId).textContent());
+}
+
+/** 計測タグと同じことをする。 */
+async function collectHits(
+  request: APIRequestContext,
+  publicKey: string,
+  paths: readonly string[],
+  extraHeaders: Record<string, string> = {},
+): Promise<void> {
+  for (const path of paths) {
+    const response = await request.post('/api/v1/collect', {
+      headers: { Cookie: '', ...extraHeaders },
+      data: { key: publicKey, path },
+    });
+    expect(response.status()).toBe(204);
+  }
+}
+
+/**
+ * Bot の User-Agent で 1 件送る。
+ * `collect` は `User-Agent` ヘッダで Bot を判定する（018 設計 §3.3）。
+ */
+const BOT_USER_AGENT = 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)';
+
+async function collectBotHit(
+  request: APIRequestContext,
+  publicKey: string,
+  path = '/',
+): Promise<void> {
+  await collectHits(request, publicKey, [path], { 'User-Agent': BOT_USER_AGENT });
+}
+
+/** 今日の分を集計する（cron から API Token で叩く想定の口）。 */
+async function rollupToday(request: APIRequestContext): Promise<void> {
+  const token = await csrf(request);
+  const rollup = await request.post('/api/v1/analytics/rollup', {
+    headers: headers(token),
+    data: { from: today(), to: today(), csrfToken: token },
+  });
+  expect(rollup.status(), await rollup.text()).toBe(200);
 }
 
 /** 今日の分を集計し、指標を読む。 */
@@ -76,20 +148,166 @@ async function metricToday(
   siteId: string,
   metric: string,
 ): Promise<number> {
-  const token = await csrf(request);
-  const rollup = await request.post('/api/v1/analytics/rollup', {
-    headers: headers(token),
-    data: { from: today(), to: today(), csrfToken: token },
-  });
-  expect(rollup.status()).toBe(200);
+  await rollupToday(request);
 
   const analytics = await request.get(
-    `/api/v1/analytics?siteId=${siteId}&from=${today()}&to=${today()}`,
+    `/api/v1/analytics?siteId=${siteId}&from=${today()}&to=${today()}&key=&perPage=100`,
   );
   expect(analytics.status()).toBe(200);
   const points = ((await analytics.json()) as { data: { metric: string; value: number }[] }).data;
   return points.find((point) => point.metric === metric)?.value ?? 0;
 }
+
+/** サイトを作り、`/` × 2、`/pricing` × 1、`/about` × 1 を記録して集計する。 */
+async function makeRolledUpSite(page: Page, request: APIRequestContext): Promise<string> {
+  const siteId = await makeTrackedSite(request);
+  const publicKey = await publicKeyOf(page, siteId);
+  await collectHits(request, publicKey, ['/', '/', '/pricing', '/about']);
+  await rollupToday(request);
+  return siteId;
+}
+
+/** 今日 1 日だけを見る URL。 */
+function todayUrl(siteId: string, extra = ''): string {
+  return `/analytics?siteId=${siteId}&period=custom&from=${today()}&to=${today()}${extra}`;
+}
+
+function breakdownUrl(siteId: string, extra = ''): string {
+  return `/api/v1/analytics/breakdown?siteId=${siteId}&from=${today()}&to=${today()}&metric=path_pageviews${extra}`;
+}
+
+/**
+ * データベースへ直接触る（`global-setup.ts` と同じ経路）。
+ *
+ * 使うのは 2 箇所だけ。
+ * - サイトを 0 件にする（#89）。API には「全部消す」口が無い
+ * - 前期間の集計値を入れる（#86）。`collect` は `occurred_at` を今にするので、
+ *   昨日の分は API からは作れない。`source = 'e2e'` の行を `analytics` へ直接入れる
+ *   （画面は出所をまたいで足す。設計 §7.3.3）
+ */
+async function withDatabase<T>(fn: (client: pg.Client) => Promise<T>): Promise<T> {
+  const connectionString = process.env['DATABASE_URL'];
+  expect(connectionString, 'E2E には DATABASE_URL が必要').toBeTruthy();
+  const client = new pg.Client({ connectionString });
+  await client.connect();
+  try {
+    return await fn(client);
+  } finally {
+    await client.end();
+  }
+}
+
+/** 前期間の集計値を `source = 'e2e'`・`key = ''` で入れる。 */
+async function seedAnalytics(
+  siteId: string,
+  metricDate: string,
+  values: Readonly<Record<string, number>>,
+): Promise<void> {
+  await withDatabase(async (client) => {
+    for (const [metric, value] of Object.entries(values)) {
+      await client.query(
+        `INSERT INTO analytics (site_id, metric_date, source, metric, key, value)
+         VALUES ($1, $2, 'e2e', $3, '', $4)`,
+        [siteId, metricDate, metric, value],
+      );
+    }
+  });
+}
+
+/**
+ * **ロールを 1 つも持たない利用者**でログインした request context を作る。
+ *
+ * `viewer` は `analytics.read` を持つので、権限が無い状態は `roles: []` でしか作れない。
+ * `POST /users` の `roles` は省略可（既定 `[]`）で、API から作れる。
+ */
+async function contextWithoutPermissions(
+  request: APIRequestContext,
+  playwright: PlaywrightWorkerArgs['playwright'],
+): Promise<APIRequestContext> {
+  const token = await csrf(request);
+  const loginId = `e2e_noperm_${Math.random().toString(36).slice(2, 10)}`;
+  const password = 'e2e analytics no permission user password';
+  const created = await request.post('/api/v1/users', {
+    headers: headers(token),
+    data: {
+      loginId,
+      displayName: `E2E ${loginId}`,
+      email: `${loginId}@example.com`,
+      password,
+      roles: [],
+      csrfToken: token,
+    },
+  });
+  expect(created.status(), await created.text()).toBe(201);
+
+  const context = await playwright.request.newContext({ baseURL: origin });
+  const loginToken = await csrf(context);
+  const login = await context.post('/api/v1/auth/login', {
+    headers: headers(loginToken),
+    data: { loginId, password, csrfToken: loginToken },
+  });
+  expect(login.status(), await login.text()).toBe(200);
+  return context;
+}
+
+/*
+ * 画面の locator（設計 §7.3.2 / §7.4.2）。
+ *
+ * - 期間プリセット：`SegmentedControl`。`Tabs` と同じくリンクの並びで、選択中に `aria-current="page"`。
+ *   「前月」を含む `nav` として探す
+ * - タブ：`Tabs`（`nav` + リンク）。「参照元」を含む `nav` として探す
+ * - サイト：`<select>`。アクセシブル名は「サイト」（`aria-label` か `<label>`）
+ * - Bot：`Switch`。`role="switch"`、名前は「Bot を集計に含める」
+ * - Stat：label と value（と `delta` の `<span data-tone>`）が同じ親要素の中にある。
+ *   label のテキストの親をタイルとみなす。**タブ nav のリンク（「訪問者」など）が
+ *   タブの中身より DOM 上で先にある**ので、`nav` の中とリンクは除いて探す
+ */
+function presetNav(page: Page): Locator {
+  return page
+    .getByRole('navigation')
+    .filter({ has: page.getByRole('link', { name: '前月', exact: true }) });
+}
+
+function tabNav(page: Page): Locator {
+  return page
+    .getByRole('navigation')
+    .filter({ has: page.getByRole('link', { name: '参照元', exact: true }) });
+}
+
+function siteSelect(page: Page): Locator {
+  return page.getByRole('combobox', { name: 'サイト' });
+}
+
+function botSwitch(page: Page): Locator {
+  return page.getByRole('switch', { name: 'Bot を集計に含める' });
+}
+
+function statTile(page: Page, label: string): Locator {
+  return page
+    .getByText(label, { exact: true })
+    .and(page.locator(':not(nav *):not(a)'))
+    .first()
+    .locator('..');
+}
+
+/**
+ * #89。サイトが 0 件のときの空状態。
+ *
+ * **このファイルの先頭に置く。** `global-setup` がサイトを全部消した直後の状態で開きたいが、
+ * 実行順に依存させないため、ここでも `sites` を空にしてから開く（他のテストは
+ * 自分でサイトを作るので、消しても壊れない）。E2E は `workers: 1` で直列。
+ */
+test('サイトが 0 件なら「Webサイトを登録すると」の空状態と /sites/new への導線が出る', async ({
+  page,
+}) => {
+  await withDatabase((client) => client.query('DELETE FROM sites'));
+
+  await page.goto('/analytics');
+
+  await expect(page.getByRole('heading', { name: 'アナリティクス' })).toBeVisible();
+  await expect(page.getByText('Webサイトを登録すると', { exact: false })).toBeVisible();
+  await expect(page.locator('a[href="/sites/new"]')).toBeVisible();
+});
 
 test('計測スクリプトが配られる', async ({ request }) => {
   const response = await request.get('/t.js');
@@ -115,62 +333,624 @@ test('計測タグの受け口は認証なしで叩けて、結果を返さな�
   expect(response.status()).toBe(204);
 });
 
-test('登録したサイトの計測タグが、絞り込まなくても出る', async ({ page, request }) => {
-  // 絞り込みを待たせると、登録したサイトが見当たらないように見える。
-  const siteId = await makeTrackedSite(request);
+/**
+ * #75。画面の骨格（設計 §7.3.2）。既定は 30 日・概要。
+ */
+test.describe('画面の骨格', () => {
+  test('見出し「アナリティクス」と期間プリセットが出て、既定は「30日」が選択中', async ({
+    page,
+    request,
+  }) => {
+    const siteId = await makeTrackedSite(request);
 
-  await page.goto('/analytics');
+    await page.goto(`/analytics?siteId=${siteId}`);
 
-  const snippet = page.locator(`[data-tracking-snippet][data-site-id="${siteId}"]`);
-  await expect(snippet).toBeVisible();
-  await expect(snippet).toContainText('data-site=');
+    await expect(page.getByRole('heading', { name: 'アナリティクス' })).toBeVisible();
+    const nav = presetNav(page);
+    for (const label of ['7日', '30日', '90日', '今月', '前月', 'カスタム']) {
+      await expect(nav.getByRole('link', { name: label, exact: true })).toBeVisible();
+    }
+    await expect(nav.getByRole('link', { name: '30日', exact: true })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+    await expect(nav.getByRole('link', { name: '7日', exact: true })).not.toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+  });
+
+  test('period=7d なら「7日」が選択中になる', async ({ page, request }) => {
+    const siteId = await makeTrackedSite(request);
+
+    await page.goto(`/analytics?siteId=${siteId}&period=7d`);
+
+    const nav = presetNav(page);
+    await expect(nav.getByRole('link', { name: '7日', exact: true })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+    await expect(nav.getByRole('link', { name: '30日', exact: true })).not.toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+  });
+
+  test('サイトの <select> が出て、URL の siteId が選ばれている', async ({ page, request }) => {
+    const siteId = await makeTrackedSite(request);
+
+    await page.goto(`/analytics?siteId=${siteId}`);
+
+    await expect(siteSelect(page)).toBeVisible();
+    await expect(siteSelect(page)).toHaveValue(siteId);
+  });
+
+  test('サイトを選ぶと URL の siteId が変わる', async ({ page, request }) => {
+    const first = await makeTrackedSite(request);
+    const second = await makeTrackedSite(request);
+
+    await page.goto(`/analytics?siteId=${first}`);
+    await siteSelect(page).selectOption(second);
+
+    await page.waitForURL((url) => url.searchParams.get('siteId') === second);
+    await expect(siteSelect(page)).toHaveValue(second);
+  });
+
+  test('「Bot を集計に含める」スイッチが出て、既定はオフ', async ({ page, request }) => {
+    const siteId = await makeTrackedSite(request);
+
+    await page.goto(`/analytics?siteId=${siteId}`);
+
+    await expect(botSwitch(page)).toBeVisible();
+    await expect(botSwitch(page)).toHaveAttribute('aria-checked', 'false');
+  });
+
+  test('スイッチを押すと bots=1 になり、オンとして描かれる', async ({ page, request }) => {
+    const siteId = await makeTrackedSite(request);
+
+    await page.goto(`/analytics?siteId=${siteId}`);
+    await botSwitch(page).click();
+
+    await page.waitForURL((url) => url.searchParams.get('bots') === '1');
+    await expect(botSwitch(page)).toHaveAttribute('aria-checked', 'true');
+  });
+
+  test('5 つのタブが出て、既定は「概要」が選択中', async ({ page, request }) => {
+    const siteId = await makeTrackedSite(request);
+
+    await page.goto(`/analytics?siteId=${siteId}`);
+
+    const nav = tabNav(page);
+    for (const label of ['概要', 'ページ', '参照元', '訪問者', '設定']) {
+      await expect(nav.getByRole('link', { name: label, exact: true })).toBeVisible();
+    }
+    await expect(nav.getByRole('link', { name: '概要', exact: true })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+  });
+
+  test('タブを押すと URL の tab が変わる', async ({ page, request }) => {
+    const siteId = await makeTrackedSite(request);
+
+    await page.goto(`/analytics?siteId=${siteId}`);
+    await tabNav(page).getByRole('link', { name: 'ページ', exact: true }).click();
+
+    await page.waitForURL((url) => url.searchParams.get('tab') === 'pages');
+    await expect(tabNav(page).getByRole('link', { name: 'ページ', exact: true })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+  });
 });
 
-test('計測タグの src が絶対 URL になっている', async ({ page, request }) => {
-  // 相対パスのまま他所のサイトへ貼ると、貼った先の /t.js を探しに行って届かない。
-  const siteId = await makeTrackedSite(request);
+/**
+ * #76。未設置サイト（計測したことが無い）の導線（設計 §7.3.7）。
+ */
+test.describe('未設置サイトの導線', () => {
+  test('選択肢に「（未設置）」が付く', async ({ page, request }) => {
+    const siteId = await makeTrackedSite(request);
 
-  await page.goto('/analytics');
+    await page.goto(`/analytics?siteId=${siteId}`);
 
-  const snippet = await page
-    .locator(`[data-tracking-snippet][data-site-id="${siteId}"]`)
-    .textContent();
+    await expect(siteSelect(page)).toHaveValue(siteId);
+    await expect(siteSelect(page).locator('option:checked')).toHaveText(/（未設置）$/);
+  });
 
-  const src = /src="([^"]+)"/.exec(snippet ?? '')?.[1] ?? '';
-  expect(src.startsWith('http://') || src.startsWith('https://')).toBe(true);
-  expect(src.endsWith('/t.js')).toBe(true);
+  test('本文に「まだアクセスの記録がありません」と「計測タグを取得」が出る', async ({
+    page,
+    request,
+  }) => {
+    const siteId = await makeTrackedSite(request);
+
+    await page.goto(`/analytics?siteId=${siteId}`);
+
+    await expect(page.getByText('計測タグ未設置')).toBeVisible();
+    await expect(
+      page.getByRole('heading', { name: 'まだアクセスの記録がありません' }),
+    ).toBeVisible();
+    await expect(page.getByText('計測タグをサイトへ貼り', { exact: false })).toBeVisible();
+    await expect(page.getByRole('button', { name: '計測タグを取得' })).toBeVisible();
+  });
+
+  test('「計測タグを取得」を押すと tab=settings になり計測タグが出る', async ({
+    page,
+    request,
+  }) => {
+    const siteId = await makeTrackedSite(request);
+
+    await page.goto(`/analytics?siteId=${siteId}`);
+    await page.getByRole('button', { name: '計測タグを取得' }).click();
+
+    await page.waitForURL((url) => url.searchParams.get('tab') === 'settings');
+    expect(new URL(page.url()).searchParams.get('siteId')).toBe(siteId);
+    await expect(snippetOf(page, siteId)).toBeVisible();
+  });
+
+  test('計測して集計すると「（未設置）」が外れ、導線が消える', async ({ page, request }) => {
+    const siteId = await makeTrackedSite(request);
+    const publicKey = await publicKeyOf(page, siteId);
+    await collectHits(request, publicKey, ['/']);
+    await rollupToday(request);
+
+    await page.goto(todayUrl(siteId));
+
+    await expect(siteSelect(page).locator('option:checked')).not.toHaveText(/（未設置）/);
+    await expect(page.getByRole('heading', { name: 'まだアクセスの記録がありません' })).toHaveCount(
+      0,
+    );
+  });
 });
 
-test('サイトを絞り込むと、そのサイトのタグだけになる', async ({ page, request }) => {
-  const first = await makeTrackedSite(request);
-  const second = await makeTrackedSite(request);
+/**
+ * #77。計測 → 集計 → 画面（概要タブ）。
+ */
+test.describe('概要タブ', () => {
+  test('集計後の概要にページビューの値が出る', async ({ page, request }) => {
+    const siteId = await makeTrackedSite(request);
+    const publicKey = await publicKeyOf(page, siteId);
+    await collectHits(request, publicKey, ['/', '/', '/pricing']);
 
-  await page.goto(`/analytics?siteId=${second}`);
+    // 集計する（cron から API Token で叩く想定の口）。
+    expect(await metricToday(request, siteId, 'pageviews')).toBe(3);
 
-  await expect(page.locator(`[data-tracking-snippet][data-site-id="${second}"]`)).toBeVisible();
-  await expect(page.locator(`[data-tracking-snippet][data-site-id="${first}"]`)).toHaveCount(0);
+    await page.goto(todayUrl(siteId));
+
+    await expect(page.getByRole('heading', { name: 'アナリティクス' })).toBeVisible();
+    await expect(statTile(page, 'ページビュー')).toContainText('3');
+  });
+
+  test('集計後の概要に /pricing を含む上位ページが出る', async ({ page, request }) => {
+    const siteId = await makeTrackedSite(request);
+    const publicKey = await publicKeyOf(page, siteId);
+    await collectHits(request, publicKey, ['/', '/', '/pricing']);
+    await rollupToday(request);
+
+    await page.goto(todayUrl(siteId));
+
+    await expect(page.getByText('/pricing', { exact: true }).first()).toBeVisible();
+  });
+
+  /** §7.3.6。上位ページの「すべて →」はページタブへ。 */
+  test('上位ページの「すべて」で tab=pages へ移る', async ({ page, request }) => {
+    const siteId = await makeRolledUpSite(page, request);
+
+    await page.goto(todayUrl(siteId));
+    await page
+      .getByRole('link', { name: /^すべて/ })
+      .first()
+      .click();
+
+    await page.waitForURL((url) => url.searchParams.get('tab') === 'pages');
+  });
 });
 
-test('アクセスを集めて集計し、画面で見られる', async ({ page, request }) => {
+/**
+ * #78。ページタブ（設計 §7.3.6）。
+ */
+test.describe('ページタブ', () => {
+  test('列見出し「ページビュー / 訪問者 / ランディング / 直帰率 / 平均滞在」が出る', async ({
+    page,
+    request,
+  }) => {
+    const siteId = await makeRolledUpSite(page, request);
+
+    await page.goto(todayUrl(siteId, '&tab=pages'));
+
+    for (const column of ['ページビュー', '訪問者', 'ランディング', '直帰率', '平均滞在']) {
+      await expect(page.getByRole('columnheader', { name: column })).toBeVisible();
+    }
+  });
+
+  test('注記「実際より短めに出ます」が出る', async ({ page, request }) => {
+    const siteId = await makeRolledUpSite(page, request);
+
+    await page.goto(todayUrl(siteId, '&tab=pages'));
+
+    await expect(page.getByText('実際より短めに出ます', { exact: false })).toBeVisible();
+  });
+
+  test('記録したパスが行として並ぶ', async ({ page, request }) => {
+    const siteId = await makeRolledUpSite(page, request);
+
+    await page.goto(todayUrl(siteId, '&tab=pages'));
+
+    await expect(page.getByRole('row', { name: /\/pricing/ })).toBeVisible();
+  });
+});
+
+/**
+ * #79。参照元タブ。referrer 無しの記録は `(direct)`。
+ */
+test.describe('参照元タブ', () => {
+  test('(direct) の行が出る', async ({ page, request }) => {
+    const siteId = await makeRolledUpSite(page, request);
+
+    await page.goto(todayUrl(siteId, '&tab=referrers'));
+
+    await expect(page.getByRole('row', { name: /\(direct\)/ })).toBeVisible();
+  });
+});
+
+/**
+ * #80 / #81。Bot の扱い（設計 §7.3.4）。
+ *
+ * 人の PV 2 件と Bot の PV 1 件を送っておく。
+ */
+async function makeSiteWithBot(page: Page, request: APIRequestContext): Promise<string> {
   const siteId = await makeTrackedSite(request);
   const publicKey = await publicKeyOf(page, siteId);
+  await collectHits(request, publicKey, ['/', '/pricing']);
+  await collectBotHit(request, publicKey, '/');
+  await rollupToday(request);
+  return siteId;
+}
 
-  // 計測タグと同じことをする。
-  for (const path of ['/', '/', '/pricing']) {
-    const response = await request.post('/api/v1/collect', {
-      headers: { Cookie: '' },
-      data: { key: publicKey, path },
-    });
-    expect(response.status()).toBe(204);
+test.describe('Bot の扱い', () => {
+  /** #80 */
+  test('訪問者タブに「Bot のアクセス」が出る', async ({ page, request }) => {
+    const siteId = await makeSiteWithBot(page, request);
+
+    await page.goto(todayUrl(siteId, '&tab=visitors'));
+
+    await expect(page.getByText('Bot のアクセス', { exact: true })).toBeVisible();
+    await expect(page.getByText('Bot のページビュー', { exact: true })).toBeVisible();
+    await expect(
+      page.getByText('「Bot を集計に含める」スイッチに左右されません', { exact: false }),
+    ).toBeVisible();
+  });
+
+  /** #80。「Bot のアクセス」はスイッチに左右されない。 */
+  test('bots=1 にしても「Bot のページビュー」の値が変わらない', async ({ page, request }) => {
+    const siteId = await makeSiteWithBot(page, request);
+
+    await page.goto(todayUrl(siteId, '&tab=visitors'));
+    const off = await statTile(page, 'Bot のページビュー').textContent();
+
+    await page.goto(todayUrl(siteId, '&tab=visitors&bots=1'));
+    const on = await statTile(page, 'Bot のページビュー').textContent();
+
+    expect(off).toContain('1');
+    expect(on).toBe(off);
+  });
+
+  /** #81。ページビューは Bot 分だけ増える（2 → 3）。 */
+  test('bots=1 で概要のページビューが Bot 分だけ増える', async ({ page, request }) => {
+    const siteId = await makeSiteWithBot(page, request);
+    expect(await metricToday(request, siteId, 'bot_pageviews')).toBe(1);
+
+    await page.goto(todayUrl(siteId));
+    await expect(statTile(page, 'ページビュー')).toContainText('2');
+
+    await page.goto(todayUrl(siteId, '&bots=1'));
+    await expect(statTile(page, 'ページビュー')).toContainText('3');
+  });
+
+  /** #81。デバイスに「Bot」行が出る（オフのときは出ない）。 */
+  test('bots=1 でデバイスに「Bot」行が出る', async ({ page, request }) => {
+    const siteId = await makeSiteWithBot(page, request);
+
+    await page.goto(todayUrl(siteId));
+    await expect(page.getByText('Bot', { exact: true })).toHaveCount(0);
+
+    await page.goto(todayUrl(siteId, '&bots=1'));
+    await expect(page.getByText('Bot', { exact: true })).toBeVisible();
+  });
+});
+
+/**
+ * #82 / #83。設定タブ（設計 §7.3.6）。計測タグと公開キーの再発行。
+ */
+test.describe('設定タブ', () => {
+  /** #82 */
+  test('計測タグに data-site-id と data-site がある', async ({ page, request }) => {
+    const siteId = await makeTrackedSite(request);
+
+    await page.goto(`/analytics?siteId=${siteId}&tab=settings`);
+
+    const snippet = snippetOf(page, siteId);
+    await expect(snippet).toBeVisible();
+    await expect(snippet).toContainText('data-site="');
+  });
+
+  /** #82 */
+  test('計測タグの src が絶対 URL で /t.js で終わる', async ({ page, request }) => {
+    // 相対パスのまま他所のサイトへ貼ると、貼った先の /t.js を探しに行って届かない。
+    const siteId = await makeTrackedSite(request);
+
+    await page.goto(`/analytics?siteId=${siteId}&tab=settings`);
+
+    const snippet = await snippetOf(page, siteId).textContent();
+    const src = /src="([^"]+)"/.exec(snippet ?? '')?.[1] ?? '';
+    expect(src.startsWith('http://') || src.startsWith('https://')).toBe(true);
+    expect(src.endsWith('/t.js')).toBe(true);
+  });
+
+  /** 設計 §10 末尾。サイト選択が 1 サイトずつになった。 */
+  test('選択したサイトの設定タブにそのサイトのタグだけが出る', async ({ page, request }) => {
+    const first = await makeTrackedSite(request);
+    const second = await makeTrackedSite(request);
+
+    await page.goto(`/analytics?siteId=${second}&tab=settings`);
+
+    await expect(snippetOf(page, second)).toBeVisible();
+    await expect(snippetOf(page, first)).toHaveCount(0);
+  });
+
+  /** #83 */
+  test('「公開キーを再発行」で確認ダイアログが出る', async ({ page, request }) => {
+    const siteId = await makeTrackedSite(request);
+
+    await page.goto(`/analytics?siteId=${siteId}&tab=settings`);
+    await page.getByRole('button', { name: '公開キーを再発行' }).click();
+
+    const dialog = page.getByRole('dialog', { name: '公開キーを再発行しますか？' });
+    await expect(dialog).toBeVisible();
+    await expect(
+      dialog.getByText('貼り直すまでアクセスは記録されません', { exact: false }),
+    ).toBeVisible();
+    await expect(dialog.getByRole('button', { name: '再発行する' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'キャンセル' })).toBeVisible();
+  });
+
+  /** #83。確認すると data-site が変わる。 */
+  test('「再発行する」で確認すると計測タグの data-site が変わる', async ({ page, request }) => {
+    const siteId = await makeTrackedSite(request);
+    const before = await publicKeyOf(page, siteId);
+
+    await page.getByRole('button', { name: '公開キーを再発行' }).click();
+    await page
+      .getByRole('dialog', { name: '公開キーを再発行しますか？' })
+      .getByRole('button', { name: '再発行する' })
+      .click();
+
+    // `router.refresh()` で Server Component から新しいタグを読み直す。
+    await expect(snippetOf(page, siteId)).not.toContainText(`data-site="${before}"`);
+    const after = publicKeyIn(await snippetOf(page, siteId).textContent());
+    expect(after).not.toBe(before);
+    // #43。新しいキーは 64 桁の 16 進。
+    expect(after).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  /** #83 / §7.3.6。成功の Toast。 */
+  test('再発行すると「公開キーを再発行しました」と知らせる', async ({ page, request }) => {
+    const siteId = await makeTrackedSite(request);
+
+    await page.goto(`/analytics?siteId=${siteId}&tab=settings`);
+    await page.getByRole('button', { name: '公開キーを再発行' }).click();
+    await page
+      .getByRole('dialog', { name: '公開キーを再発行しますか？' })
+      .getByRole('button', { name: '再発行する' })
+      .click();
+
+    await expect(page.getByText('公開キーを再発行しました')).toBeVisible();
+  });
+
+  /** #83。キャンセルすると変わらない。 */
+  test('「キャンセル」すると計測タグの data-site は変わらない', async ({ page, request }) => {
+    const siteId = await makeTrackedSite(request);
+    const before = await publicKeyOf(page, siteId);
+
+    await page.getByRole('button', { name: '公開キーを再発行' }).click();
+    const dialog = page.getByRole('dialog', { name: '公開キーを再発行しますか？' });
+    await dialog.getByRole('button', { name: 'キャンセル' }).click();
+
+    await expect(dialog).toBeHidden();
+    await expect(snippetOf(page, siteId)).toContainText(`data-site="${before}"`);
+    // 読み直しても同じ。
+    await page.reload();
+    expect(publicKeyIn(await snippetOf(page, siteId).textContent())).toBe(before);
+  });
+
+  /** §7.3.6 受信状況。最終受信は rollup が書き戻す（#76 の補足）。 */
+  test('受信状況が計測前は「未受信」、集計後は「受信中」になる', async ({ page, request }) => {
+    const siteId = await makeTrackedSite(request);
+    const publicKey = await publicKeyOf(page, siteId);
+
+    await expect(page.getByText('未受信', { exact: true })).toBeVisible();
+
+    await collectHits(request, publicKey, ['/']);
+    await rollupToday(request);
+    await page.goto(`/analytics?siteId=${siteId}&tab=settings`);
+
+    await expect(page.getByText('受信中', { exact: true })).toBeVisible();
+    await expect(page.getByText('未受信', { exact: true })).toHaveCount(0);
+  });
+});
+
+/**
+ * #84。不正な期間でも画面を落とさない（設計 §7.3.1）。API は 422 だが画面は警告を出して 30 日に戻す。
+ */
+test.describe('不正な期間', () => {
+  function warning(page: Page): Locator {
+    return page
+      .locator('[role="alert"], [role="status"]')
+      .filter({ hasText: '期間を確認してください' });
   }
 
-  // 集計する（cron から API Token で叩く想定の口）。
-  expect(await metricToday(request, siteId, 'pageviews')).toBe(3);
+  test('期間が逆転していても画面が落ちず、「期間を確認してください」の警告が出る', async ({
+    page,
+    request,
+  }) => {
+    const siteId = await makeTrackedSite(request);
 
-  // 画面にも出る。
-  await page.goto(`/analytics?siteId=${siteId}&from=${today()}&to=${today()}`);
-  await expect(page.getByRole('heading', { name: 'アナリティクス' })).toBeVisible();
-  await expect(page.getByText('/pricing')).toBeVisible();
+    const response = await page.goto(
+      `/analytics?siteId=${siteId}&period=custom&from=2026-05-01&to=2026-04-01`,
+    );
+
+    expect(response?.status()).toBe(200);
+    await expect(page.getByRole('heading', { name: 'アナリティクス' })).toBeVisible();
+    await expect(warning(page)).toBeVisible();
+  });
+
+  test('400 日を超える期間でも画面が落ちず、警告が出る', async ({ page, request }) => {
+    const siteId = await makeTrackedSite(request);
+
+    const response = await page.goto(
+      `/analytics?siteId=${siteId}&period=custom&from=2020-01-01&to=2026-01-01`,
+    );
+
+    expect(response?.status()).toBe(200);
+    await expect(page.getByRole('heading', { name: 'アナリティクス' })).toBeVisible();
+    await expect(warning(page)).toBeVisible();
+  });
+
+  test('日付として読めない from でも画面が落ちず、警告が出る', async ({ page, request }) => {
+    const siteId = await makeTrackedSite(request);
+
+    const response = await page.goto(
+      `/analytics?siteId=${siteId}&period=custom&from=not-a-date&to=2026-04-01`,
+    );
+
+    expect(response?.status()).toBe(200);
+    await expect(page.getByRole('heading', { name: 'アナリティクス' })).toBeVisible();
+    await expect(warning(page)).toBeVisible();
+  });
+
+  test('正しい期間では警告が出ない', async ({ page, request }) => {
+    const siteId = await makeTrackedSite(request);
+
+    await page.goto(todayUrl(siteId));
+
+    await expect(page.getByRole('heading', { name: 'アナリティクス' })).toBeVisible();
+    await expect(warning(page)).toHaveCount(0);
+  });
+});
+
+/**
+ * #85。前期間の文とタイムゾーン（設計 §7.1 / §7.3.2）。
+ */
+test.describe('前期間と日付の区切り', () => {
+  test('「前期間（… 〜 …）と比較」が出る', async ({ page, request }) => {
+    const siteId = await makeTrackedSite(request);
+
+    await page.goto(`/analytics?siteId=${siteId}`);
+
+    await expect(
+      page.getByText(/前期間（\d{4}-\d{2}-\d{2} 〜 \d{4}-\d{2}-\d{2}）と比較/),
+    ).toBeVisible();
+  });
+
+  test('今日 1 日の前期間は昨日 1 日', async ({ page, request }) => {
+    const siteId = await makeTrackedSite(request);
+
+    await page.goto(todayUrl(siteId));
+
+    await expect(
+      page.getByText(`前期間（${yesterday()} 〜 ${yesterday()}）と比較`, { exact: false }),
+    ).toBeVisible();
+  });
+
+  test('「日付の区切りは Asia/Tokyo」が出る', async ({ page, request }) => {
+    // `playwright.config.ts` の `TORIFUNE_TIMEZONE`。決め打ちではなく実際の値を出す。
+    const siteId = await makeTrackedSite(request);
+
+    await page.goto(`/analytics?siteId=${siteId}`);
+
+    await expect(
+      page.getByText(`日付の区切りは ${SERVER_TIME_ZONE}`, { exact: false }),
+    ).toBeVisible();
+  });
+});
+
+/**
+ * #86。前期間比のトーン（設計 §7.3.5）。`Stat` の `delta` は `<span data-tone>`。
+ *
+ * `period=custom&from=今日&to=今日` の前期間は昨日。昨日の値は `analytics` へ
+ * `source = 'e2e'` で直接入れる（画面は出所をまたいで足す）。
+ */
+test.describe('前期間比のトーン', () => {
+  const STAT_LABELS = ['ページビュー', '訪問者', 'セッション', '直帰率', '平均滞在時間'] as const;
+
+  /**
+   * 今日：同じ訪問者の PV 2 件（30 分以内）→ pageviews 2、visitors 1、sessions 1、bounces 0。
+   * 昨日：pageviews 10、visitors 4、sessions 20、bounces 16（直帰率 80%）。
+   */
+  async function makeSiteWithPreviousPeriod(page: Page, request: APIRequestContext) {
+    const siteId = await makeTrackedSite(request);
+    const publicKey = await publicKeyOf(page, siteId);
+    await collectHits(request, publicKey, ['/', '/pricing']);
+    await rollupToday(request);
+    await seedAnalytics(siteId, yesterday(), {
+      pageviews: 10,
+      visitors: 4,
+      sessions: 20,
+      bounces: 16,
+    });
+    return siteId;
+  }
+
+  test('前期間比の data-tone は success / danger / muted のいずれか', async ({ page, request }) => {
+    const siteId = await makeSiteWithPreviousPeriod(page, request);
+
+    await page.goto(todayUrl(siteId));
+
+    const tones = page.locator('[data-tone]');
+    expect(await tones.count()).toBeGreaterThanOrEqual(STAT_LABELS.length);
+    for (const tone of await tones.evaluateAll((elements) =>
+      elements.map((element) => element.getAttribute('data-tone')),
+    )) {
+      expect(['success', 'danger', 'muted']).toContain(tone);
+    }
+  });
+
+  test('PV が下がったとき danger', async ({ page, request }) => {
+    const siteId = await makeSiteWithPreviousPeriod(page, request);
+
+    await page.goto(todayUrl(siteId));
+
+    // delta(2, 10) = −80.0%（設計 §7.3.5。符号は U+2212）。
+    const delta = statTile(page, 'ページビュー').locator('[data-tone]');
+    await expect(delta).toHaveAttribute('data-tone', 'danger');
+    await expect(delta).toHaveText(/[−-]80\.0%/);
+  });
+
+  test('直帰率が下がったとき success', async ({ page, request }) => {
+    const siteId = await makeSiteWithPreviousPeriod(page, request);
+
+    await page.goto(todayUrl(siteId));
+
+    // deltaPt(0 / 1, 16 / 20) = −80.0pt。直帰率だけ lowerIsBetter。
+    const delta = statTile(page, '直帰率').locator('[data-tone]');
+    await expect(delta).toHaveAttribute('data-tone', 'success');
+    await expect(delta).toHaveText(/[−-]80\.0pt/);
+  });
+
+  test('前期が 0 のとき「—」で muted', async ({ page, request }) => {
+    // 昨日の値を入れない → 前期はすべて 0。
+    const siteId = await makeTrackedSite(request);
+    const publicKey = await publicKeyOf(page, siteId);
+    await collectHits(request, publicKey, ['/', '/pricing']);
+    await rollupToday(request);
+
+    await page.goto(todayUrl(siteId));
+
+    for (const label of STAT_LABELS) {
+      const delta = statTile(page, label).locator('[data-tone]');
+      await expect(delta, label).toHaveAttribute('data-tone', 'muted');
+      await expect(delta, label).toHaveText('—');
+    }
+  });
 });
 
 /**
@@ -251,7 +1031,7 @@ test.describe('SPA のクライアント遷移', () => {
  * Pagination（05_API設計.md §20・§33）。
  *
  * **`GET /analytics/{id}` は無い。** analytics は
- * `(site_id, metric_date, source, metric)` の複合キーで保存する集計値の集合で、
+ * `(site_id, metric_date, source, metric, key)` の複合キーで保存する集計値の集合で、
  * 単一リソースを指す id が存在しない（仕様書 §20 / `改訂履歴.md` 2026-09-01）。
  */
 test('一覧が他の一覧 API と同じ meta を返す', async ({ request }) => {
@@ -315,6 +1095,7 @@ test('未認証では 401', async ({ request }) => {
   expect(response.status()).toBe(401);
 });
 
+/** #87 */
 test('ナビゲーションからアナリティクスへ行ける', async ({ page }) => {
   await page.goto('/dashboard');
   // ダッシュボードにも「アナリティクスで詳しく見る」があるので、ナビへ限定する。
@@ -327,11 +1108,38 @@ test('ナビゲーションからアナリティクスへ行ける', async ({ pa
   await expect(page.getByRole('heading', { name: 'アナリティクス' })).toBeVisible();
 });
 
-test('データが無い期間では、何をすればよいかを出す', async ({ page }) => {
-  await page.goto('/analytics?from=2020-01-01&to=2020-01-02');
+/**
+ * #88。`analytics.read` を持たない利用者には権限なしの画面（`AsyncState forbidden`）。
+ *
+ * **画面は 403 を返さず「権限がありません」を描画する**（HTTP は 200）。
+ * `/sites` `/social` と同じ扱い。API 側は実際に 403 を返す（`内訳 API` の #37）。
+ */
+test('analytics.read を持たない利用者には権限なしの画面が出る', async ({
+  browser,
+  request,
+  playwright,
+}) => {
+  const api = await contextWithoutPermissions(request, playwright);
+  let storage;
+  try {
+    storage = await api.storageState();
+  } finally {
+    await api.dispose();
+  }
 
-  await expect(page.getByText('この期間のデータはありません。')).toBeVisible();
-  await expect(page.getByText('計測タグをサイトへ貼り', { exact: false })).toBeVisible();
+  const context = await browser.newContext({ baseURL: origin, storageState: storage });
+  try {
+    const page = await context.newPage();
+    const response = await page.goto('/analytics');
+    expect(response?.status()).toBe(200);
+
+    await expect(page.getByText('この操作を行う権限がありません')).toBeVisible();
+    // 集計の中身（サイト選択・タブ）は出さない。
+    await expect(siteSelect(page)).toHaveCount(0);
+    await expect(tabNav(page)).toHaveCount(0);
+  } finally {
+    await context.close();
+  }
 });
 
 /**
@@ -356,80 +1164,6 @@ interface BreakdownBody {
 interface PointBody {
   readonly data: { metric: string; key: string; value: number; source: string }[];
   readonly meta: { page: number; perPage: number; total: number };
-}
-
-/** 計測タグと同じことをする。 */
-async function collectHits(
-  request: APIRequestContext,
-  publicKey: string,
-  paths: readonly string[],
-): Promise<void> {
-  for (const path of paths) {
-    const response = await request.post('/api/v1/collect', {
-      headers: { Cookie: '' },
-      data: { key: publicKey, path },
-    });
-    expect(response.status()).toBe(204);
-  }
-}
-
-/** 今日の分を集計する。 */
-async function rollupToday(request: APIRequestContext): Promise<void> {
-  const token = await csrf(request);
-  const rollup = await request.post('/api/v1/analytics/rollup', {
-    headers: headers(token),
-    data: { from: today(), to: today(), csrfToken: token },
-  });
-  expect(rollup.status()).toBe(200);
-}
-
-/** サイトを作り、`/` × 2、`/pricing` × 1、`/about` × 1 を記録して集計する。 */
-async function makeRolledUpSite(page: Page, request: APIRequestContext): Promise<string> {
-  const siteId = await makeTrackedSite(request);
-  const publicKey = await publicKeyOf(page, siteId);
-  await collectHits(request, publicKey, ['/', '/', '/pricing', '/about']);
-  await rollupToday(request);
-  return siteId;
-}
-
-function breakdownUrl(siteId: string, extra = ''): string {
-  return `/api/v1/analytics/breakdown?siteId=${siteId}&from=${today()}&to=${today()}&metric=path_pageviews${extra}`;
-}
-
-/**
- * **ロールを 1 つも持たない利用者**でログインした request context を作る。
- *
- * `viewer` は `analytics.read` を持つので、権限が無い状態は `roles: []` でしか作れない。
- * `POST /users` の `roles` は省略可（既定 `[]`）で、API から作れる。
- */
-async function contextWithoutPermissions(
-  request: APIRequestContext,
-  playwright: PlaywrightWorkerArgs['playwright'],
-): Promise<APIRequestContext> {
-  const token = await csrf(request);
-  const loginId = `e2e_noperm_${Math.random().toString(36).slice(2, 10)}`;
-  const password = 'e2e analytics no permission user password';
-  const created = await request.post('/api/v1/users', {
-    headers: headers(token),
-    data: {
-      loginId,
-      displayName: `E2E ${loginId}`,
-      email: `${loginId}@example.com`,
-      password,
-      roles: [],
-      csrfToken: token,
-    },
-  });
-  expect(created.status(), await created.text()).toBe(201);
-
-  const context = await playwright.request.newContext({ baseURL: origin });
-  const loginToken = await csrf(context);
-  const login = await context.post('/api/v1/auth/login', {
-    headers: headers(loginToken),
-    data: { loginId, password, csrfToken: loginToken },
-  });
-  expect(login.status(), await login.text()).toBe(200);
-  return context;
 }
 
 test.describe('内訳 API', () => {
