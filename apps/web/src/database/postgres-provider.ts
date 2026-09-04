@@ -1,5 +1,7 @@
 import { Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
+import { log } from '../infrastructure/logging';
+import { redactSecrets } from '../infrastructure/secret-text';
 import type { Connection, DatabaseProvider } from './provider';
 import type { Schema } from './schema';
 
@@ -39,6 +41,22 @@ function redact(error: unknown, connectionString: string): Error {
   const redacted = new Error(message, { cause: undefined });
   redacted.stack = `${redacted.name}: ${message}`;
   return redacted;
+}
+
+/**
+ * 接続断を記録する（029-scheduled-jobs 検証の反映）。
+ *
+ * **握るなら記録する。** 購読者が 0 だと EventEmitter が uncaughtException を投げるので
+ * 握る必要はあるが、何も出さないと接続断がどこにも残らない
+ * （029 の主題は「障害を `busy` に丸めず見えるようにする」こと）。
+ *
+ * 処理は止めない。切れた接続は pg が Pool から外し、実行中のクエリは既に reject されている。
+ * `reason` は自由文なので `redactSecrets` を通す（`maskSecrets` はキー名判定で効かない）。
+ */
+function reportConnectionError(error: unknown): void {
+  log.warn('database connection error', {
+    reason: redactSecrets(error instanceof Error ? error.message : String(error)),
+  });
 }
 
 /**
@@ -89,7 +107,17 @@ export function createPostgresProvider(options: PostgresProviderOptions): Databa
   });
 
   // アイドル接続がサーバー側で切られたときに、プロセスごと落ちるのを防ぐ。
-  pool.on('error', () => undefined);
+  pool.on('error', reportConnectionError);
+
+  // **取り出されている（checked out）接続にも同じ備えが要る。**
+  // pg-pool は接続を貸し出すあいだ自前の 'error' 監視を外すため、その最中にサーバー側で
+  // 接続が切られると（`pg_terminate_backend`、フェイルオーバー、idle_session_timeout）
+  // 'error' に購読者が 1 つも無くなり、EventEmitter が uncaughtException を投げてプロセスごと落ちる。
+  // 実行中のクエリは pg が既に reject しており、呼び出し側がそれを受け取るので、
+  // ここで握っても失われる情報は無い（029 設計 §6.1.6：ロックのセッションが落ちても `failed` を返して続ける）。
+  pool.on('connect', (client) => {
+    client.on('error', reportConnectionError);
+  });
 
   const db = new Kysely<Schema>({ dialect: new PostgresDialect({ pool }) });
 

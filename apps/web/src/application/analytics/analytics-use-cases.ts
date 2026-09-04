@@ -1,18 +1,26 @@
+import type { AuthorizationContext } from '@/application/authorization/authorize';
 import { defineUseCase } from '@/application/authorization/use-case';
 import {
+  CORE_SOURCE,
   isReservedSource,
+  isValidBreakdownKey,
   isValidMetricName,
   isValidRange,
   isValidSource,
   MAX_RANGE_DAYS,
   rangeDays,
   type AnalyticsPoint,
+  type AnalyticsStatus,
+  type BreakdownItem,
   type TopPath,
   type TrackedSite,
 } from '@/domain/analytics/analytics';
-import { ValidationError } from '@/domain/repository';
-import { analyticsRepository } from '@/infrastructure/analytics-repository';
-import { analyticsTimeZone } from './timezone';
+import { NotFoundError, ValidationError } from '@/domain/repository';
+import { schedulerConfig } from '@/application/jobs/config';
+import { ROLLUP_JOB } from '@/application/jobs/definitions';
+import { schedulerSnapshot } from '@/application/jobs/scheduler';
+import { analyticsRepository, PENDING_COUNT_LIMIT } from '@/infrastructure/analytics-repository';
+import { jobRunRepository } from '@/infrastructure/job-run-repository';
 
 /**
  * アクセス・分析データの参照（05_API設計.md §20、018-analytics）。
@@ -20,11 +28,53 @@ import { analyticsTimeZone } from './timezone';
  * **画面はここだけを見る。** 生ログを直接集計しない（設計 §4.1）。
  */
 
+/** `metrics` で一度に絞れる指標の数。 */
+const MAX_METRICS_FILTER = 20;
+
+/** `keys` で一度に絞れる key の数（画面の 1 ページ分）。 */
+const MAX_KEYS_FILTER = 100;
+
 export interface AnalyticsRangeInput {
   readonly siteId: string | null;
   readonly from: string;
   readonly to: string;
   readonly source: string | null;
+  /** 指標名で絞る（最大 20 個）。省略は全指標。 */
+  readonly metrics?: readonly string[];
+  /** key で絞る。`''` を渡すとキー無しの行だけ。省略は全 key。 */
+  readonly key?: string;
+}
+
+/**
+ * 絞り込みを検証して Repository へ渡す形にする。
+ *
+ * 画面は必ず `key: ''` と `metrics` を渡す（028 設計 §6.1）。
+ * 渡さないとパス別の行を全部読むことになる。
+ */
+function rangeOf(input: AnalyticsRangeInput) {
+  assertRange(input.from, input.to);
+
+  if (input.metrics !== undefined) {
+    if (input.metrics.length > MAX_METRICS_FILTER) {
+      throw new ValidationError(
+        'Analytics',
+        'metrics',
+        `指標は${MAX_METRICS_FILTER}個以内で指定してください。`,
+      );
+    }
+    if (!input.metrics.every(isValidMetricName)) {
+      throw new ValidationError('Analytics', 'metrics', '指標名の形式が不正です。');
+    }
+  }
+
+  return {
+    siteId: input.siteId,
+    from: input.from,
+    to: input.to,
+    source: input.source,
+    ...(input.metrics === undefined ? {} : { metrics: input.metrics }),
+    ...(input.key === undefined ? {} : { key: input.key }),
+  };
 }
 
 function assertRange(from: string, to: string): void {
@@ -44,16 +94,8 @@ function assertRange(from: string, to: string): void {
 export const listAnalytics = defineUseCase<AnalyticsRangeInput, readonly AnalyticsPoint[]>({
   name: 'analytics.list',
   permission: 'analytics.read',
-  handler: async (context, input) => {
-    assertRange(input.from, input.to);
-
-    return analyticsRepository.listPoints(context.connection, {
-      siteId: input.siteId,
-      from: input.from,
-      to: input.to,
-      source: input.source,
-    });
-  },
+  handler: async (context, input) =>
+    analyticsRepository.listPoints(context.connection, rangeOf(input)),
 });
 
 /**
@@ -80,7 +122,7 @@ export interface AnalyticsPage<T> {
   readonly total: number;
 }
 
-function offsetOf(input: AnalyticsPageInput): number {
+function offsetOf(input: { readonly page: number; readonly perPage: number }): number {
   return (input.page - 1) * input.perPage;
 }
 
@@ -88,14 +130,7 @@ export const listAnalyticsPage = defineUseCase<AnalyticsPageInput, AnalyticsPage
   name: 'analytics.listPage',
   permission: 'analytics.read',
   handler: async (context, input) => {
-    assertRange(input.from, input.to);
-
-    const range = {
-      siteId: input.siteId,
-      from: input.from,
-      to: input.to,
-      source: input.source,
-    };
+    const range = rangeOf(input);
 
     // 件数を先に取る。**「そのページの件数」ではなく条件に合う全件数**を返す（§33）。
     const total = await analyticsRepository.countPoints(context.connection, range);
@@ -109,46 +144,99 @@ export const listAnalyticsPage = defineUseCase<AnalyticsPageInput, AnalyticsPage
   },
 });
 
+/**
+ * 内訳（028 設計 §6.2）。
+ *
+ * 期間内の日ごとの値を key ごとに合算する。パス別・参照元別・時間帯別などは全部これで引く。
+ */
+export interface BreakdownInput {
+  /** null は全サイト合算。 */
+  readonly siteId: string | null;
+  readonly from: string;
+  readonly to: string;
+  readonly metric: string;
+  /** null は全出所を合算。 */
+  readonly source: string | null;
+  readonly page: number;
+  readonly perPage: number;
+  /** 指定した key に限る（最大 100 個）。画面が表の 1 ページ分の別指標を引くためのもの。 */
+  readonly keys?: readonly string[];
+}
+
+/** 検証して内訳を読む。`listTopPathsPage` と共有する。 */
+async function breakdownPage(
+  context: AuthorizationContext,
+  input: BreakdownInput,
+): Promise<AnalyticsPage<BreakdownItem>> {
+  assertRange(input.from, input.to);
+
+  if (!isValidMetricName(input.metric)) {
+    throw new ValidationError('Analytics', 'metric', '指標名の形式が不正です。');
+  }
+  if (input.keys !== undefined) {
+    if (input.keys.length > MAX_KEYS_FILTER) {
+      throw new ValidationError(
+        'Analytics',
+        'keys',
+        `key は${MAX_KEYS_FILTER}個以内で指定してください。`,
+      );
+    }
+    if (!input.keys.every(isValidBreakdownKey)) {
+      throw new ValidationError('Analytics', 'keys', '内訳キーの形式が不正です。');
+    }
+  }
+
+  const filter = {
+    siteId: input.siteId,
+    from: input.from,
+    to: input.to,
+    metric: input.metric,
+    source: input.source,
+    ...(input.keys === undefined ? {} : { keys: input.keys }),
+  };
+
+  // 件数は行数ではなく key の種類数（§33 の `meta.total`）。
+  const total = await analyticsRepository.countKeys(context.connection, filter);
+  const items = await analyticsRepository.sumByKey(context.connection, {
+    ...filter,
+    limit: input.perPage,
+    offset: offsetOf(input),
+  });
+
+  return { items, total };
+}
+
+export const listAnalyticsBreakdown = defineUseCase<BreakdownInput, AnalyticsPage<BreakdownItem>>({
+  name: 'analytics.breakdown',
+  permission: 'analytics.read',
+  handler: breakdownPage,
+});
+
+/**
+ * 上位ページ（`GET /analytics?kind=topPaths`）。
+ *
+ * **互換のために残す**（05_API設計.md §41）。中身は `path_pageviews` の内訳で、
+ * 生ログは読まない。集計を流すまで出ない。新しい呼び出しは `listAnalyticsBreakdown` を使う。
+ */
 export const listTopPathsPage = defineUseCase<AnalyticsPageInput, AnalyticsPage<TopPath>>({
   name: 'analytics.topPathsPage',
   permission: 'analytics.read',
   handler: async (context, input) => {
-    assertRange(input.from, input.to);
-
-    const range = {
+    const page = await breakdownPage(context, {
       siteId: input.siteId,
       from: input.from,
       to: input.to,
-      timeZone: analyticsTimeZone(),
+      metric: 'path_pageviews',
+      // Plugin が同名の指標を書いても、従来どおり Torifune 自身の集計だけを出す。
+      source: CORE_SOURCE,
+      page: input.page,
+      perPage: input.perPage,
+    });
+
+    return {
+      items: page.items.map((item) => ({ path: item.key, pageviews: item.value })),
+      total: page.total,
     };
-
-    const total = await analyticsRepository.countTopPaths(context.connection, range);
-    const items = await analyticsRepository.topPaths(context.connection, {
-      ...range,
-      limit: input.perPage,
-      offset: offsetOf(input),
-    });
-
-    return { items, total };
-  },
-});
-
-export const listTopPaths = defineUseCase<
-  AnalyticsRangeInput & { readonly limit: number },
-  readonly TopPath[]
->({
-  name: 'analytics.topPaths',
-  permission: 'analytics.read',
-  handler: async (context, input) => {
-    assertRange(input.from, input.to);
-
-    return analyticsRepository.topPaths(context.connection, {
-      siteId: input.siteId,
-      from: input.from,
-      to: input.to,
-      timeZone: analyticsTimeZone(),
-      limit: Math.min(Math.max(1, input.limit), 100),
-    });
   },
 });
 
@@ -157,6 +245,8 @@ export interface RecordAnalyticsInput {
   readonly metricDate: string;
   readonly source: string;
   readonly metric: string;
+  /** 内訳キー（パス・ホストなど）。省略は `''`（キーを持たない指標）。 */
+  readonly key?: string;
   readonly value: number;
 }
 
@@ -181,6 +271,10 @@ export const recordAnalytics = defineUseCase<RecordAnalyticsInput, void>({
     if (!isValidSource(input.source) || isReservedSource(input.source)) {
       throw new ValidationError('Analytics', 'source', 'この出所は指定できません。');
     }
+    const key = input.key ?? '';
+    if (!isValidBreakdownKey(key)) {
+      throw new ValidationError('Analytics', 'key', '内訳キーの形式が不正です。');
+    }
     if (!Number.isFinite(input.value) || input.value < 0) {
       throw new ValidationError('Analytics', 'value', '0以上の数値を指定してください。');
     }
@@ -191,9 +285,78 @@ export const recordAnalytics = defineUseCase<RecordAnalyticsInput, void>({
         metricDate: input.metricDate,
         source: input.source,
         metric: input.metric,
+        key,
         value: Math.floor(input.value),
       }),
     );
+  },
+});
+
+/**
+ * サイトの受信状況（028 設計 §6.4、029 設計 §6.4）。
+ *
+ * 画面の「設定」タブと受信状況の 4 状態の判定が使う。API には出していない
+ * （要るのは運用者であり、`GET /api/v1/jobs` で足りる）。
+ *
+ * 問い合わせは 6 つ。**生ログの期間全体を舐めるものは無い**（1 行か、上限つきの件数だけ）。
+ *
+ * `pending` の境目は最後に成功したロールアップの**開始**時刻にする。終了時刻にすると、
+ * 実行中に届いた分を「集計済み」に数えてしまう（数件の過大評価のほうが安全）。
+ */
+export const getAnalyticsStatus = defineUseCase<{ readonly siteId: string }, AnalyticsStatus>({
+  name: 'analytics.status',
+  permission: 'analytics.read',
+  handler: async (context, input) => {
+    const site = await analyticsRepository.findSiteLastSeen(context.connection, input.siteId);
+    if (site === null) {
+      throw new NotFoundError('Site', input.siteId);
+    }
+
+    const [lastRollupAt, lastReceivedAt, lastRun, lastSuccess] = await Promise.all([
+      analyticsRepository.findLastRollupAt(context.connection, input.siteId),
+      analyticsRepository.findLatestAccessAt(context.connection, input.siteId),
+      jobRunRepository.findLatest(context.connection, ROLLUP_JOB.name),
+      jobRunRepository.findLatestSucceeded(context.connection, ROLLUP_JOB.name),
+    ]);
+
+    const since = lastSuccess?.startedAt ?? null;
+    const pending = await analyticsRepository.countAccessSince(
+      context.connection,
+      input.siteId,
+      since,
+    );
+
+    const snapshot = schedulerSnapshot();
+    const scheduled = snapshot.jobs.find((entry) => entry.name === ROLLUP_JOB.name);
+
+    return {
+      siteId: input.siteId,
+      analyticsLastSeenAt: site.analyticsLastSeenAt,
+      lastRollupAt,
+      lastReceivedAt,
+      pending: {
+        total: pending.total,
+        bots: pending.bots,
+        capped: pending.total === PENDING_COUNT_LIMIT,
+        since,
+      },
+      rollup: {
+        lastSucceededAt: lastSuccess?.finishedAt ?? null,
+        // **結果だけを出す。** エラーの文字列は画面に出さない（全文は `GET /api/v1/jobs`）。
+        lastRun:
+          lastRun === null
+            ? null
+            : {
+                status: lastRun.status,
+                startedAt: lastRun.startedAt,
+                finishedAt: lastRun.finishedAt,
+              },
+        scheduled: snapshot.enabled && scheduled !== undefined,
+        // 基盤が未起動・無効なら環境変数の解釈後の値（実装プラン §8 #1）。
+        intervalMinutes: scheduled?.intervalMinutes ?? schedulerConfig().rollupIntervalMinutes,
+        nextRunAt: scheduled?.nextRunAt ?? null,
+      },
+    };
   },
 });
 
@@ -203,6 +366,8 @@ export const recordAnalytics = defineUseCase<RecordAnalyticsInput, void>({
  * 公開キーを含むので `site.read` を要求する。
  * 公開キーは計測タグに埋めて配る値で秘密ではないが、
  * どのサイトを持っているかは権限のある人にだけ見せる。
+ *
+ * 名前順。計測タグを貼ったままの `archived` のサイトも含む（受信状況を見るため）。
  */
 export const listTrackedSites = defineUseCase<Record<string, never>, readonly TrackedSite[]>({
   name: 'analytics.trackedSites',

@@ -69,8 +69,13 @@ export interface SiteTotals {
  *
  * **知らない指標は数えない。** `analytics` には Plugin が入れた任意の指標も
  * 混ざる（`018-analytics`）。合計に混ぜると意味の違う数を足すことになる。
+ *
+ * 使うのは `siteId` / `metric` / `value` だけなので、引数の型もそこに絞る。
+ * 呼ぶ側は `key: ''` で絞った点を渡す（パス別などの内訳を合計に混ぜない）。
  */
-export function summarizeBySite(points: readonly AnalyticsPoint[]): Map<string, SiteTotals> {
+export function summarizeBySite(
+  points: readonly Pick<AnalyticsPoint, 'siteId' | 'metric' | 'value'>[],
+): Map<string, SiteTotals> {
   const totals = new Map<string, { pageviews: number; visitors: number }>();
 
   for (const point of points) {

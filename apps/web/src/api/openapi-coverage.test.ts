@@ -65,6 +65,8 @@ describe('応答スキーマの網羅', () => {
       'listSites',
       'getSite',
       'createSite',
+      // 028 設計 §6.6（受け入れ条件 #48 の静的側）。
+      'regenerateSitePublicKey',
       'listUsers',
       'getUser',
       'createUser',
@@ -75,8 +77,12 @@ describe('応答スキーマの網羅', () => {
       'listApiTokens',
       'createApiToken',
       'listAnalytics',
+      // 028 設計 §6.2（受け入れ条件 #39 の静的側）。
+      'listAnalyticsBreakdown',
       'getCurrentUser',
       'issueCsrfToken',
+      // 029 設計 §6.5（受け入れ条件 #41 の静的側）。監視から叩くので応答の形を宣言する。
+      'listJobStatuses',
     ]) {
       expect(declared, operationId).toContain(operationId);
     }

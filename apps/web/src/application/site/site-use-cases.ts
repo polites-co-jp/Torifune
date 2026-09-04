@@ -2,6 +2,7 @@ import { uuidv7 } from 'uuidv7';
 import { requireAuthenticated } from '@/application/authorization/authorize';
 import { defineUseCase } from '@/application/authorization/use-case';
 import { emit } from '@/application/events';
+import { generateSitePublicKey } from '@/domain/analytics/access-log';
 import { NotFoundError, ValidationError } from '@/domain/repository';
 import {
   DEFAULT_LISTED_STATUSES,
@@ -173,6 +174,47 @@ export const deleteSite = defineUseCase<{ id: string }, void>({
     await emit('site.deleted', siteEventPayload(site));
   },
 });
+
+export interface RegenerateSitePublicKeyResult {
+  readonly siteId: string;
+  readonly publicKey: string;
+}
+
+/**
+ * 計測タグに埋める公開キーを発行し直す。
+ *
+ * 公開キーは秘密ではないが、漏れたキーで勝手にアクセスを積まれないよう、
+ * 旧キーを即時に無効にして新しいキーへ切り替える。
+ * 状態（`archived` 含む）による制限は設けない。
+ *
+ * `site.updated` Event は発火しない。`SiteEventPayload` に公開キーは無く、
+ * 購読側から見て何も変わらない Event になるため。
+ */
+export const regenerateSitePublicKey = defineUseCase<{ id: string }, RegenerateSitePublicKeyResult>(
+  {
+    name: 'site.regeneratePublicKey',
+    permission: 'site.write',
+    audit: {
+      action: 'updated',
+      resourceType: 'site',
+      resourceId: (input) => input.id,
+      // 何を変えたかだけを残す。キーの値（新旧どちらも）は残さない。
+      detail: () => ({ changed: ['publicKey'] }),
+    },
+    handler: async (context, input) => {
+      const publicKey = generateSitePublicKey();
+
+      const updated = await context.connection.transaction((tx) =>
+        siteRepository.updatePublicKey(tx, input.id, publicKey),
+      );
+      if (!updated) {
+        throw new NotFoundError('Site', input.id);
+      }
+
+      return { siteId: input.id, publicKey };
+    },
+  },
+);
 
 /**
  * 入力の検証。

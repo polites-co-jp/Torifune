@@ -89,6 +89,7 @@ test('OpenAPI に登録済みエンドポイントが含まれる', async ({ req
 
   expect(Object.keys(document.paths).sort()).toEqual([
     '/analytics',
+    '/analytics/breakdown',
     '/analytics/rollup',
     '/api-tokens',
     '/api-tokens/{id}',
@@ -100,6 +101,8 @@ test('OpenAPI に登録済みエンドポイントが含まれる', async ({ req
     '/auth/password-reset/request',
     '/campaigns',
     '/campaigns/{id}',
+    // 029-scheduled-jobs 設計 §6.5。
+    '/jobs',
     '/permissions',
     '/plugins',
     '/plugins/operations/{id}',
@@ -115,6 +118,7 @@ test('OpenAPI に登録済みエンドポイントが含まれる', async ({ req
     '/setup',
     '/sites',
     '/sites/{id}',
+    '/sites/{id}/public-key',
     '/social/accounts',
     '/social/accounts/{id}',
     '/social/posts',

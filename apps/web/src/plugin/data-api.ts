@@ -258,11 +258,14 @@ export function createPluginDataApi(deps: PluginDataApiDeps): PluginDataApi {
     analytics: {
       async list(query) {
         requireDeclared('analytics.read');
+        // `key` は `''`（キー無しの行だけ）も指定のうち。省略とは区別して渡す。
         return listAnalytics(context, {
           siteId: query.siteId ?? null,
           from: query.from,
           to: query.to,
           source: query.source ?? null,
+          ...(query.metric === undefined ? {} : { metrics: [query.metric] }),
+          ...(query.key === undefined ? {} : { key: query.key }),
         });
       },
 
@@ -270,11 +273,13 @@ export function createPluginDataApi(deps: PluginDataApiDeps): PluginDataApi {
         requireDeclared('analytics.read');
         // **出所は Plugin ID に固定する。** Plugin に名乗らせると、
         // 外部から取り込んだ値を本体の集計として表示させられる。
+        // `key` の検証（長さ・制御文字）は UseCase が行う。
         await recordAnalytics(context, {
           siteId: point.siteId,
           metricDate: point.metricDate,
           source: pluginId,
           metric: point.metric,
+          key: point.key ?? '',
           value: point.value,
         });
       },

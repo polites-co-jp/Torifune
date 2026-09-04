@@ -2,6 +2,7 @@ import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { loadSystemSettings } from '@/application/system-settings/system-settings-use-cases';
 import { collectMenus } from '@/plugin/registry';
+import { NavLink } from './nav-link';
 import { CORE_NAVIGATION, visibleNavigation, type NavigationItem } from './navigation';
 
 /**
@@ -46,14 +47,18 @@ export async function AppShell({ displayName, permissions, children }: AppShellP
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
-          padding: 'var(--tf-space-3) var(--tf-space-6)',
+          // 高さは globals.css の .tf-header（--tf-size-header）。
+          padding: 'var(--tf-space-2) var(--tf-space-6)',
           flexWrap: 'wrap',
           gap: 'var(--tf-space-2)',
           background: 'var(--tf-color-bg)',
           borderBottom: '1px solid var(--tf-color-border)',
         }}
       >
-        <Link href="/dashboard" style={{ color: 'var(--tf-color-text)', fontWeight: 600 }}>
+        <Link
+          href="/dashboard"
+          style={{ color: 'var(--tf-color-text)', fontWeight: 600, textDecoration: 'none' }}
+        >
           {serviceName}
         </Link>
 
@@ -71,9 +76,8 @@ export async function AppShell({ displayName, permissions, children }: AppShellP
           <ul className="tf-nav-list">
             {items.map((item) => (
               <li key={item.href} className="tf-nav-item">
-                <Link href={item.href} className="tf-nav-link">
-                  {item.label}
-                </Link>
+                {/* 選択中の判定（aria-current）は NavLink が現在のパスから行う。 */}
+                <NavLink href={item.href}>{item.label}</NavLink>
               </li>
             ))}
           </ul>
@@ -89,7 +93,7 @@ export async function AppShell({ displayName, permissions, children }: AppShellP
           background: 'var(--tf-color-bg)',
           borderTop: '1px solid var(--tf-color-border)',
           color: 'var(--tf-color-text-muted)',
-          fontSize: '0.875rem',
+          fontSize: 'var(--tf-text-caption)',
         }}
       >
         {serviceName}

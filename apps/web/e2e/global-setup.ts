@@ -57,6 +57,8 @@ async function seedAdministrator(connectionString: string): Promise<void> {
     await client.query('DELETE FROM plugin_operations');
     await client.query('DELETE FROM plugin_store');
     await client.query('DELETE FROM plugins');
+    // 定期実行の記録（029）。前回の実行の `ok` が残ると「起動から 60 秒以内に ok になる」が空振りで通る。
+    await client.query('DELETE FROM job_runs');
 
     const id = uuidv7();
     const passwordHash = await hash(SEEDED_ADMIN.password);

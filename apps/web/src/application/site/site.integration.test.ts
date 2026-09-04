@@ -9,12 +9,27 @@ import type { UserIdentity } from '@/authentication/identity';
 import { NotFoundError, ValidationError } from '@/domain/repository';
 import { roleRepository } from '@/infrastructure/role-repository';
 import { useScratchDatabase, type ScratchDatabase } from '@/test-support/database';
-import { createSite, deleteSite, getSite, listSites, updateSite } from './site-use-cases';
+import {
+  createSite,
+  deleteSite,
+  getSite,
+  listSites,
+  regenerateSitePublicKey,
+  updateSite,
+} from './site-use-cases';
 
 let scratch: ScratchDatabase;
 
-/** ロールを持つユーザーを作り、その認可文脈を返す。 */
-async function contextFor(roleNames: readonly string[]): Promise<AuthorizationContext> {
+/**
+ * ロールを持つユーザーを作り、その認可文脈を返す。
+ *
+ * `withRequest` を付けると、監査ログに経路（IP / User-Agent）が残る文脈になる
+ * （`audit.integration.test.ts` と同じ作り方）。
+ */
+async function contextFor(
+  roleNames: readonly string[],
+  options: { readonly withRequest?: boolean } = {},
+): Promise<AuthorizationContext> {
   const id = uuidv7();
   const suffix = id.replaceAll('-', '').slice(-12);
 
@@ -48,7 +63,11 @@ async function contextFor(roleNames: readonly string[]): Promise<AuthorizationCo
     externalUserId: null,
   };
 
-  return withConnection((connection) => authorizationContextFor(connection, identity));
+  return withConnection(async (connection) => {
+    const base = await authorizationContextFor(connection, identity);
+    if (!options.withRequest) return base;
+    return { ...base, request: { ipAddress: '203.0.113.7', userAgent: 'vitest' } };
+  });
 }
 
 /** 未認証の文脈。 */
@@ -90,6 +109,7 @@ beforeEach(async () => {
 afterEach(async () => {
   resetEventHandlers();
   await withConnection(async (connection) => {
+    await connection.db.deleteFrom('audit_logs').execute();
     await connection.db.deleteFrom('sites').execute();
     await connection.db.deleteFrom('users').execute();
   });
@@ -483,5 +503,219 @@ describe('イベント', () => {
     await emit('site.created', {});
 
     expect(received).toHaveLength(0);
+  });
+});
+
+/**
+ * 公開キーの再発行（028 設計 §6.6、受け入れ条件 #43・#45〜#47）。
+ *
+ * 公開キーは秘密ではない（計測タグに埋まる）が、漏れたキーで
+ * 勝手にアクセスを積まれないよう、旧キーを即時に無効にして新しいキーへ切り替える。
+ */
+describe('公開キーの再発行', () => {
+  const HEX_64 = /^[0-9a-f]{64}$/;
+
+  async function makeSite(status: 'active' | 'paused' | 'archived' = 'active'): Promise<string> {
+    const site = await createSite(admin, {
+      name: `site-${Math.random().toString(36).slice(2, 8)}`,
+      url: 'https://example.com',
+      description: '',
+      status,
+    });
+    return site.id;
+  }
+
+  async function publicKeyInDb(siteId: string): Promise<string> {
+    const row = await withConnection((connection) =>
+      connection.db
+        .selectFrom('sites')
+        .select('public_key')
+        .where('id', '=', siteId)
+        .executeTakeFirstOrThrow(),
+    );
+    return row.public_key;
+  }
+
+  interface AuditRow {
+    action: string;
+    resource_type: string;
+    resource_id: string | null;
+    detail: Record<string, unknown>;
+  }
+
+  /** そのサイトに対する監査ログ（時系列）。 */
+  async function auditRowsOf(siteId: string): Promise<AuditRow[]> {
+    return withConnection(async (connection) =>
+      connection.db
+        .selectFrom('audit_logs')
+        .select(['action', 'resource_type', 'resource_id', 'detail'])
+        .where('resource_id', '=', siteId)
+        .orderBy('occurred_at')
+        .execute(),
+    ) as Promise<AuditRow[]>;
+  }
+
+  /** #43 */
+  it('64 桁の 16 進の新しいキーを返す', async () => {
+    const siteId = await makeSite();
+
+    const result = await regenerateSitePublicKey(admin, { id: siteId });
+
+    expect(result.siteId).toBe(siteId);
+    expect(result.publicKey).toMatch(HEX_64);
+  });
+
+  /** #43 */
+  it('返したキーが旧キーと異なる', async () => {
+    const siteId = await makeSite();
+    const before = await publicKeyInDb(siteId);
+
+    const result = await regenerateSitePublicKey(admin, { id: siteId });
+
+    expect(result.publicKey).not.toBe(before);
+  });
+
+  /** #43 */
+  it('sites.public_key が返したキーに変わる', async () => {
+    const siteId = await makeSite();
+    const before = await publicKeyInDb(siteId);
+
+    const result = await regenerateSitePublicKey(admin, { id: siteId });
+
+    const after = await publicKeyInDb(siteId);
+    expect(after).toBe(result.publicKey);
+    expect(after).not.toBe(before);
+  });
+
+  /** #43。続けて 2 回呼んでも、毎回違うキーになる。 */
+  it('連続して再発行しても毎回異なるキーになる', async () => {
+    const siteId = await makeSite();
+
+    const first = await regenerateSitePublicKey(admin, { id: siteId });
+    const second = await regenerateSitePublicKey(admin, { id: siteId });
+
+    expect(second.publicKey).not.toBe(first.publicKey);
+    expect(await publicKeyInDb(siteId)).toBe(second.publicKey);
+  });
+
+  /** ID を差し替えても、他のサイトのキーには触れない。 */
+  it('他のサイトの公開キーは変わらない', async () => {
+    const target = await makeSite();
+    const other = await makeSite();
+    const otherBefore = await publicKeyInDb(other);
+
+    await regenerateSitePublicKey(admin, { id: target });
+
+    expect(await publicKeyInDb(other)).toBe(otherBefore);
+  });
+
+  /** 設計 §6.6「状態による制限は設けない」。 */
+  it('archived のサイトでも再発行できる', async () => {
+    const siteId = await makeSite('archived');
+    const before = await publicKeyInDb(siteId);
+
+    const result = await regenerateSitePublicKey(admin, { id: siteId });
+
+    expect(result.publicKey).toMatch(HEX_64);
+    expect(await publicKeyInDb(siteId)).not.toBe(before);
+  });
+
+  /** #45 */
+  it('監査ログに updated / site / changed=[publicKey] が残る', async () => {
+    const auditor = await contextFor(['administrator'], { withRequest: true });
+    const siteId = await makeSite();
+
+    await regenerateSitePublicKey(auditor, { id: siteId });
+
+    const rows = await auditRowsOf(siteId);
+    const updated = rows.filter((row) => row.action === 'updated');
+    expect(updated).toHaveLength(1);
+    expect(updated[0]?.resource_type).toBe('site');
+    expect(updated[0]?.resource_id).toBe(siteId);
+    expect(updated[0]?.detail).toEqual({ changed: ['publicKey'] });
+  });
+
+  /** #45。キーの値（新旧どちらも）を監査ログに残さない。 */
+  it('監査ログの detail にキーの値が含まれない', async () => {
+    const auditor = await contextFor(['administrator'], { withRequest: true });
+    const siteId = await makeSite();
+    const before = await publicKeyInDb(siteId);
+
+    const result = await regenerateSitePublicKey(auditor, { id: siteId });
+
+    const rows = await auditRowsOf(siteId);
+    const serialized = JSON.stringify(rows.map((row) => row.detail));
+    expect(serialized).not.toContain(before);
+    expect(serialized).not.toContain(result.publicKey);
+  });
+
+  /** #46。`SiteEventPayload` に公開キーは無く、購読側から見て何も変わらない。 */
+  it('site.updated Event が発火しない', async () => {
+    const siteId = await makeSite();
+    const received: unknown[] = [];
+    subscribe('site.updated', (payload) => {
+      received.push(payload);
+    });
+
+    await regenerateSitePublicKey(admin, { id: siteId });
+
+    expect(received).toHaveLength(0);
+  });
+
+  /** #47。`viewer` は `site.read` を持つが `site.write` を持たない。 */
+  it('site.read だけでは ForbiddenError', async () => {
+    const siteId = await makeSite();
+    const before = await publicKeyInDb(siteId);
+    const viewer = await contextFor(['viewer']);
+
+    await expect(regenerateSitePublicKey(viewer, { id: siteId })).rejects.toThrowError(
+      ForbiddenError,
+    );
+    // 拒否したのにキーが変わっていてはいけない。
+    expect(await publicKeyInDb(siteId)).toBe(before);
+  });
+
+  /** #47。`editor` は `site.write` を持つ。 */
+  it('site.write があれば再発行できる', async () => {
+    const siteId = await makeSite();
+    const editor = await contextFor(['editor']);
+
+    await expect(regenerateSitePublicKey(editor, { id: siteId })).resolves.toMatchObject({
+      siteId,
+    });
+  });
+
+  it('未認証なら UnauthenticatedError', async () => {
+    const siteId = await makeSite();
+    const anonymous = await anonymousContext();
+
+    await expect(regenerateSitePublicKey(anonymous, { id: siteId })).rejects.toThrowError(
+      UnauthenticatedError,
+    );
+  });
+
+  /** #47 */
+  it('存在しない ID で NotFoundError', async () => {
+    await expect(regenerateSitePublicKey(admin, { id: uuidv7() })).rejects.toThrowError(
+      NotFoundError,
+    );
+  });
+
+  /** #47。UUID でなくても例外で落ちず、存在しないものとして扱う。 */
+  it('UUID でない ID でも NotFoundError', async () => {
+    await expect(regenerateSitePublicKey(admin, { id: 'not-a-uuid' })).rejects.toThrowError(
+      NotFoundError,
+    );
+  });
+
+  /** 起きなかったことは監査ログに残さない。 */
+  it('権限不足で失敗したときは監査ログを残さない', async () => {
+    const siteId = await makeSite();
+    const viewer = await contextFor(['viewer'], { withRequest: true });
+
+    await expect(regenerateSitePublicKey(viewer, { id: siteId })).rejects.toThrowError();
+
+    const rows = await auditRowsOf(siteId);
+    expect(rows.filter((row) => row.action === 'updated')).toHaveLength(0);
   });
 });

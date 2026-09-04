@@ -13,8 +13,12 @@ describe('generateSitePublicKey', () => {
     expect(generateSitePublicKey()).not.toBe(generateSitePublicKey());
   });
 
-  it('推測できない長さがある', () => {
-    expect(generateSitePublicKey().length).toBeGreaterThanOrEqual(32);
+  /**
+   * 028 設計 §6.6（受け入れ条件 #43 の Domain 側）。
+   * `randomBytes(32).toString('hex')` で 64 桁にし、DB の既定値と長さを揃える。
+   */
+  it('64 桁の 16 進になる', () => {
+    expect(generateSitePublicKey()).toMatch(/^[0-9a-f]{64}$/);
   });
 });
 
@@ -78,6 +82,40 @@ describe('normalizePath', () => {
 
   it.each(['', '   ', 'not-a-path', 'javascript:alert(1)'])('受け付けない: %s', (value) => {
     expect(normalizePath(value)).toBeNull();
+  });
+
+  /**
+   * 制御文字（0x00〜0x1f、0x7f）を含むパスは記録しない（018 設計 §3.2 の正規化規則、
+   * 028 の検証で追記）。
+   *
+   * 記録すると、ロールアップがその key で `path_pageviews` 等を書き、画面が読んだ key を
+   * `listAnalyticsBreakdown` の `keys` へ渡したときに `isValidBreakdownKey` で弾かれて
+   * 「ページ」タブが落ちる。入口で落とすのが最も安い。
+   */
+  it.each([
+    ['U+0001', '/a\u0001b'],
+    ['NUL（U+0000）', '/a\u0000'],
+    ['DEL（U+007F）', '/a\u007f'],
+    ['途中の改行', '/a\nb'],
+    ['タブ', '/a\tb'],
+    ['途中の CR', '/a\rb'],
+    ['境界の U+001F', '/a\u001fb'],
+  ])('制御文字を含むパスは受け付けない: %s', (_label, value) => {
+    expect(normalizePath(value)).toBeNull();
+  });
+
+  /** 前後の空白は trim で落ちるので、先頭の改行だけなら通常どおりパスになる。 */
+  it('先頭の改行は trim で落ちて、残りが正しいパスなら受け付ける', () => {
+    expect(normalizePath('\n/a')).toBe('/a');
+  });
+
+  /** 制御文字でなければ従来どおり。 */
+  it('日本語を含むパスをそのまま返す', () => {
+    expect(normalizePath('/ブログ/記事')).toBe('/ブログ/記事');
+  });
+
+  it('途中に空白を含むパスをそのまま返す', () => {
+    expect(normalizePath('/a b')).toBe('/a b');
   });
 });
 

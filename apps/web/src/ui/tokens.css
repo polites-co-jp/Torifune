@@ -1,43 +1,86 @@
 /*
  * デザイントークン。
- * 色・余白・角丸・フォント・影はすべてここに集約し、コンポーネントは変数のみを参照する。
- * 詳細は docs/実装計画/001-Torifune単体稼働/02_画面デザイン方針.md を参照。
- * 値は暫定であり、デザインを詰めるときはここだけを差し替える。
+ * 色・余白・角丸・フォント・影・寸法はすべてここに集約し、コンポーネントは変数のみを参照する。
+ * 値は docs/設計/028-analytics-dashboard-redesign/設計.md §7.4.4 のもの。
+ * 一度公開したトークン名は消さない（Plugin の部品も参照しうる）。値だけを差し替える。
  */
 :root {
+  /* 面と文字 */
   --tf-color-bg: #ffffff;
-  --tf-color-surface: #f7f7f8;
-  --tf-color-border: #e3e3e6;
-  --tf-color-text: #1a1a1e;
-  --tf-color-text-muted: #6b6b73;
+  --tf-color-surface: #f7f7f7;
+  /* 灰。ピルの背景、コード。 */
+  --tf-color-surface-strong: #eef0f3;
+  /* 強い罫線。枠、基線。 */
+  --tf-color-border: #dee1e6;
+  /* 弱い罫線。表の行、格子線。 */
+  --tf-color-border-weak: #eef0f3;
+  --tf-color-text: #0a0b0d;
+  --tf-color-text-muted: #5b616e;
+  --tf-color-text-subtle: #7c828a;
+  --tf-color-text-faint: #a8acb3;
 
-  --tf-color-primary: #2f6fdb;
+  /* 意味を持つ色 */
+  --tf-color-primary: #0052ff;
+  --tf-color-primary-hover: #003ecc;
+  --tf-color-primary-disabled: #a8b8cc;
+  /* 選択背景。 */
+  --tf-color-primary-soft: #dbe4ff;
   --tf-color-primary-text: #ffffff;
-  --tf-color-danger: #c0392b;
-  --tf-color-success: #1e8e5a;
-  --tf-color-warning: #b8860b;
+  --tf-color-danger: #cf202f;
+  --tf-color-success: #05b169;
+  --tf-color-warning: #f4b000;
 
+  /* チャートの系列色 */
+  --tf-color-chart-1: var(--tf-color-primary);
+  --tf-color-chart-2: #a8b8cc;
+
+  /* 余白は 4px 刻み */
   --tf-space-1: 4px;
   --tf-space-2: 8px;
   --tf-space-3: 12px;
   --tf-space-4: 16px;
+  --tf-space-5: 20px;
   --tf-space-6: 24px;
   --tf-space-8: 32px;
+  --tf-space-12: 48px;
 
   /* 選択中のタブなどを示す太めの下線。1px では選択が読み取りにくい。 */
   --tf-border-emphasis: 2px;
 
   --tf-radius-sm: 4px;
-  --tf-radius-md: 6px;
-  --tf-radius-lg: 10px;
+  --tf-radius-md: 8px;
+  --tf-radius-lg: 12px;
+  --tf-radius-xl: 16px;
+  --tf-radius-2xl: 24px;
+  --tf-radius-pill: 100px;
 
-  --tf-shadow-1: 0 1px 2px rgb(0 0 0 / 6%);
-  --tf-shadow-2: 0 4px 12px rgb(0 0 0 / 10%);
+  /* 影は 1 段だけ。--tf-shadow-2 は互換のため同じ値で残す。 */
+  --tf-shadow-1: 0 4px 12px rgb(0 0 0 / 4%);
+  --tf-shadow-2: 0 4px 12px rgb(0 0 0 / 4%);
 
   /* 寸法 */
-  --tf-size-dialog: 480px;
+  --tf-size-header: 64px;
   --tf-size-nav: 220px;
+  --tf-size-content: 1200px;
+  --tf-size-control: 44px;
+  --tf-size-input: 48px;
+  --tf-size-chart-sm: 120px;
+  --tf-size-chart-md: 160px;
+  --tf-size-chart-lg: 220px;
+  --tf-size-dialog: 480px;
   --tf-size-form: 360px;
 
-  --tf-font-sans: system-ui, 'Hiragino Sans', 'Noto Sans JP', sans-serif;
+  /* 文字の大きさ */
+  --tf-text-h1: 2rem;
+  --tf-text-h2: 1.125rem;
+  --tf-text-body: 0.875rem;
+  --tf-text-caption: 0.8125rem;
+  --tf-text-label: 0.75rem;
+  --tf-text-kpi: 1.75rem;
+  --tf-text-kpi-sm: 1.625rem;
+
+  /* 書体。--font-* は app/layout.tsx が next/font/local で定義する。 */
+  --tf-font-sans:
+    var(--font-inter), var(--font-noto-sans-jp), system-ui, 'Hiragino Sans', sans-serif;
+  --tf-font-mono: var(--font-jetbrains-mono), ui-monospace, 'SFMono-Regular', Menlo, monospace;
 }

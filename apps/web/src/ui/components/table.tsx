@@ -14,6 +14,8 @@ export interface Column<T> {
   readonly header: string;
   readonly render: (row: T) => ReactNode;
   readonly width?: string;
+  /** 数値の列は右寄せ・等幅にして桁を揃える。 */
+  readonly align?: 'right';
 }
 
 export interface TableProps<T> {
@@ -25,9 +27,20 @@ export interface TableProps<T> {
 
 const CELL: React.CSSProperties = {
   padding: 'var(--tf-space-3)',
-  borderBottom: '1px solid var(--tf-color-border)',
+  borderBottom: '1px solid var(--tf-color-border-weak)',
   textAlign: 'left',
 };
+
+/** 右寄せの列に足す。数字は等幅で並べると桁が揃う。 */
+const NUMERIC_CELL: React.CSSProperties = {
+  textAlign: 'right',
+  fontFamily: 'var(--tf-font-mono)',
+  fontVariantNumeric: 'tabular-nums',
+};
+
+function alignStyle<T>(column: Column<T>): React.CSSProperties {
+  return column.align === 'right' ? NUMERIC_CELL : {};
+}
 
 export function Table<T>({ columns, rows, rowKey, caption }: TableProps<T>) {
   return (
@@ -48,9 +61,12 @@ export function Table<T>({ columns, rows, rowKey, caption }: TableProps<T>) {
                 scope="col"
                 style={{
                   ...CELL,
-                  color: 'var(--tf-color-text-muted)',
+                  color: 'var(--tf-color-text-subtle)',
+                  fontSize: 'var(--tf-text-label)',
                   fontWeight: 600,
+                  whiteSpace: 'nowrap',
                   ...(column.width === undefined ? {} : { width: column.width }),
+                  ...(column.align === 'right' ? { textAlign: 'right' } : {}),
                 }}
               >
                 {column.header}
@@ -62,7 +78,7 @@ export function Table<T>({ columns, rows, rowKey, caption }: TableProps<T>) {
           {rows.map((row) => (
             <tr key={rowKey(row)}>
               {columns.map((column) => (
-                <td key={column.key} style={CELL}>
+                <td key={column.key} style={{ ...CELL, ...alignStyle(column) }}>
                   {column.render(row)}
                 </td>
               ))}
@@ -87,9 +103,9 @@ export function Pagination({ page, perPage, total, onChange }: PaginationProps) 
   const isLast = page >= lastPage;
 
   const buttonStyle: React.CSSProperties = {
-    padding: 'var(--tf-space-2) var(--tf-space-3)',
+    padding: 'var(--tf-space-2) var(--tf-space-4)',
     border: '1px solid var(--tf-color-border)',
-    borderRadius: 'var(--tf-radius-md)',
+    borderRadius: 'var(--tf-radius-pill)',
     background: 'var(--tf-color-bg)',
     color: 'var(--tf-color-text)',
     font: 'inherit',

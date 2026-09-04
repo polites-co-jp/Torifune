@@ -54,14 +54,14 @@ export function Modal({ open, title, onClose, children, footer }: ModalProps) {
         onClick={(event) => event.stopPropagation()}
         style={{
           background: 'var(--tf-color-bg)',
-          borderRadius: 'var(--tf-radius-lg)',
-          boxShadow: 'var(--tf-shadow-2)',
-          padding: 'var(--tf-space-6)',
+          borderRadius: 'var(--tf-radius-2xl)',
+          boxShadow: 'var(--tf-shadow-1)',
+          padding: 'var(--tf-space-8)',
           maxWidth: 'var(--tf-size-dialog)',
           width: '100%',
         }}
       >
-        <h2 style={{ marginTop: 0, fontSize: '1.125rem' }}>{title}</h2>
+        <h2 style={{ marginTop: 0, fontSize: 'var(--tf-text-h2)', fontWeight: 600 }}>{title}</h2>
         <div>{children}</div>
         {footer !== undefined && (
           <div
@@ -170,8 +170,8 @@ export function Toast({ message, onDismiss, durationMs = 4000 }: ToastProps) {
         right: 'var(--tf-space-6)',
         background: 'var(--tf-color-bg)',
         border: `1px solid ${color}`,
-        borderRadius: 'var(--tf-radius-md)',
-        boxShadow: 'var(--tf-shadow-2)',
+        borderRadius: 'var(--tf-radius-lg)',
+        boxShadow: 'var(--tf-shadow-1)',
         padding: 'var(--tf-space-3) var(--tf-space-4)',
         color,
       }}
@@ -246,9 +246,10 @@ export function SecretField({ label, configured, onChange, placeholder }: Secret
           onChange={(event) => onChange(event.currentTarget.value)}
           style={{
             width: '100%',
-            padding: 'var(--tf-space-2)',
+            height: 'var(--tf-size-input)',
+            padding: 'var(--tf-space-2) var(--tf-space-4)',
             border: '1px solid var(--tf-color-border)',
-            borderRadius: 'var(--tf-radius-md)',
+            borderRadius: 'var(--tf-radius-lg)',
             font: 'inherit',
             marginTop: 'var(--tf-space-1)',
           }}

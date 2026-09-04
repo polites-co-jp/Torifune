@@ -1,237 +1,306 @@
 'use client';
 
-import Link from 'next/link';
-import type { AnalyticsPoint } from '@/domain/analytics/analytics';
-import type { TopPath } from '@/domain/analytics/analytics';
-import { Alert, Card, EmptyState, Table, type Column } from '@/ui/components';
+import { useRouter } from 'next/navigation';
+import {
+  Alert,
+  DateField,
+  SegmentedControl,
+  Select,
+  Switch,
+  Tabs,
+  type TabItem,
+} from '@/ui/components';
+import { analyticsHref, type AnalyticsQuery } from './analytics-query';
+import {
+  ANALYTICS_PERIODS,
+  ANALYTICS_TABS,
+  isAnalyticsTab,
+  MIDDLE_DOT,
+  NO_VALUE,
+  PERIOD_LABEL,
+  TAB_LABEL,
+  rangeText,
+} from './labels';
+import { NotTracked, type NotTrackedData } from './not-tracked';
+import { OverviewTab, type OverviewData } from './overview-tab';
+import { PagesTab, type PagesData } from './pages-tab';
+import { CAPTION } from './parts';
+import { ReferrersTab, type ReferrersData } from './referrers-tab';
+import { SettingsTab, type SettingsData } from './settings-tab';
+import { VisitorsTab, type VisitorsData } from './visitors-tab';
 
 /**
- * アナリティクス画面（06_画面設計.md §15、018-analytics 設計 §5）。
+ * アナリティクス画面の骨格（028-analytics-dashboard-redesign 設計 §7.3.2）。
  *
- * **チャートは出さない。** 共通のチャート部品は `014-dashboard` で作る。
- * 先に個別実装すると、あとで2つの描き方が残る。
+ * 1 サイトずつ・期間プリセットと前期間比較つき・5 タブ。
+ * **状態はすべて URL パラメータで持つ。** 期間・サイト・Bot・タブの変更は
+ * `router.push` で URL を書き換えるだけで、ここでは何も覚えない。
  *
  * **Client Component にしている。** 共通の Table が Client Component であり、
  * 列定義の `render` は関数なので、Server Component から渡せない。
- * （渡すと「Functions cannot be passed directly to Client Components」で落ちる。）
+ * 数の計算は `app/analytics/page.tsx` と Domain の純関数が済ませ、ここでは並べるだけ。
  */
 
 export interface SiteOption {
   readonly id: string;
   readonly name: string;
-  readonly publicKey: string;
+  readonly url: string | null;
+  /** 最終受信があるか。無ければ選択肢に「（未設置）」を添える。 */
+  readonly tracked: boolean;
 }
 
-interface DailyRow {
-  readonly date: string;
-  readonly pageviews: number;
-  readonly visitors: number;
-}
+/** 表示するタブの中身。表示しないタブのデータは取らない（設計 §7.3.3）。 */
+export type TabData =
+  | { readonly kind: 'overview'; readonly data: OverviewData }
+  | { readonly kind: 'pages'; readonly data: PagesData }
+  | { readonly kind: 'referrers'; readonly data: ReferrersData }
+  | { readonly kind: 'visitors'; readonly data: VisitorsData }
+  | { readonly kind: 'settings'; readonly data: SettingsData }
+  /**
+   * 数字が出ない状態（028 §7.3.7、029 §7.1.3）。タブの中身の代わりに導線を出す。
+   *
+   * 「未受信」だけでなく「集計待ち」「Bot のみ受信」も含む。
+   */
+  | { readonly kind: 'not-tracked'; readonly data: NotTrackedData };
 
-/** 日次の点を「日 × 指標」の表へ畳む。 */
-function toDailyRows(points: readonly AnalyticsPoint[]): readonly DailyRow[] {
-  const byDate = new Map<string, { pageviews: number; visitors: number }>();
-
-  for (const point of points) {
-    const current = byDate.get(point.metricDate) ?? { pageviews: 0, visitors: 0 };
-    if (point.metric === 'pageviews') current.pageviews += point.value;
-    if (point.metric === 'visitors') current.visitors += point.value;
-    byDate.set(point.metricDate, current);
-  }
-
-  return [...byDate.entries()]
-    .map(([date, value]) => ({ date, ...value }))
-    .sort((a, b) => (a.date < b.date ? 1 : -1));
-}
-
-/**
- * 計測タグの1行。
- *
- * **`src` は絶対 URL にする。** 相対パスのまま別のホストへ貼られると、
- * 貼った先のサーバーの `/t.js` を探しに行って計測が届かない。
- */
-function snippetFor(site: SiteOption, origin: string | null): string {
-  const src = origin === null ? '/t.js' : `${origin}/t.js`;
-  return `<script src="${src}" data-site="${site.publicKey}"></script>`;
+export interface AnalyticsViewProps {
+  readonly query: AnalyticsQuery;
+  readonly sites: readonly SiteOption[];
+  /** 前期間（`YYYY-MM-DD`）。 */
+  readonly previousFrom: string;
+  readonly previousTo: string;
+  /** 1 日の境目に使っているタイムゾーン。 */
+  readonly timeZone: string;
+  /** 最終受信（`YYYY-MM-DD HH:mm`）。無ければ null。 */
+  readonly lastSeenAt: string | null;
+  /** `custom` の期間が不正で 30 日に戻したとき true。 */
+  readonly rangeWarning: boolean;
+  /** 設定タブを出せるか（`site.read`）。 */
+  readonly canReadSites: boolean;
+  readonly tab: TabData;
 }
 
 export function AnalyticsView({
-  points,
-  topPaths,
+  query,
   sites,
-  scriptOrigin,
+  previousFrom,
+  previousTo,
   timeZone,
-  selectedSiteId,
-  from,
-  to,
-}: {
-  readonly points: readonly AnalyticsPoint[];
-  readonly topPaths: readonly TopPath[];
-  readonly sites: readonly SiteOption[];
-  /** 計測タグの src に付けるオリジン。分からなければ null。 */
-  readonly scriptOrigin: string | null;
-  /** 1日の境目に使っているタイムゾーン。 */
-  readonly timeZone: string;
-  readonly selectedSiteId: string | null;
-  readonly from: string;
-  readonly to: string;
-}) {
-  const rows = toDailyRows(points);
-  const selected = sites.find((site) => site.id === selectedSiteId) ?? null;
-  // 絞り込んでいればそのサイトだけ、していなければ登録済みのすべて。
-  const shown = selected === null ? sites : [selected];
+  lastSeenAt,
+  rangeWarning,
+  canReadSites,
+  tab,
+}: AnalyticsViewProps) {
+  const router = useRouter();
+  const go = (next: Partial<AnalyticsQuery>): void => {
+    router.push(analyticsHref({ ...query, ...next }));
+  };
 
-  const totals = rows.reduce(
-    (acc, row) => ({
-      pageviews: acc.pageviews + row.pageviews,
-      visitors: acc.visitors + row.visitors,
-    }),
-    { pageviews: 0, visitors: 0 },
-  );
+  const selected = sites.find((site) => site.id === query.siteId) ?? null;
+  // 一覧に無い ID（`site.read` が無い、または一覧に載らない）は ID だけの選択肢にする。
+  const options: readonly SiteOption[] =
+    selected === null
+      ? [{ id: query.siteId, name: query.siteId, url: null, tracked: true }, ...sites]
+      : sites;
 
-  const dailyColumns: readonly Column<DailyRow>[] = [
-    { key: 'date', header: '日付', render: (row) => row.date },
-    { key: 'pageviews', header: 'ページビュー', render: (row) => row.pageviews.toLocaleString() },
-    { key: 'visitors', header: '訪問者', render: (row) => row.visitors.toLocaleString() },
-  ];
+  const presetItems = ANALYTICS_PERIODS.map((period) => ({
+    key: period,
+    label: PERIOD_LABEL[period],
+    // カスタムは今の期間を引き継ぐ。押した瞬間に期間が変わらないように。
+    href: analyticsHref({ ...query, period, page: 1 }),
+  }));
 
-  const pathColumns: readonly Column<TopPath>[] = [
-    { key: 'path', header: 'ページ', render: (row) => row.path },
-    { key: 'pageviews', header: 'ページビュー', render: (row) => row.pageviews.toLocaleString() },
-  ];
+  const tabItems: readonly TabItem[] = ANALYTICS_TABS.map((key) => ({
+    key,
+    label: TAB_LABEL[key],
+    visible: key !== 'settings' || canReadSites,
+  }));
 
   return (
-    <div style={{ display: 'grid', gap: 'var(--tf-space-4)' }}>
-      <h1 style={{ fontSize: '1.25rem', margin: 0 }}>アナリティクス</h1>
-
-      <Card>
-        <form method="get" style={{ display: 'flex', gap: 'var(--tf-space-3)', flexWrap: 'wrap' }}>
-          <label>
-            サイト
-            <select name="siteId" defaultValue={selectedSiteId ?? ''}>
-              <option value="">すべて</option>
-              {sites.map((site) => (
-                <option key={site.id} value={site.id}>
-                  {site.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            開始
-            <input type="date" name="from" defaultValue={from} />
-          </label>
-          <label>
-            終了
-            <input type="date" name="to" defaultValue={to} />
-          </label>
-          <button type="submit">絞り込む</button>
-        </form>
+    <div style={{ display: 'grid', gap: 'var(--tf-space-6)' }}>
+      <div style={{ display: 'grid', gap: 'var(--tf-space-2)' }}>
+        <h1 style={{ margin: 0 }}>アナリティクス</h1>
         {/*
-          **どの時間帯で1日を区切っているかを見せる。** 見えないと、
+          **どの時間帯で 1 日を区切っているかを見せる。** 見えないと、
           「昨日のはずの数字が今日に入っている」ときに確かめようがない。
         */}
         <p
-          style={{
-            margin: 'var(--tf-space-2) 0 0',
-            color: 'var(--tf-color-text-muted)',
-            fontSize: '0.875rem',
-          }}
+          style={{ margin: 0, color: 'var(--tf-color-text-muted)' }}
           data-analytics-timezone={timeZone}
         >
-          日付の区切りは {timeZone} です。
+          前期間（{rangeText(previousFrom, previousTo)}）と比較 {MIDDLE_DOT} 日付の区切りは{' '}
+          {timeZone}
         </p>
-      </Card>
+      </div>
 
-      {rows.length === 0 ? (
-        <Card>
-          <EmptyState message="この期間のデータはありません。" />
-          <Alert tone="info">
-            数値が出るには、計測タグをサイトへ貼り、集計を実行する必要があります。 集計は{' '}
-            <code>POST /api/v1/analytics/rollup</code> で行います（cron から
-            APIトークンで叩けます）。
-          </Alert>
-        </Card>
-      ) : (
-        <>
-          <Card>
-            <p style={{ margin: 0 }}>
-              期間合計：ページビュー {totals.pageviews.toLocaleString()} / 訪問者{' '}
-              {totals.visitors.toLocaleString()}
-            </p>
-          </Card>
-
-          <Card>
-            <h2 style={{ fontSize: '1rem', marginTop: 0 }}>日次</h2>
-            <Table columns={dailyColumns} rows={rows} rowKey={(row) => row.date} />
-          </Card>
-        </>
+      {rangeWarning && (
+        <Alert tone="danger">
+          期間を確認してください。日付の形式が不正か、終了日が開始日より前か、400
+          日を超えています。直近 30 日で表示しています。
+        </Alert>
       )}
 
-      <Card>
-        <h2 style={{ fontSize: '1rem', marginTop: 0 }}>上位ページ</h2>
-        {topPaths.length === 0 ? (
-          <EmptyState message="この期間のアクセスはありません。" />
-        ) : (
-          <Table columns={pathColumns} rows={topPaths} rowKey={(row) => row.path} />
-        )}
-      </Card>
+      <div
+        style={{
+          display: 'flex',
+          gap: 'var(--tf-space-4)',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+        }}
+      >
+        <SegmentedControl items={presetItems} current={query.period} label="期間" />
+        <div
+          style={{
+            display: 'flex',
+            gap: 'var(--tf-space-2)',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+          }}
+        >
+          {/*
+            非制御にして、URL が変わったら `key` で作り直す。制御にすると、
+            日付を途中まで打った時点で React が元の値へ戻してしまう。
+          */}
+          <DateField
+            key={`from-${query.from}`}
+            aria-label="開始日"
+            defaultValue={query.from}
+            style={{ width: 'auto' }}
+            onChange={(event) => {
+              // 触ったら custom。もう片方は今の値を引き継ぐ。
+              if (event.currentTarget.value !== '') {
+                go({ period: 'custom', from: event.currentTarget.value, page: 1 });
+              }
+            }}
+          />
+          <span style={{ color: 'var(--tf-color-text-subtle)' }}>–</span>
+          <DateField
+            key={`to-${query.to}`}
+            aria-label="終了日"
+            defaultValue={query.to}
+            style={{ width: 'auto' }}
+            onChange={(event) => {
+              if (event.currentTarget.value !== '') {
+                go({ period: 'custom', to: event.currentTarget.value, page: 1 });
+              }
+            }}
+          />
+        </div>
+      </div>
 
-      <Card>
-        <h2 style={{ fontSize: '1rem', marginTop: 0 }}>計測タグ</h2>
-
-        {/*
-          **絞り込みを待たずに出す。** 以前は「サイトを選んで絞り込む」まで
-          何も出なかったため、登録したサイトが見当たらないように見えていた。
-          サイトを選んでいるときは、そのサイトだけに絞る。
-        */}
-        {shown.length === 0 ? (
-          <EmptyState message="Webサイトを登録すると、ここに計測タグが出ます。" />
-        ) : (
-          <>
-            <p style={{ marginTop: 0 }}>
-              測りたいページの<code>&lt;head&gt;</code> に貼ってください。
-            </p>
-            <div style={{ display: 'grid', gap: 'var(--tf-space-3)' }}>
-              {shown.map((site) => (
-                // **minWidth: 0 が要る。** grid の子は既定で min-width:auto のため、
-                // 中の長い1行がトラックを押し広げ、ページ全体が横スクロールする。
-                <div key={site.id} style={{ minWidth: 0 }}>
-                  <p style={{ margin: '0 0 var(--tf-space-1)', fontWeight: 600 }}>{site.name}</p>
-                  <pre
-                    data-tracking-snippet
-                    data-site-id={site.id}
-                    style={{
-                      background: 'var(--tf-color-surface)',
-                      border: '1px solid var(--tf-color-border)',
-                      borderRadius: 'var(--tf-radius-md)',
-                      padding: 'var(--tf-space-3)',
-                      margin: 0,
-                      overflowX: 'auto',
-                    }}
-                  >
-                    {snippetFor(site, scriptOrigin)}
-                  </pre>
-                </div>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          gap: 'var(--tf-space-4)',
+          flexWrap: 'wrap',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 'var(--tf-space-4)',
+            flexWrap: 'wrap',
+            minWidth: 0,
+          }}
+        >
+          <label
+            htmlFor="analytics-site"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 'var(--tf-space-3)',
+              maxWidth: '100%',
+              color: 'var(--tf-color-text-muted)',
+            }}
+          >
+            サイト
+            <Select
+              id="analytics-site"
+              aria-label="サイト"
+              value={query.siteId}
+              onChange={(event) => go({ siteId: event.currentTarget.value, page: 1 })}
+              style={{ width: 'auto', maxWidth: '100%', fontWeight: 600 }}
+            >
+              {options.map((site) => (
+                <option key={site.id} value={site.id}>
+                  {site.tracked ? site.name : `${site.name}（未設置）`}
+                </option>
               ))}
-            </div>
-            {scriptOrigin === null && (
-              <Alert tone="warning">
-                送信先のホストを特定できませんでした。<code>APP_URL</code> を設定してください。
-                このままのタグを別のホストへ貼っても計測は届きません。
-              </Alert>
-            )}
-            <p style={{ color: 'var(--tf-color-text-muted)', margin: 0 }}>
-              Cookie は使いません。IPアドレスとブラウザ情報は保存せず、
-              日ごとに変わるハッシュだけを記録します。
-            </p>
-          </>
-        )}
-      </Card>
+            </Select>
+          </label>
+          {selected?.url !== null && selected?.url !== undefined && (
+            <a
+              href={selected.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: 'var(--tf-color-text-muted)', overflowWrap: 'anywhere' }}
+            >
+              {selected.url}
+            </a>
+          )}
+        </div>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 'var(--tf-space-5)',
+            flexWrap: 'wrap',
+          }}
+        >
+          <Switch
+            checked={query.includeBots}
+            onChange={(checked) => go({ includeBots: checked })}
+            label="Bot を集計に含める"
+          />
+          <span style={CAPTION}>最終受信 {lastSeenAt ?? NO_VALUE}</span>
+        </div>
+      </div>
 
-      <p style={{ color: 'var(--tf-color-text-muted)' }}>
-        Webサイトの登録は<Link href="/sites">Webサイト</Link>から行います。
-      </p>
+      <Tabs
+        items={tabItems}
+        current={query.tab}
+        hrefFor={(key) =>
+          analyticsHref({ ...query, tab: isAnalyticsTab(key) ? key : 'overview', page: 1 })
+        }
+        label="アナリティクスのタブ"
+      />
+
+      {tab.kind === 'not-tracked' && (
+        <NotTracked
+          settingsHref={analyticsHref({ ...query, tab: 'settings', page: 1 })}
+          canOpenSettings={canReadSites}
+          data={tab.data}
+        />
+      )}
+      {tab.kind === 'overview' && (
+        <OverviewTab
+          data={tab.data}
+          from={query.from}
+          to={query.to}
+          includeBots={query.includeBots}
+          pagesHref={analyticsHref({ ...query, tab: 'pages', page: 1 })}
+          referrersHref={analyticsHref({ ...query, tab: 'referrers', page: 1 })}
+        />
+      )}
+      {tab.kind === 'pages' && (
+        <PagesTab
+          data={tab.data}
+          includeBots={query.includeBots}
+          onPageChange={(page) => go({ page })}
+        />
+      )}
+      {tab.kind === 'referrers' && (
+        <ReferrersTab
+          data={tab.data}
+          includeBots={query.includeBots}
+          onPageChange={(page) => go({ page })}
+        />
+      )}
+      {tab.kind === 'visitors' && <VisitorsTab data={tab.data} includeBots={query.includeBots} />}
+      {tab.kind === 'settings' && <SettingsTab data={tab.data} />}
     </div>
   );
 }
