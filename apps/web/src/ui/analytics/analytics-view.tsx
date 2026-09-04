@@ -21,7 +21,7 @@ import {
   TAB_LABEL,
   rangeText,
 } from './labels';
-import { NotTracked } from './not-tracked';
+import { NotTracked, type NotTrackedData } from './not-tracked';
 import { OverviewTab, type OverviewData } from './overview-tab';
 import { PagesTab, type PagesData } from './pages-tab';
 import { CAPTION } from './parts';
@@ -56,8 +56,12 @@ export type TabData =
   | { readonly kind: 'referrers'; readonly data: ReferrersData }
   | { readonly kind: 'visitors'; readonly data: VisitorsData }
   | { readonly kind: 'settings'; readonly data: SettingsData }
-  /** 未設置（§7.3.7）。タブの中身の代わりに導線を出す。 */
-  | { readonly kind: 'not-tracked' };
+  /**
+   * 数字が出ない状態（028 §7.3.7、029 §7.1.3）。タブの中身の代わりに導線を出す。
+   *
+   * 「未受信」だけでなく「集計待ち」「Bot のみ受信」も含む。
+   */
+  | { readonly kind: 'not-tracked'; readonly data: NotTrackedData };
 
 export interface AnalyticsViewProps {
   readonly query: AnalyticsQuery;
@@ -268,6 +272,7 @@ export function AnalyticsView({
         <NotTracked
           settingsHref={analyticsHref({ ...query, tab: 'settings', page: 1 })}
           canOpenSettings={canReadSites}
+          data={tab.data}
         />
       )}
       {tab.kind === 'overview' && (

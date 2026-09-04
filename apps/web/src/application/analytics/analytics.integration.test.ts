@@ -16,6 +16,8 @@ import { pruneAccessLogs, rollupAnalytics } from '@/application/analytics/rollup
 import { ForbiddenError, type AuthorizationContext } from '@/application/authorization/authorize';
 import { authorizationContextFor } from '@/application/authorization/context';
 import { resetEventHandlers, subscribe } from '@/application/events';
+import { ROLLUP_JOB } from '@/application/jobs/definitions';
+import { runJob } from '@/application/jobs/run-job';
 import { createSite, regenerateSitePublicKey } from '@/application/site/site-use-cases';
 import { withConnection } from '@/application/transaction';
 import type { UserIdentity } from '@/authentication/identity';
@@ -2141,20 +2143,216 @@ describe('内訳', () => {
 });
 
 /**
- * 受信状況（028 設計 §6.4、受け入れ条件 #41）。
+ * 受信状況（028 設計 §6.4、受け入れ条件 #41。029 設計 §5.4 / §6.4、受け入れ条件 #46〜#51 で拡張）。
  *
- * `getAnalyticsStatus({ siteId })` → `{ siteId, analyticsLastSeenAt, lastRollupAt }`。
- * `lastRollupAt` は `source = 'core'` の `max(updated_at)`。UseCase 名 `analytics.status`、
- * Permission `analytics.read`。
+ * `getAnalyticsStatus({ siteId })` → `AnalyticsStatus`：
+ * 既存の `siteId` / `analyticsLastSeenAt` / `lastRollupAt`（`source = 'core'` の `max(updated_at)`。残す。裁定 #7）に、
+ * `lastReceivedAt`（生ログの最終受信。Bot 含む）、`pending`（最終集計以降の未集計件数。上限 1000）、
+ * `rollup`（`job_runs` と基盤のスナップショット）を足す。UseCase 名 `analytics.status`、Permission `analytics.read`。
+ *
+ * `runJob` で流したテストの `job_runs` の行が次のテストの `since` に効くので、この describe の後始末で消す。
  */
 describe('受信状況', () => {
-  /** #41。計測も集計もしていないサイトは両方 null。 */
+  afterEach(async () => {
+    await withConnection((connection) => sql`DELETE FROM job_runs`.execute(connection.db));
+  });
+
+  /** 生ログを `occurred_at = 今` で 1 件入れ、その時刻を返す。 */
+  async function insertLogNow(siteId: string, device: 'desktop' | 'bot' = 'desktop') {
+    const now = new Date();
+    await insertLogs(siteId, [{ at: now.toISOString(), visitor: `v-${now.getTime()}`, device }]);
+    return now;
+  }
+
+  /** ロールアップを `runJob` で流す（`job_runs` に ok の行が入る）。 */
+  async function runRollup(from: string, to: string = from) {
+    const outcome = await withConnection((connection) =>
+      runJob(connection, ROLLUP_JOB, { trigger: 'manual', wait: true, input: { from, to } }),
+    );
+    expect(outcome.outcome).toBe('ok');
+    // `RunOutcome.run` は skipped / ロック失敗のとき null になりうる（設計 §6.1.5）。
+    if (outcome.run === null) throw new Error('job_runs に記録されていない');
+    return outcome.run;
+  }
+
+  /** #41 / #46。計測も集計もしていないサイトはすべて null / 0。 */
   it('計測も集計もしていなければ両方 null', async () => {
     const site = await makeSite();
 
     const status = await getAnalyticsStatus(admin, { siteId: site.id });
 
-    expect(status).toEqual({ siteId: site.id, analyticsLastSeenAt: null, lastRollupAt: null });
+    expect(status).toMatchObject({
+      siteId: site.id,
+      analyticsLastSeenAt: null,
+      lastRollupAt: null,
+    });
+  });
+
+  /** #46 */
+  it('生ログが無いサイトは lastReceivedAt が null で pending が 0、rollup も空', async () => {
+    const site = await makeSite();
+
+    const status = await getAnalyticsStatus(admin, { siteId: site.id });
+
+    expect(status.lastReceivedAt).toBeNull();
+    expect(status.pending).toEqual({ total: 0, bots: 0, capped: false, since: null });
+    expect(status.rollup).toMatchObject({
+      lastSucceededAt: null,
+      lastRun: null,
+      // テストでは基盤が起動していない。
+      scheduled: false,
+      nextRunAt: null,
+    });
+    expect(status.rollup.intervalMinutes).toBe(15);
+  });
+
+  /** #47。最終受信は Bot でも数える。 */
+  it('人の生ログ 2 件と Bot 1 件を入れると、lastReceivedAt は最新の occurred_at（Bot でも）', async () => {
+    const site = await makeSite();
+    await insertLogs(site.id, [
+      { at: at('10:00'), visitor: 'v1' },
+      { at: at('10:05'), visitor: 'v2' },
+      { at: at('11:00'), visitor: 'b1', device: 'bot' },
+    ]);
+
+    const status = await getAnalyticsStatus(admin, { siteId: site.id });
+
+    expect(status.lastReceivedAt?.toISOString()).toBe('2026-06-10T11:00:00.000Z');
+  });
+
+  /** #47。集計したことが無ければ since = null で全件が未集計。 */
+  it('集計したことが無ければ pending は全件（total 3、bots 1、since null）', async () => {
+    const site = await makeSite();
+    await insertLogs(site.id, [
+      { at: at('10:00'), visitor: 'v1' },
+      { at: at('10:05'), visitor: 'v2' },
+      { at: at('11:00'), visitor: 'b1', device: 'bot' },
+    ]);
+
+    const status = await getAnalyticsStatus(admin, { siteId: site.id });
+
+    expect(status.pending).toEqual({ total: 3, bots: 1, capped: false, since: null });
+  });
+
+  /** #48。境目は最後に成功したロールアップの開始時刻。 */
+  it('runJob(ROLLUP_JOB) の後に足した生ログだけが pending に数えられ、since はその実行の started_at', async () => {
+    const site = await makeSite();
+    await insertLogs(site.id, [{ at: at('10:00'), visitor: 'v1' }]);
+    const run = await runRollup(DAY);
+    await insertLogNow(site.id);
+
+    const status = await getAnalyticsStatus(admin, { siteId: site.id });
+
+    expect(status.pending.total).toBe(1);
+    expect(status.pending.bots).toBe(0);
+    expect(status.pending.since?.getTime()).toBe(run.startedAt.getTime());
+  });
+
+  /** #48。rollup.lastSucceededAt は成功した実行の終了時刻、lastRun は直近の実行。 */
+  it('runJob(ROLLUP_JOB) の後、rollup.lastSucceededAt がその finished_at で lastRun.status が ok', async () => {
+    const site = await makeSite();
+    await insertLogs(site.id, [{ at: at('10:00'), visitor: 'v1' }]);
+    const run = await runRollup(DAY);
+
+    const status = await getAnalyticsStatus(admin, { siteId: site.id });
+
+    expect(run.finishedAt).toBeInstanceOf(Date);
+    expect(status.rollup.lastSucceededAt?.getTime()).toBe(run.finishedAt?.getTime());
+    expect(status.rollup.lastRun?.status).toBe('ok');
+    expect(status.rollup.lastRun?.startedAt.getTime()).toBe(run.startedAt.getTime());
+    expect(status.rollup.lastRun?.finishedAt?.getTime()).toBe(run.finishedAt?.getTime());
+    // error の文字列は画面に出さない（結果だけ）。
+    expect(status.rollup.lastRun).not.toHaveProperty('error');
+  });
+
+  /** #49。生ログの期間全体を舐めない。1000 件で打ち切る。 */
+  it('生ログを 1001 件入れると pending.total は 1000 で capped が true', async () => {
+    const site = await makeSite();
+    const base = Date.parse('2026-06-10T00:00:00Z');
+    await withConnection((connection) =>
+      connection.db
+        .insertInto('access_logs')
+        .values(
+          Array.from({ length: 1001 }, (_, index) => ({
+            id: uuidv7(),
+            site_id: site.id,
+            occurred_at: new Date(base + index * 1000).toISOString(),
+            path: '/',
+            referrer_host: null,
+            visitor_hash: `v${index % 7}`,
+            device: index % 10 === 0 ? ('bot' as const) : ('desktop' as const),
+          })),
+        )
+        .execute(),
+    );
+
+    const status = await getAnalyticsStatus(admin, { siteId: site.id });
+
+    expect(status.pending.total).toBe(1000);
+    expect(status.pending.capped).toBe(true);
+    expect(status.pending.bots).toBeGreaterThan(0);
+    expect(status.pending.bots).toBeLessThanOrEqual(1000);
+  });
+
+  /** #49 の対。ちょうど 1000 件は capped（実際はもっと多いかもしれないので打ち切り扱い）。1 件は打ち切らない。 */
+  it('生ログが 1 件なら capped は false', async () => {
+    const site = await makeSite();
+    await insertLogs(site.id, [{ at: at('10:00'), visitor: 'v1' }]);
+
+    const status = await getAnalyticsStatus(admin, { siteId: site.id });
+
+    expect(status.pending).toMatchObject({ total: 1, capped: false });
+  });
+
+  /** #50。直近が失敗でも「最後にいつ集計できたか」は消えない。 */
+  it('ロールアップの error 行を記録した後、lastRun.status は error で lastSucceededAt は直前の ok のまま', async () => {
+    const site = await makeSite();
+    await insertLogs(site.id, [{ at: at('10:00'), visitor: 'v1' }]);
+    const run = await runRollup(DAY);
+    await withConnection((connection) =>
+      sql`
+        INSERT INTO job_runs (id, job_name, triggered_by, status, started_at, finished_at, error, summary)
+        VALUES (${uuidv7()}, 'analytics.rollup', 'scheduled', 'error', now(), now(), '失敗', '{}'::jsonb)
+      `.execute(connection.db),
+    );
+
+    const status = await getAnalyticsStatus(admin, { siteId: site.id });
+
+    expect(status.rollup.lastRun?.status).toBe('error');
+    expect(status.rollup.lastSucceededAt?.getTime()).toBe(run.finishedAt?.getTime());
+    // 未集計の境目も最後の成功のまま。
+    expect(status.pending.since?.getTime()).toBe(run.startedAt.getTime());
+  });
+
+  /** #51（裁定 #7）。`lastRollupAt`（サイトごと）と `rollup.lastSucceededAt`（全体）の両方がある。 */
+  it('サイト A だけをロールアップした後、B の lastRollupAt は null のままで rollup.lastSucceededAt は A・B とも同じ', async () => {
+    const siteA = await makeSite();
+    const siteB = await makeSite();
+    await insertLogs(siteA.id, [{ at: at('10:00'), visitor: 'v1' }]);
+    const run = await runRollup(DAY);
+
+    const statusA = await getAnalyticsStatus(admin, { siteId: siteA.id });
+    const statusB = await getAnalyticsStatus(admin, { siteId: siteB.id });
+
+    expect(statusA.lastRollupAt).toBeInstanceOf(Date);
+    expect(statusB.lastRollupAt).toBeNull();
+    expect(statusA.rollup.lastSucceededAt?.getTime()).toBe(run.finishedAt?.getTime());
+    expect(statusB.rollup.lastSucceededAt?.getTime()).toBe(run.finishedAt?.getTime());
+  });
+
+  /** #51。**ID を差し替えても他サイトの生ログ（最終受信・未集計）にならない。** */
+  it('他のサイトの生ログは自分の lastReceivedAt / pending に現れない', async () => {
+    const mine = await makeSite();
+    const other = await makeSite();
+    await insertLogs(other.id, [
+      { at: at('10:00'), visitor: 'v1' },
+      { at: at('11:00'), visitor: 'b1', device: 'bot' },
+    ]);
+
+    const status = await getAnalyticsStatus(admin, { siteId: mine.id });
+
+    expect(status.lastReceivedAt).toBeNull();
+    expect(status.pending).toEqual({ total: 0, bots: 0, capped: false, since: null });
   });
 
   /** #41 */
@@ -2224,7 +2422,13 @@ describe('受信状況', () => {
 
     const status = await getAnalyticsStatus(admin, { siteId: mine.id });
 
-    expect(status).toEqual({ siteId: mine.id, analyticsLastSeenAt: null, lastRollupAt: null });
+    expect(status).toMatchObject({
+      siteId: mine.id,
+      analyticsLastSeenAt: null,
+      lastRollupAt: null,
+    });
+    expect(status.lastReceivedAt).toBeNull();
+    expect(status.pending.total).toBe(0);
   });
 
   /** #41 */

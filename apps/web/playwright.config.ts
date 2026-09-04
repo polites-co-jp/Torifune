@@ -23,10 +23,18 @@ export default defineConfig({
   webServer: process.env['TORIFUNE_E2E_BASE_URL']
     ? undefined
     : {
-        // **集計の1日の境目を固定する。** 実行マシンのタイムゾーンに任せると、
-        // UTC と食い違う時間帯（JST なら 00:00〜09:00）だけテストが落ちる。
-        // UTC 以外を指定して、境目がずれている経路も実際に通す。
-        env: { ...process.env, TORIFUNE_TIMEZONE: 'Asia/Tokyo' },
+        env: {
+          ...process.env,
+          // **集計の1日の境目を固定する。** 実行マシンのタイムゾーンに任せると、
+          // UTC と食い違う時間帯（JST なら 00:00〜09:00）だけテストが落ちる。
+          // UTC 以外を指定して、境目がずれている経路も実際に通す。
+          TORIFUNE_TIMEZONE: 'Asia/Tokyo',
+          // **定期実行を有効のまま短くする**（029 設計 §10 末尾）。既定の 15 分では
+          // 「人手を介さない経路で数字が出る」を E2E の時間内に確かめられない。
+          // `TORIFUNE_SCHEDULER` は既定（有効）のまま。定期実行が動いている状態で
+          // 既存の E2E が通ること自体が受け入れ条件。
+          TORIFUNE_ROLLUP_INTERVAL_MINUTES: '1',
+        },
         command: 'pnpm build && pnpm start',
         url: BASE_URL,
         reuseExistingServer: !process.env['CI'],

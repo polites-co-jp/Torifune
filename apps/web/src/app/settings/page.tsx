@@ -1,21 +1,30 @@
 import { allowedOrigins } from '@/api/cors';
+import { analyticsTimeZone } from '@/application/analytics/timezone';
 import { listPermissions } from '@/application/authorization/permission-registry';
+import { listJobStatuses } from '@/application/jobs/job-use-cases';
+import { schedulerSnapshot } from '@/application/jobs/scheduler';
 import { getSystemSettings } from '@/application/system-settings/system-settings-use-cases';
 import { authenticationProviderId } from '@/authentication/registry';
 import { listUsers } from '@/application/user/user-use-cases';
 import { listRoleGrants, listRoles } from '@/application/authorization/role-use-cases';
+import { formatDateTimeInTimeZone } from '@/domain/analytics/day';
 import { Tabs } from '@/ui/components';
+import { JOB_LABEL } from '@/ui/analytics/labels';
 import { AppShell } from '@/ui/layout/app-shell';
 import { ExtensionPoint } from '@/ui/plugin/plugin-slot';
 import { requirePageSession } from '@/ui/server/page-session';
 import { ApiSettings } from '@/ui/settings/api-settings';
 import { AuthSettings } from '@/ui/settings/auth-settings';
 import { GeneralSettings } from '@/ui/settings/general-settings';
+import { JobStatusCard, type JobStatusCardData } from '@/ui/settings/job-status';
 import { PermissionMatrix } from '@/ui/settings/permission-matrix';
 import { UserList } from '@/ui/settings/user-list';
 import { AsyncState } from '@/ui/states/async-state';
 
 export const dynamic = 'force-dynamic';
+
+/** 「直近のエラー」に並べる件数（設計 §7.2）。 */
+const RECENT_ERROR_DISPLAY_LIMIT = 5;
 
 /**
  * 設定画面（06_画面設計.md §16）。
@@ -95,7 +104,16 @@ export default async function SettingsPage({
         ]}
       />
 
-      {tab === 'general' && <GeneralSettings settings={settings} canManage={canManageSystem} />}
+      {tab === 'general' && (
+        <>
+          <GeneralSettings settings={settings} canManage={canManageSystem} />
+          {/*
+            定期実行の状況（029 設計 §7.2）。**タブは足さない**（06 §16）。
+            出し分けは表示制御で、認可は `listJobStatuses`（`system.manage`）が行う。
+          */}
+          {canManageSystem && <JobStatusSection context={context} />}
+        </>
+      )}
       {tab === 'users' && (
         <UsersTab context={context} page={page} perPage={perPage} roles={roles} />
       )}
@@ -166,6 +184,54 @@ async function UsersTab({
       perPage={perPage}
     />
   );
+}
+
+/**
+ * 定期実行の状況（029 設計 §7.2）。
+ *
+ * `booted` は `listJobStatuses` の戻り値に無いので、メモリだけを見る `schedulerSnapshot()` を
+ * ここで直接読む（DB にも認可にも関わらない）。日時は運用タイムゾーンの文字列にして渡す。
+ */
+async function JobStatusSection({ context }: { context: PageContext }) {
+  const timeZone = analyticsTimeZone();
+  const at = (instant: Date | null): string | null =>
+    instant === null ? null : formatDateTimeInTimeZone(instant, timeZone);
+
+  const statuses = await listJobStatuses(context, {});
+  const snapshot = schedulerSnapshot();
+
+  const recentErrors = statuses
+    .flatMap((status) =>
+      status.recentErrors.map((run) => ({
+        jobLabel: JOB_LABEL[status.name],
+        startedAt: run.startedAt,
+        error: run.error ?? '',
+      })),
+    )
+    .sort((left, right) => right.startedAt.getTime() - left.startedAt.getTime())
+    .slice(0, RECENT_ERROR_DISPLAY_LIMIT)
+    .map((entry) => ({
+      jobLabel: entry.jobLabel,
+      at: at(entry.startedAt) ?? '',
+      error: entry.error,
+    }));
+
+  const data: JobStatusCardData = {
+    booted: snapshot.booted,
+    enabled: snapshot.enabled,
+    jobs: statuses.map((status) => ({
+      name: status.name,
+      label: JOB_LABEL[status.name],
+      intervalMinutes: status.intervalMinutes,
+      lastRunAt: at(status.lastRun?.startedAt ?? null),
+      lastRunStatus: status.lastRun?.status ?? null,
+      lastSuccessAt: at(status.lastSuccess?.finishedAt ?? status.lastSuccess?.startedAt ?? null),
+      nextRunAt: at(status.nextRunAt),
+    })),
+    recentErrors,
+  };
+
+  return <JobStatusCard data={data} />;
 }
 
 async function PermissionsTab({ context, roles }: { context: PageContext; roles: RoleList }) {

@@ -469,7 +469,11 @@ test.describe('未設置サイトの導線', () => {
     await expect(
       page.getByRole('heading', { name: 'まだアクセスの記録がありません' }),
     ).toBeVisible();
-    await expect(page.getByText('計測タグをサイトへ貼り', { exact: false })).toBeVisible();
+    // 029 設計 §7.1.3 で説明文が「数字が出るには、計測タグをサイトへ貼る必要があります。
+    // 集計は Torifune が N 分ごとに自動で行います。」に変わった。
+    await expect(
+      page.getByText('計測タグをサイトへ貼る必要があります', { exact: false }),
+    ).toBeVisible();
     await expect(page.getByRole('button', { name: '計測タグを取得' })).toBeVisible();
   });
 
@@ -826,6 +830,149 @@ test.describe('設定タブ', () => {
 });
 
 /**
+ * 受信状況の 4 状態と定期実行（029-scheduled-jobs 設計 §7.1、受け入れ条件 #56〜#60、#63）。
+ *
+ * E2E は定期実行が有効（`TORIFUNE_ROLLUP_INTERVAL_MINUTES=1`。`playwright.config.ts`）な状態で走る。
+ * `collect` 直後の画面は、定期ロールアップが先に走っているかどうかで「集計待ち」か数字かが変わる
+ * （設計 §11 #10）。厳密な判定は Domain（#6〜#10）と部品（#53〜#54）で担保する。
+ */
+test.describe('受信状況の 4 状態と定期実行', () => {
+  /** `StatusRow`：ラベルの span の親（行）。 */
+  function statusRow(page: Page, label: string): Locator {
+    return page.getByText(label, { exact: true }).locator('..');
+  }
+
+  const DATE_TIME = /\d{4}-\d{2}-\d{2} \d{2}:\d{2}/;
+
+  /** #56 */
+  test('計測したことが無いサイトは「計測タグ未設置」の導線に「N 分ごとに自動」が出る', async ({
+    page,
+    request,
+  }) => {
+    const siteId = await makeTrackedSite(request);
+
+    await page.goto(`/analytics?siteId=${siteId}`);
+
+    await expect(page.getByText('計測タグ未設置')).toBeVisible();
+    await expect(
+      page.getByRole('heading', { name: 'まだアクセスの記録がありません' }),
+    ).toBeVisible();
+    await expect(page.getByRole('button', { name: '計測タグを取得' })).toBeVisible();
+    await expect(page.getByText(/\d+ 分ごとに自動/)).toBeVisible();
+  });
+
+  /** #57。集計を待たずに「届いている」ことが分かる。 */
+  test('collect を 1 件送った直後は「計測タグ未設置」が出ず、最終受信が出る', async ({
+    page,
+    request,
+  }) => {
+    const siteId = await makeTrackedSite(request);
+    const publicKey = await publicKeyOf(page, siteId);
+    await collectHits(request, publicKey, ['/']);
+
+    await page.goto(todayUrl(siteId));
+
+    await expect(page.getByText('計測タグ未設置')).toHaveCount(0);
+    await expect(page.getByText(/最終受信 \d{4}-\d{2}-\d{2} \d{2}:\d{2}/).first()).toBeVisible();
+    // 定期実行が先に走っていれば概要の数字、まだなら「集計待ち」の導線。どちらでもよい。
+    await expect(
+      page
+        .getByRole('heading', { name: /アクセスは届いています/ })
+        .or(page.getByText('ページビュー', { exact: true }).first()),
+    ).toBeVisible();
+  });
+
+  /** #58 */
+  test('collect → rollup の後の設定タブは「受信中」で、最終集計（全体）・このサイトの集計値の最終更新・定期実行が埋まる', async ({
+    page,
+    request,
+  }) => {
+    const siteId = await makeTrackedSite(request);
+    const publicKey = await publicKeyOf(page, siteId);
+    await collectHits(request, publicKey, ['/']);
+    await rollupToday(request);
+
+    await page.goto(`/analytics?siteId=${siteId}&tab=settings`);
+
+    await expect(page.getByText('受信中', { exact: true })).toBeVisible();
+    await expect(statusRow(page, '最終集計（全体）')).toContainText(DATE_TIME);
+    await expect(statusRow(page, 'このサイトの集計値の最終更新')).toContainText(DATE_TIME);
+    await expect(statusRow(page, '定期実行')).toContainText(
+      /有効 · \d+ 分ごと · 次回 \d{4}-\d{2}-\d{2} \d{2}:\d{2}/,
+    );
+    await expect(statusRow(page, '未集計の受信')).toContainText('—');
+  });
+
+  /** #59。Bot だけの期間は概要タブで警告する。 */
+  test('Bot だけを集計した期間の概要に「すべて Bot と判定され」の警告が出て、bots=1 では出ない', async ({
+    page,
+    request,
+  }) => {
+    const siteId = await makeTrackedSite(request);
+    const publicKey = await publicKeyOf(page, siteId);
+    await collectBotHit(request, publicKey, '/');
+    await rollupToday(request);
+
+    await page.goto(todayUrl(siteId));
+    await expect(
+      page.getByRole('alert').filter({ hasText: 'すべて Bot と判定され' }),
+    ).toBeVisible();
+
+    await page.goto(todayUrl(siteId, '&bots=1'));
+    await expect(page.getByText('すべて Bot と判定され', { exact: false })).toHaveCount(0);
+    await expect(statTile(page, 'ページビュー')).toContainText('1');
+  });
+
+  /** #60。**人手を介さない経路。** API を叩かずに数字が出る。 */
+  test('collect のあと API を叩かずに待つと、定期実行で概要にページビューが出る', async ({
+    page,
+    request,
+  }) => {
+    // 初回遅延 15 秒 + 間隔 1 分。
+    test.setTimeout(150_000);
+    const siteId = await makeTrackedSite(request);
+    const publicKey = await publicKeyOf(page, siteId);
+    await collectHits(request, publicKey, ['/', '/pricing']);
+
+    await page.goto(todayUrl(siteId));
+    await expect
+      .poll(
+        async () => {
+          await page.reload();
+          const tile = statTile(page, 'ページビュー');
+          if ((await tile.count()) === 0) return null;
+          return (await tile.textContent()) ?? null;
+        },
+        { timeout: 120_000, intervals: [5_000] },
+      )
+      .toMatch(/[1-9]/);
+
+    await page.goto(`/analytics?siteId=${siteId}&tab=settings`);
+    await expect(statusRow(page, '最終集計（全体）')).toContainText(DATE_TIME);
+  });
+
+  /**
+   * #63。既存の「受信状況が計測前は「未受信」、集計後は「受信中」になる」（設定タブの describe）は
+   * 文言そのまま通る。ここでは 4 状態のうち exact な「未受信」と「受信中」を改めて固定する。
+   */
+  test('計測前は「未受信」、collect + 集計後は「受信中」（exact）', async ({ page, request }) => {
+    const siteId = await makeTrackedSite(request);
+    const publicKey = await publicKeyOf(page, siteId);
+
+    await expect(page.getByText('未受信', { exact: true })).toBeVisible();
+    await expect(page.getByText('受信中', { exact: true })).toHaveCount(0);
+
+    await collectHits(request, publicKey, ['/']);
+    await rollupToday(request);
+    await page.goto(`/analytics?siteId=${siteId}&tab=settings`);
+
+    await expect(page.getByText('受信中', { exact: true })).toBeVisible();
+    await expect(page.getByText('未受信', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('受信中（集計待ち）', { exact: true })).toHaveCount(0);
+  });
+});
+
+/**
  * #84。不正な期間でも画面を落とさない（設計 §7.3.1）。API は 422 だが画面は警告を出して 30 日に戻す。
  */
 test.describe('不正な期間', () => {
@@ -1133,6 +1280,31 @@ test('存在しない ID での取得は用意していない', async ({ request
 test('期間が逆転していれば 422', async ({ request }) => {
   const response = await request.get('/api/v1/analytics?from=2026-05-01&to=2026-04-01');
   expect(response.status()).toBe(422);
+});
+
+/**
+ * #82（029-scheduled-jobs 検証の反映。security-reviewer M-1）。
+ *
+ * `isValidRange` が形式（`^\d{4}-\d{2}-\d{2}$`）しか見ていないと、実在しない日付が通る。
+ * その先の `rangeDays` は `Date.parse` に依るので `NaN` になり、
+ * **`NaN > MAX_RANGE_DAYS` が `false`** で幅の検査まで素通りする。
+ * 入口（`isValidRange`）を直すと、`POST /analytics/rollup` だけでなく
+ * `GET /analytics` 系（`assertRange`）と画面も同時に塞がる。ここはその回帰。
+ */
+test('実在しない日付なら 422（GET /analytics）', async ({ request }) => {
+  const response = await request.get('/api/v1/analytics?from=0000-00-00&to=9999-99-99');
+
+  expect(response.status(), await response.text()).toBe(422);
+  const body = (await response.json()) as { error: { code: string } };
+  expect(body.error.code).toBe('VALIDATION_ERROR');
+});
+
+test('実在しない日付なら 422（GET /analytics/breakdown）', async ({ request }) => {
+  const response = await request.get(
+    '/api/v1/analytics/breakdown?from=2026-02-30&to=2026-03-01&metric=path_pageviews',
+  );
+
+  expect(response.status(), await response.text()).toBe(422);
 });
 
 test('未認証では 401', async ({ request }) => {

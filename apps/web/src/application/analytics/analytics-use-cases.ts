@@ -16,7 +16,11 @@ import {
   type TrackedSite,
 } from '@/domain/analytics/analytics';
 import { NotFoundError, ValidationError } from '@/domain/repository';
-import { analyticsRepository } from '@/infrastructure/analytics-repository';
+import { schedulerConfig } from '@/application/jobs/config';
+import { ROLLUP_JOB } from '@/application/jobs/definitions';
+import { schedulerSnapshot } from '@/application/jobs/scheduler';
+import { analyticsRepository, PENDING_COUNT_LIMIT } from '@/infrastructure/analytics-repository';
+import { jobRunRepository } from '@/infrastructure/job-run-repository';
 
 /**
  * アクセス・分析データの参照（05_API設計.md §20、018-analytics）。
@@ -289,9 +293,15 @@ export const recordAnalytics = defineUseCase<RecordAnalyticsInput, void>({
 });
 
 /**
- * サイトの受信状況（028 設計 §6.4）。
+ * サイトの受信状況（028 設計 §6.4、029 設計 §6.4）。
  *
- * 画面の「設定」タブと「未設置」判定が使う。API には出していない。
+ * 画面の「設定」タブと受信状況の 4 状態の判定が使う。API には出していない
+ * （要るのは運用者であり、`GET /api/v1/jobs` で足りる）。
+ *
+ * 問い合わせは 6 つ。**生ログの期間全体を舐めるものは無い**（1 行か、上限つきの件数だけ）。
+ *
+ * `pending` の境目は最後に成功したロールアップの**開始**時刻にする。終了時刻にすると、
+ * 実行中に届いた分を「集計済み」に数えてしまう（数件の過大評価のほうが安全）。
  */
 export const getAnalyticsStatus = defineUseCase<{ readonly siteId: string }, AnalyticsStatus>({
   name: 'analytics.status',
@@ -302,15 +312,50 @@ export const getAnalyticsStatus = defineUseCase<{ readonly siteId: string }, Ana
       throw new NotFoundError('Site', input.siteId);
     }
 
-    const lastRollupAt = await analyticsRepository.findLastRollupAt(
+    const [lastRollupAt, lastReceivedAt, lastRun, lastSuccess] = await Promise.all([
+      analyticsRepository.findLastRollupAt(context.connection, input.siteId),
+      analyticsRepository.findLatestAccessAt(context.connection, input.siteId),
+      jobRunRepository.findLatest(context.connection, ROLLUP_JOB.name),
+      jobRunRepository.findLatestSucceeded(context.connection, ROLLUP_JOB.name),
+    ]);
+
+    const since = lastSuccess?.startedAt ?? null;
+    const pending = await analyticsRepository.countAccessSince(
       context.connection,
       input.siteId,
+      since,
     );
+
+    const snapshot = schedulerSnapshot();
+    const scheduled = snapshot.jobs.find((entry) => entry.name === ROLLUP_JOB.name);
 
     return {
       siteId: input.siteId,
       analyticsLastSeenAt: site.analyticsLastSeenAt,
       lastRollupAt,
+      lastReceivedAt,
+      pending: {
+        total: pending.total,
+        bots: pending.bots,
+        capped: pending.total === PENDING_COUNT_LIMIT,
+        since,
+      },
+      rollup: {
+        lastSucceededAt: lastSuccess?.finishedAt ?? null,
+        // **結果だけを出す。** エラーの文字列は画面に出さない（全文は `GET /api/v1/jobs`）。
+        lastRun:
+          lastRun === null
+            ? null
+            : {
+                status: lastRun.status,
+                startedAt: lastRun.startedAt,
+                finishedAt: lastRun.finishedAt,
+              },
+        scheduled: snapshot.enabled && scheduled !== undefined,
+        // 基盤が未起動・無効なら環境変数の解釈後の値（実装プラン §8 #1）。
+        intervalMinutes: scheduled?.intervalMinutes ?? schedulerConfig().rollupIntervalMinutes,
+        nextRunAt: scheduled?.nextRunAt ?? null,
+      },
     };
   },
 });

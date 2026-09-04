@@ -101,6 +101,8 @@ test('OpenAPI に登録済みエンドポイントが含まれる', async ({ req
     '/auth/password-reset/request',
     '/campaigns',
     '/campaigns/{id}',
+    // 029-scheduled-jobs 設計 §6.5。
+    '/jobs',
     '/permissions',
     '/plugins',
     '/plugins/operations/{id}',

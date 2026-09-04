@@ -301,6 +301,23 @@ export interface LoginAttemptsTable {
   occurred_at: CreatedAt;
 }
 
+/**
+ * 定期実行ジョブの実行記録（`migrations/021_job_runs.sql`）。設計は docs/設計/029-scheduled-jobs/。
+ *
+ * ジョブごとに最新 50 件だけ持つ（`JOB_RUN_RETENTION`）。履歴の長期保管はしない。
+ */
+export interface JobRunsTable {
+  id: string;
+  job_name: string;
+  triggered_by: string;
+  status: string;
+  started_at: CreatedAt;
+  finished_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  error: string | null;
+  summary: JSONColumnType<Record<string, unknown>, string | undefined, string>;
+  runner: string | null;
+}
+
 export interface SchemaMigrationsTable {
   version: string;
   name: string;
@@ -336,5 +353,6 @@ export interface Schema {
   password_reset_tokens: PasswordResetTokensTable;
   auth_authorization_states: AuthAuthorizationStatesTable;
   login_attempts: LoginAttemptsTable;
+  job_runs: JobRunsTable;
   schema_migrations: SchemaMigrationsTable;
 }

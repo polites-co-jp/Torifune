@@ -8,9 +8,11 @@ import {
   buildAuthorizationContext,
 } from '@/application/authorization/context';
 import { bearerTokenOf } from '@/domain/api-token';
+import { JobBusyError } from '@/domain/jobs/job';
 import type { PermissionName } from '@/domain/permission';
 import { ConflictError, NotFoundError, ValidationError } from '@/domain/repository';
 import { log } from '@/infrastructure/logging';
+import { redactSecrets } from '@/infrastructure/secret-text';
 import { authorizationErrorResponse } from './authorize';
 import { CSRF_COOKIE, readCookie, requestInfoOf, SESSION_COOKIE } from './cookies';
 import { corsHeaders } from './cors';
@@ -30,6 +32,18 @@ import { validate } from './validation';
  */
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * 想定外の例外をログへ載せるときの理由（029-scheduled-jobs 設計 §6.1.7）。
+ *
+ * **例外のメッセージは自由文で、接続文字列を含みうる。** Database Provider を差し替えた Plugin の
+ * 例外は標準 Provider の秘匿を通らないし、`logging.ts` の `maskSecrets` はキー名で落とす仕組みなので
+ * `reason` の中身には効かない。`job_runs.error` に伏せて書いた値が、
+ * 同じ例外からログへ素通りするのでは秘匿になっていない。
+ */
+function logReasonOf(error: unknown): string {
+  return redactSecrets(error instanceof Error ? error.message : String(error));
+}
 
 export interface RouteContext<TBody, TQuery> {
   readonly request: Request;
@@ -299,6 +313,16 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
       if (error instanceof NotFoundError) {
         return errorResponse('NOT_FOUND', undefined, cors);
       }
+      // **`ConflictError` より前に見る。** `CONFLICT` の既定文言（「すでに使用されています。」）では
+      // 運用者に理由が伝わらないので、説明を添えて返す（029 設計 §6.3 / §11 #9）。
+      // `Retry-After` を足すときも `cors` を落とさない（落とすと CORS 経由で読めなくなる）。
+      if (error instanceof JobBusyError) {
+        return errorResponse(
+          'CONFLICT',
+          { job: ['実行中のため受け付けられません。しばらくしてからやり直してください。'] },
+          { ...cors, 'Retry-After': '10' },
+        );
+      }
       if (error instanceof ConflictError) {
         return errorResponse('CONFLICT', undefined, cors);
       }
@@ -307,7 +331,7 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
       // 原因の追跡はサーバー側のログで行う。
       log.error('unhandled error in route', {
         operationId: definition.operationId,
-        reason: error instanceof Error ? error.message : String(error),
+        reason: logReasonOf(error),
       });
       return errorResponse('INTERNAL_ERROR', undefined, cors);
     }

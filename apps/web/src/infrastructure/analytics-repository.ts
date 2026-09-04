@@ -17,8 +17,10 @@ import type { SiteStatus } from '../domain/site/site';
  *
  * 生ログ（`access_logs`）と集計値（`analytics`）の両方を扱う。
  *
- * **生ログに触れるのは、記録・日次集計・最終受信の書き戻し・保持期間の削除・公開キーの照合だけ。**
- * 画面・API が読むのは集計値（`analytics`）に限る（018 設計 §4.1、028 設計 §6.3）。
+ * **生ログに触れるのは、記録・日次集計・最終受信の書き戻し・保持期間の削除・公開キーの照合と、
+ * 行数を `LIMIT` で固定した診断用の読み取り 2 つだけ。**
+ * 画面・API が「期間で集計する」ために読むのは集計値（`analytics`）に限る
+ * （018 設計 §4.1、028 設計 §6.3、029 設計 §6.4）。
  */
 
 /** UUID の形をしているか。不正な値で 500 にせず、見つからない扱いにする。 */
@@ -145,6 +147,20 @@ export interface SiteLastSeen {
 
 /** 1 回の多行 INSERT に載せる行数。パラメータ数の上限に当たらない大きさにしておく。 */
 const INSERT_CHUNK_SIZE = 500;
+
+/**
+ * 未集計件数を数えるときの打ち切り（029 設計 §5.4 / §6.4）。
+ *
+ * **「何件あるか」ではなく「人のアクセスが混じっているか」を見るための数**なので、
+ * ここで止めてよい。止めないと、集計を長く回していない環境で生ログを全部数えることになる。
+ */
+export const PENDING_COUNT_LIMIT = 1000;
+
+/** 最終集計以降に届いた生ログの内訳（Bot 含む）。 */
+export interface PendingAccessCount {
+  readonly total: number;
+  readonly bots: number;
+}
 
 export interface NewAccessLog {
   readonly id: string;
@@ -305,6 +321,69 @@ export const analyticsRepository = {
       .executeTakeFirst();
 
     return row?.last_rollup_at ?? null;
+  },
+
+  /**
+   * 生ログの最終受信（029 設計 §6.4）。**Bot を含める。**
+   *
+   * `sites.analytics_last_seen_at` はロールアップが書き戻す値なので、集計を待たないと動かない。
+   * 「タグを貼ったら届いたか」を集計前に見せるため、生ログを 1 行だけ読む。
+   * `access_logs_site_time_idx (site_id, occurred_at DESC)` の先頭 1 行で止まる。
+   */
+  async findLatestAccessAt(connection: Connection, siteId: string): Promise<Date | null> {
+    if (!UUID_PATTERN.test(siteId)) {
+      return null;
+    }
+    const row = await connection.db
+      .selectFrom('access_logs')
+      .select('occurred_at')
+      .where('site_id', '=', siteId)
+      .orderBy('occurred_at', 'desc')
+      .limit(1)
+      .executeTakeFirst();
+
+    return row?.occurred_at ?? null;
+  },
+
+  /**
+   * 最終集計以降に届いた生ログの件数（029 設計 §6.4）。**Bot を含め、内訳も返す。**
+   *
+   * **期間で集計するものではない。** 新しい順に最大 `limit` 件だけ見て数え、そこで打ち切る
+   * （呼ぶ側が `total === PENDING_COUNT_LIMIT` を「1000 件以上」として扱う）。
+   * 同じ索引を新しい順にたどるので、生ログが何年ぶんあっても読む行数は変わらない。
+   *
+   * `since` が null なら全件（打ち切りは効く）。
+   */
+  async countAccessSince(
+    connection: Connection,
+    siteId: string,
+    since: Date | null,
+    limit: number = PENDING_COUNT_LIMIT,
+  ): Promise<PendingAccessCount> {
+    if (!UUID_PATTERN.test(siteId)) {
+      return { total: 0, bots: 0 };
+    }
+
+    let recent = connection.db
+      .selectFrom('access_logs')
+      .select('device')
+      .where('site_id', '=', siteId)
+      .orderBy('occurred_at', 'desc')
+      .limit(limit);
+
+    if (since !== null) {
+      recent = recent.where('occurred_at', '>=', since);
+    }
+
+    const row = await connection.db
+      .selectFrom(recent.as('recent'))
+      .select((eb) => [
+        eb.fn.countAll<string>().as('total'),
+        sql<string>`count(*) FILTER (WHERE device = 'bot')`.as('bots'),
+      ])
+      .executeTakeFirst();
+
+    return { total: Number(row?.total ?? 0), bots: Number(row?.bots ?? 0) };
   },
 
   /**

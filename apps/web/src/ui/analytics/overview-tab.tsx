@@ -1,8 +1,10 @@
 'use client';
 
 import Link from 'next/link';
+import { botsOnlyInPeriod } from '@/domain/analytics/reception';
 import type { DeviceRow } from '@/domain/analytics/summary';
 import {
+  Alert,
   Card,
   Chart,
   EmptyState,
@@ -120,8 +122,25 @@ export function OverviewTab({
     },
   ];
 
+  // 集計済みで「人の PV が 0、Bot の PV が 1 以上」の期間（029 設計 §7.1.4）。
+  // `?bots=1` のときは合算して見えているので出さない。**件数は集計値から出す。生ログは読まない。**
+  const botsOnly =
+    !includeBots &&
+    botsOnlyInPeriod({ pageviews: data.pageviews.value, botPageviews: data.botPageviews });
+
   return (
     <div style={{ display: 'grid', gap: 'var(--tf-space-6)' }}>
+      {botsOnly && (
+        // `Alert` の role は tone で決まる（warning は status）。
+        // これは「数字が 0 なのは Bot だけだったから」という診断で、気づかせる必要があるので
+        // alert として読ませる。**共通部品は変えない**（他の画面の読み上げ方まで変わる）。
+        <div role="alert">
+          <Alert tone="warning">
+            この期間のアクセス {formatCount(data.botPageviews)} 件はすべて Bot
+            と判定され、集計に含めていません。「Bot を集計に含める」で件数を見られます。
+          </Alert>
+        </div>
+      )}
       <StatGrid>
         <Tile>
           <Stat

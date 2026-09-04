@@ -21,6 +21,7 @@ import '@/app/api/v1/api-tokens/[id]/route';
 import '@/app/api/v1/campaigns/route';
 import '@/app/api/v1/campaigns/[id]/route';
 import '@/app/api/v1/collect/route';
+import '@/app/api/v1/jobs/route';
 import '@/app/api/v1/permissions/route';
 import '@/app/api/v1/plugins/route';
 import '@/app/api/v1/plugins/[id]/route';

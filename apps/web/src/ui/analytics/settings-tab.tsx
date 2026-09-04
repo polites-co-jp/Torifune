@@ -2,9 +2,11 @@
 
 import { useRouter } from 'next/navigation';
 import { useEffect, useState, type ReactNode } from 'react';
+import type { ReceptionState } from '@/domain/analytics/reception';
+import type { JobRunStatus } from '@/domain/jobs/job';
 import { apiRequest } from '@/ui/client/api-client';
 import { Alert, Button, Card, ConfirmDialog, Toast, type ToastMessage } from '@/ui/components';
-import { NO_VALUE } from './labels';
+import { NO_VALUE, RECEPTION_STATE_LABEL, SCHEDULER_OFF_TEXT, schedulerText } from './labels';
 import { MONO, Note, SectionHeader } from './parts';
 
 /**
@@ -22,12 +24,48 @@ export interface SettingsData {
   readonly scriptOrigin: string | null;
   /** 「公開キーを再発行」を出すか（`site.write`）。 */
   readonly canRegenerate: boolean;
-  /** 最終受信（`YYYY-MM-DD HH:mm`）。計測したことが無ければ null。 */
+  /** 生ログの最終受信（`YYYY-MM-DD HH:mm`）。届いたことが無ければ null。 */
   readonly lastSeenAt: string | null;
-  /** 最終集計（`YYYY-MM-DD HH:mm`）。集計したことが無ければ null。 */
+  /**
+   * **このサイトの**集計値の最終更新（`YYYY-MM-DD HH:mm`）。
+   *
+   * `rollup.lastSucceededAt`（全体）とは役目が違うので、両方を別の行に出す（裁定 #7）。
+   */
   readonly lastRollupAt: string | null;
   /** 1 日の境目に使っているタイムゾーン。 */
   readonly timeZone: string;
+  /** 受信状況の 4 状態（029 設計 §5.5）。 */
+  readonly state: ReceptionState;
+  /** 未集計の受信の文言。0 件なら null。 */
+  readonly pendingText: string | null;
+  /** 最終集計（全体。`job_runs` の最後に成功したロールアップ）。 */
+  readonly lastSucceededAt: string | null;
+  /** 直近の実行の結果。実行が無ければ null。 */
+  readonly lastRunStatus: JobRunStatus | null;
+  /** 定期実行が有効か（この画面を返したプロセス）。 */
+  readonly scheduled: boolean;
+  readonly intervalMinutes: number;
+  /** 次回の予定（`YYYY-MM-DD HH:mm`）。無効なら null。 */
+  readonly nextRunAt: string | null;
+}
+
+/** 状態ごとの色。**色だけに頼らない**（文字で状態を書く）。 */
+const STATE_COLOR: Record<ReceptionState, string> = {
+  'not-received': 'var(--tf-color-text-subtle)',
+  'pending-rollup': 'var(--tf-color-warning)',
+  'bots-only': 'var(--tf-color-warning)',
+  receiving: 'var(--tf-color-success)',
+};
+
+/** 「最終集計（全体）」へ添える注釈。前回の実行が成功でないときだけ出す。 */
+function lastRunNote(status: JobRunStatus | null): { text: string; danger: boolean } | null {
+  if (status === 'error') {
+    return { text: '（前回の実行は失敗）', danger: true };
+  }
+  if (status === 'running') {
+    return { text: '（実行中）', danger: false };
+  }
+  return null;
 }
 
 /** 「コピーしました」を出しておく時間（ミリ秒）。 */
@@ -77,7 +115,7 @@ export function SettingsTab({ data }: { readonly data: SettingsData }) {
   const [toast, setToast] = useState<ToastMessage | null>(null);
 
   const snippet = snippetFor(data.publicKey, data.scriptOrigin);
-  const receiving = data.lastSeenAt !== null;
+  const note = lastRunNote(data.lastRunStatus);
 
   useEffect(() => {
     if (!copied) {
@@ -188,27 +226,58 @@ export function SettingsTab({ data }: { readonly data: SettingsData }) {
         <SectionHeader title="受信状況" />
         <div>
           <StatusRow label="状態">
-            <span
-              style={{
-                fontWeight: 600,
-                color: receiving ? 'var(--tf-color-success)' : 'var(--tf-color-text-subtle)',
-              }}
-            >
-              {receiving ? '受信中' : '未受信'}
+            <span style={{ fontWeight: 600, color: STATE_COLOR[data.state] }}>
+              {RECEPTION_STATE_LABEL[data.state]}
             </span>
           </StatusRow>
           <StatusRow label="最終受信">
             <span style={MONO}>{data.lastSeenAt ?? NO_VALUE}</span>
           </StatusRow>
-          <StatusRow label="最終集計">
+          <StatusRow label="未集計の受信">
+            <span style={MONO}>{data.pendingText ?? NO_VALUE}</span>
+          </StatusRow>
+          {/*
+            **「最終集計」は 2 つ出す**（裁定 #7）。
+            前者が新しく後者が古ければ「集計は回っているが、このサイトに新しい生ログが無い」と読める。
+          */}
+          <StatusRow label="最終集計（全体）">
+            <span style={MONO}>{data.lastSucceededAt ?? NO_VALUE}</span>
+            {note !== null && (
+              <span
+                style={{
+                  marginLeft: 'var(--tf-space-2)',
+                  color: note.danger ? 'var(--tf-color-danger)' : 'var(--tf-color-text-muted)',
+                }}
+              >
+                {note.text}
+              </span>
+            )}
+          </StatusRow>
+          <StatusRow label="このサイトの集計値の最終更新">
             <span style={MONO}>{data.lastRollupAt ?? NO_VALUE}</span>
+          </StatusRow>
+          <StatusRow label="定期実行">
+            <span style={data.scheduled ? MONO : undefined}>
+              {data.scheduled
+                ? schedulerText(data.intervalMinutes, data.nextRunAt)
+                : SCHEDULER_OFF_TEXT}
+            </span>
           </StatusRow>
           <StatusRow label="日付の区切り" last>
             <span style={MONO}>{data.timeZone}</span>
           </StatusRow>
         </div>
         <Note>
-          集計は <code>POST /api/v1/analytics/rollup</code> を cron から毎日実行します（API
+          {data.scheduled ? (
+            <>
+              集計は Torifune が {data.intervalMinutes}{' '}
+              分ごとに自動で行います（前回の集計以降の未集計分。最大 7 日さかのぼります）。
+            </>
+          ) : (
+            <>定期実行は無効です。</>
+          )}
+          7 日を超えて止まっていた期間や過去の期間を集計し直すとき、または定期実行を止めているときは{' '}
+          <code>POST /api/v1/analytics/rollup</code> を実行してください（API
           トークンで叩けます）。集計値は消しません。
         </Note>
       </Card>

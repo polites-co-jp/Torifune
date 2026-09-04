@@ -38,10 +38,17 @@ import {
   summarizeDaily,
   type Summary,
 } from '@/domain/analytics/summary';
+import { diagnoseReception } from '@/domain/analytics/reception';
 import { NotFoundError } from '@/domain/repository';
 import type { AnalyticsQuery } from '@/ui/analytics/analytics-query';
 import { AnalyticsView, type SiteOption, type TabData } from '@/ui/analytics/analytics-view';
-import { isAnalyticsTab, type AnalyticsPeriod, type AnalyticsTab } from '@/ui/analytics/labels';
+import {
+  isAnalyticsTab,
+  pendingText,
+  type AnalyticsPeriod,
+  type AnalyticsTab,
+} from '@/ui/analytics/labels';
+import type { NotTrackedState } from '@/ui/analytics/not-tracked';
 import type { OverviewData } from '@/ui/analytics/overview-tab';
 import type { PagesData } from '@/ui/analytics/pages-tab';
 import type { ReferrersData } from '@/ui/analytics/referrers-tab';
@@ -310,17 +317,41 @@ export default async function AnalyticsPage({
       key: '',
     });
 
-  // 当期は「未設置」判定に使うので、どのタブでも読む。前期は前期間比を出すタブだけ。
+  // 当期は受信状況の判定に使うので、どのタブでも読む。前期は前期間比を出すタブだけ。
   const currentPoints = await keyless(resolved.from, resolved.to);
-  const untracked = status.analyticsLastSeenAt === null && currentPoints.length === 0;
+
+  // 受信状況の 4 状態（029 設計 §5.5）。判定は Domain の純関数が持つ。
+  const state = diagnoseReception({
+    lastReceivedAt: status.lastReceivedAt,
+    pending: status.pending,
+    hasPointsInPeriod: currentPoints.length > 0,
+    periodIncludesToday: resolved.to >= today,
+  });
+  // `receiving` 以外は、タブの中身の代わりに導線を出す。
+  const notTrackedState: NotTrackedState | null = state === 'receiving' ? null : state;
+
+  /** 日時を運用タイムゾーンの `YYYY-MM-DD HH:mm` にする。 */
+  const at = (instant: Date | null): string | null =>
+    instant === null ? null : formatDateTimeInTimeZone(instant, timeZone);
+  const pending = pendingText(status.pending);
 
   const summaryOptions = { includeBots } as const;
   const current = summarize(currentPoints, summaryOptions);
   const days = rangeDays(resolved.from, resolved.to);
 
   const tabData = await (async (): Promise<TabData> => {
-    if (untracked && tab !== 'settings') {
-      return { kind: 'not-tracked' };
+    if (notTrackedState !== null && tab !== 'settings') {
+      return {
+        kind: 'not-tracked',
+        data: {
+          state: notTrackedState,
+          lastReceivedAt: at(status.lastReceivedAt),
+          pendingText: pending,
+          scheduled: status.rollup.scheduled,
+          intervalMinutes: status.rollup.intervalMinutes,
+          nextRunAt: at(status.rollup.nextRunAt),
+        },
+      };
     }
 
     switch (tab) {
@@ -476,15 +507,17 @@ export default async function AnalyticsPage({
             publicKey: trackedSite.publicKey,
             scriptOrigin,
             canRegenerate: permissions.has('site.write'),
-            lastSeenAt:
-              status.analyticsLastSeenAt === null
-                ? null
-                : formatDateTimeInTimeZone(status.analyticsLastSeenAt, timeZone),
-            lastRollupAt:
-              status.lastRollupAt === null
-                ? null
-                : formatDateTimeInTimeZone(status.lastRollupAt, timeZone),
+            // **生ログの最終受信を出す。** 集計を待たずに「届いたか」が分かる。
+            lastSeenAt: at(status.lastReceivedAt),
+            lastRollupAt: at(status.lastRollupAt),
             timeZone,
+            state,
+            pendingText: pending,
+            lastSucceededAt: at(status.rollup.lastSucceededAt),
+            lastRunStatus: status.rollup.lastRun?.status ?? null,
+            scheduled: status.rollup.scheduled,
+            intervalMinutes: status.rollup.intervalMinutes,
+            nextRunAt: at(status.rollup.nextRunAt),
           },
         };
       }
@@ -506,11 +539,7 @@ export default async function AnalyticsPage({
         previousFrom={previous.from}
         previousTo={previous.to}
         timeZone={timeZone}
-        lastSeenAt={
-          status.analyticsLastSeenAt === null
-            ? null
-            : formatDateTimeInTimeZone(status.analyticsLastSeenAt, timeZone)
-        }
+        lastSeenAt={at(status.lastReceivedAt)}
         rangeWarning={resolved.warning}
         canReadSites={canReadSites}
         tab={tabData}

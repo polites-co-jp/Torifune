@@ -32,7 +32,7 @@ Plugin は `context.events.on(...)` で購読する。使い方は
 | `campaign.created` | キャンペーンを作った | `CampaignEventPayload` |
 | `campaign.updated` | キャンペーンを更新した | `CampaignEventPayload` |
 | `campaign.deleted` | キャンペーンを削除した | `CampaignEventPayload` |
-| `analytics.rolledUp` | アクセスの日次集計が終わった | `AnalyticsRollupEventPayload` |
+| `analytics.rolledUp` | アクセスの日次集計が終わった（本体の定期実行、または `POST /api/v1/analytics/rollup`） | `AnalyticsRollupEventPayload` |
 
 ## Payload
 

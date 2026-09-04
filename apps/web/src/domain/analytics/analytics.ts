@@ -1,3 +1,4 @@
+import type { JobRunStatus } from '../jobs/job';
 import type { SiteStatus } from '../site/site';
 
 /**
@@ -122,18 +123,63 @@ export function isReservedSource(value: string): boolean {
   return value === CORE_SOURCE;
 }
 
+/** 月ごとの日数（平年）。閏年の 2 月だけ 29 日にする。 */
+const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31] as const;
+
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+
+/**
+ * `YYYY-MM-DD` で、かつ**カレンダー上に実在する日付**か。
+ *
+ * **形式だけでは足りない。** `0000-00-00` / `9999-99-99` / `2026-02-30` は形式を通るが、
+ * その先の `rangeDays`（`Date.parse` 依存）が `NaN` を返す。`NaN` との比較はすべて `false` なので
+ * `rangeDays(...) > MAX_RANGE_DAYS` が成立せず、**期間の幅の検査が素通りする**（フェイルオープン）。
+ *
+ * `Date` を経由せずに数で判定する。`Date.UTC` は 0〜99 年を 1900 年代に写すため、
+ * 「動かして戻す」方式では年の境目で誤判定する。
+ */
+function isCalendarDate(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (match === null) {
+    return false;
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+
+  if (month < 1 || month > 12) {
+    return false;
+  }
+
+  const lastDay = month === 2 && isLeapYear(year) ? 29 : DAYS_IN_MONTH[month - 1];
+  return day >= 1 && day <= (lastDay ?? 0);
+}
+
 /**
  * 期間として成立するか。
  *
  * 逆転を許すと、空の結果が返るだけで理由が分からない。
+ *
+ * **実在する日付であることまで見る。** ここが入口なので、
+ * `POST /analytics/rollup` の期間検査・`listAnalytics` の `assertRange`・
+ * アナリティクス画面の `custom` 期間が、まとめて同じ判定に乗る。
  */
 export function isValidRange(from: string, to: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}$/.test(from) && /^\d{4}-\d{2}-\d{2}$/.test(to) && from <= to;
+  return isCalendarDate(from) && isCalendarDate(to) && from <= to;
 }
 
 /** 一度に取れる日数の上限。広すぎる期間で画面と DB を止めない。 */
 export const MAX_RANGE_DAYS = 400;
 
+/**
+ * 期間の日数（両端を含む）。
+ *
+ * **`isValidRange` を通した値だけを渡すこと。** 実在しない日付を渡すと `NaN` になり、
+ * 呼ぶ側の比較（`> MAX_RANGE_DAYS`）が静かに `false` になる。
+ */
 export function rangeDays(from: string, to: string): number {
   const start = Date.parse(`${from}T00:00:00Z`);
   const end = Date.parse(`${to}T00:00:00Z`);
@@ -169,11 +215,49 @@ export interface TrackedSite {
   readonly analyticsLastSeenAt: Date | null;
 }
 
-/** サイトの受信状況。 */
+/**
+ * サイトの受信状況（028 設計 §6.4、029 設計 §5.4）。
+ *
+ * 「届いているが未集計」「Bot だけ届いている」を管理画面だけで切り分けられるようにする。
+ * **「最終集計」は 2 つある**（裁定 #7）。`rollup.lastSucceededAt`（`job_runs`。全体）は
+ * 「集計は回っているか」に答え、`lastRollupAt`（`analytics.updated_at`。サイトごと）は
+ * 「このサイトの集計値がいつ書き換わったか」に答える。役目が違うので片方に寄せない。
+ */
 export interface AnalyticsStatus {
   readonly siteId: string;
-  /** 最終受信（`sites.analytics_last_seen_at`）。 */
+  /**
+   * ロールアップが書き戻した最終受信（`sites.analytics_last_seen_at`）。
+   *
+   * 選択肢の「（未設置）」判定と同じ値。画面のヘッダには `lastReceivedAt` を出す。
+   */
   readonly analyticsLastSeenAt: Date | null;
-  /** Core の集計値を最後に書いた時刻。Plugin の値は数えない。 */
+  /** このサイトの Core の集計値を最後に書いた時刻。Plugin の値は数えない。 */
   readonly lastRollupAt: Date | null;
+  /** 生ログの最終受信（Bot 含む）。集計を待たずに「届いたか」が分かる。 */
+  readonly lastReceivedAt: Date | null;
+  /** 最終集計以降に届いた生ログ（Bot 含む）。上限で打ち切る。 */
+  readonly pending: {
+    readonly total: number;
+    readonly bots: number;
+    /** 上限で打ち切った（実際はもっと多い）。 */
+    readonly capped: boolean;
+    /** 数え始めの時刻（最後に成功したロールアップの開始時刻）。集計したことが無ければ null（全件）。 */
+    readonly since: Date | null;
+  };
+  /** ロールアップの実行状況（`job_runs` と基盤のスナップショット）。 */
+  readonly rollup: {
+    /** 最後に成功した実行の終了時刻。「最終集計（全体）」はこれ。 */
+    readonly lastSucceededAt: Date | null;
+    /** 直近の実行（**結果だけ**。`error` の文字列は画面に出さない）。 */
+    readonly lastRun: {
+      readonly status: JobRunStatus;
+      readonly startedAt: Date;
+      readonly finishedAt: Date | null;
+    } | null;
+    /** 定期実行が有効か（このプロセス）。 */
+    readonly scheduled: boolean;
+    readonly intervalMinutes: number;
+    /** 次回の予定（このプロセス）。無効なら null。 */
+    readonly nextRunAt: Date | null;
+  };
 }

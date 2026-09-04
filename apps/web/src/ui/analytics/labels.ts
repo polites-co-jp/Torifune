@@ -1,4 +1,6 @@
 import type { PeriodPreset } from '@/domain/analytics/day';
+import type { ReceptionState } from '@/domain/analytics/reception';
+import type { JobName, JobRunStatus } from '@/domain/jobs/job';
 
 /**
  * アナリティクス画面の文言と表示形式（028-analytics-dashboard-redesign 設計 §7.1 / §7.3）。
@@ -101,4 +103,69 @@ export function shortDate(date: string): string {
 /** 期間の表示 `YYYY-MM-DD 〜 YYYY-MM-DD`。 */
 export function rangeText(from: string, to: string): string {
   return `${from} ${RANGE_SEPARATOR} ${to}`;
+}
+
+/**
+ * 受信状況の 4 状態（029-scheduled-jobs 設計 §7.1.2）。
+ *
+ * 「受信中」と「受信中（集計待ち）」を見分けられる語にする。
+ */
+export const RECEPTION_STATE_LABEL: Record<ReceptionState, string> = {
+  'not-received': '未受信',
+  'pending-rollup': '受信中（集計待ち）',
+  'bots-only': 'Bot のみ受信',
+  receiving: '受信中',
+};
+
+/** 定期実行ジョブの表示名（設計 §7.2）。 */
+export const JOB_LABEL: Record<JobName, string> = {
+  'analytics.rollup': 'アクセス解析の集計',
+  'webhook.deliver': 'Webhook 配信',
+};
+
+/**
+ * 実行結果の表示。
+ *
+ * `ok` / `error` はそのまま出す（監視・ログと同じ語で照らし合わせられる）。
+ */
+export const JOB_STATUS_LABEL: Record<JobRunStatus, string> = {
+  running: '実行中',
+  ok: 'ok',
+  error: 'error',
+  skipped: 'スキップ',
+};
+
+/** 定期実行を止めているときの表示。環境変数の名前ごと出す（画面からは変えられない）。 */
+export const SCHEDULER_OFF_TEXT = '無効（TORIFUNE_SCHEDULER=off）';
+
+/** 定期実行が有効なときの表示「有効 · N 分ごと · 次回 YYYY-MM-DD HH:mm」。 */
+export function schedulerText(intervalMinutes: number, nextRunAt: string | null): string {
+  const parts = [`有効 ${MIDDLE_DOT} ${intervalMinutes} 分ごと`];
+  if (nextRunAt !== null) {
+    parts.push(`次回 ${nextRunAt}`);
+  }
+  return parts.join(` ${MIDDLE_DOT} `);
+}
+
+/**
+ * 未集計の受信の表示（設計 §7.1.2）。0 件なら null（画面は `—` を出す）。
+ *
+ * 上限で打ち切っているときは「1,000 件以上」。
+ * 一度も集計していないときは、全件が未集計であることを添える。
+ */
+export function pendingText(pending: {
+  readonly total: number;
+  readonly bots: number;
+  readonly capped: boolean;
+  readonly since: Date | string | null;
+}): string | null {
+  if (pending.total === 0) {
+    return null;
+  }
+
+  const suffix = pending.since === null ? '（集計したことがありません）' : '';
+  if (pending.capped) {
+    return `${formatCount(pending.total)} 件以上（うち Bot ${formatCount(pending.bots)} 件以上）${suffix}`;
+  }
+  return `${formatCount(pending.total)} 件（うち Bot ${formatCount(pending.bots)} 件）${suffix}`;
 }

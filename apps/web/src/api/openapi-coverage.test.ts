@@ -81,6 +81,8 @@ describe('応答スキーマの網羅', () => {
       'listAnalyticsBreakdown',
       'getCurrentUser',
       'issueCsrfToken',
+      // 029 設計 §6.5（受け入れ条件 #41 の静的側）。監視から叩くので応答の形を宣言する。
+      'listJobStatuses',
     ]) {
       expect(declared, operationId).toContain(operationId);
     }
