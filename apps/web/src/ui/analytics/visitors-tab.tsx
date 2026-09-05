@@ -27,8 +27,13 @@ export interface VisitorsData {
   readonly sessions: CountStat;
   /** 訪問者あたりページビュー。 */
   readonly perVisitor: RatioStat;
-  /** 1 日あたり訪問者。 */
-  readonly perDay: { readonly value: number; readonly delta: StatDelta };
+  /**
+   * 1 日あたり訪問者。
+   *
+   * **`null` は Tile ごと描かない**（030-analytics-today 設計 §7.3）。
+   * 当日は 1 日しかないので「訪問者」と同じ数になり、同じ数のタイルが 2 枚並ぶ。
+   */
+  readonly perDay: { readonly value: number; readonly delta?: StatDelta } | null;
   /** 0 時〜23 時のページビュー。 */
   readonly hours: readonly number[];
   readonly devices: readonly DeviceRow[];
@@ -69,13 +74,15 @@ export function VisitorsTab({
             delta={data.perVisitor.delta}
           />
         </Tile>
-        <Tile>
-          <Stat
-            label="1日あたり訪問者"
-            value={formatAverage(data.perDay.value)}
-            delta={data.perDay.delta}
-          />
-        </Tile>
+        {data.perDay !== null && (
+          <Tile>
+            <Stat
+              label="1日あたり訪問者"
+              value={formatAverage(data.perDay.value)}
+              delta={data.perDay.delta}
+            />
+          </Tile>
+        )}
       </StatGrid>
 
       <div

@@ -23,8 +23,14 @@ export interface ReceptionInput {
   readonly pending: { readonly total: number; readonly bots: number };
   /** 当期に `key = ''` の点が 1 つでもあるか。 */
   readonly hasPointsInPeriod: boolean;
-  /** 当期の `to` が今日以降か。過去の期間に「集計待ち」は出さない。 */
-  readonly periodIncludesToday: boolean;
+  /**
+   * 当期の末尾が、まだ集計が追いついていない可能性のある日に掛かるか
+   * （`to >= 昨日`。030-analytics-today 設計 §9.1）。
+   *
+   * 過去の期間に「集計待ち」は出さない。**プリセットの `to` は昨日**なので、
+   * 「今日以降か」で見ると「昨日届いたがまだ集計されていない」状態を拾えなくなる。
+   */
+  readonly periodMayLackRollup: boolean;
 }
 
 /**
@@ -34,7 +40,7 @@ export interface ReceptionInput {
  * | --- | --- |
  * | `lastReceivedAt === null` | `not-received` |
  * | `hasPointsInPeriod` | `receiving` |
- * | `!periodIncludesToday` | `receiving` |
+ * | `!periodMayLackRollup` | `receiving` |
  * | `pending.total === 0` | `receiving` |
  * | `pending.bots === pending.total` | `bots-only` |
  * | それ以外 | `pending-rollup` |
@@ -51,7 +57,7 @@ export function diagnoseReception(input: ReceptionInput): ReceptionState {
   if (input.hasPointsInPeriod) {
     return 'receiving';
   }
-  if (!input.periodIncludesToday) {
+  if (!input.periodMayLackRollup) {
     return 'receiving';
   }
   if (input.pending.total === 0) {

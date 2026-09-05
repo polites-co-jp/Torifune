@@ -108,27 +108,41 @@ export interface DateRange {
 }
 
 /**
- * プリセットから期間を出す。
+ * プリセットから期間を出す（030-analytics-today 設計 §7.1.1 / §7.2）。
  *
  * **`today` は引数で受ける。** 「今日」は運用タイムゾーンで決まる（`todayInTimeZone`）ので、
  * ここで時計を読むと境目の時間帯だけずれる。
  *
+ * **末尾は昨日にする。** 進行中の日を確定値の折れ線・合計に混ぜると必ず低く見える。
+ * 本日は画面の「当日」（`period=today`）で別経路から見る。
+ * **長さ（7 / 30 / 90 日）は保つ**ので `from = today − N` になる。
+ * 6 日にすると前期間比の分母まで 6 日になり、「7日」というラベルの意味が変わる。
+ *
  * | preset | from | to |
  * | --- | --- | --- |
- * | `7d` / `30d` / `90d` | `today − 6 / 29 / 89` 日 | `today` |
- * | `month` | 今月 1 日 | `today` |
+ * | `7d` / `30d` / `90d` | `today − 7 / 30 / 90` 日 | 昨日 |
+ * | `month` | 今月 1 日 | 昨日 |
  * | `prev-month` | 前月 1 日 | 前月末日 |
+ *
+ * `null` は「このプリセットに、確定値のある期間が存在しない」を表す。
+ * **返るのは `month` で今日が月の 1 日のときだけ**（`from > to` になる）。
+ * 前月へ倒さない・今日 1 日に丸めない。画面が空状態を出す。
  */
-export function presetRange(preset: PeriodPreset, today: string): DateRange {
+export function presetRange(preset: PeriodPreset, today: string): DateRange | null {
+  const yesterday = shiftDays(today, -1);
+
   switch (preset) {
     case '7d':
-      return { from: shiftDays(today, -6), to: today };
+      return { from: shiftDays(today, -7), to: yesterday };
     case '30d':
-      return { from: shiftDays(today, -29), to: today };
+      return { from: shiftDays(today, -30), to: yesterday };
     case '90d':
-      return { from: shiftDays(today, -89), to: today };
-    case 'month':
-      return { from: `${today.slice(0, 7)}-01`, to: today };
+      return { from: shiftDays(today, -90), to: yesterday };
+    case 'month': {
+      const first = `${today.slice(0, 7)}-01`;
+      // 今日が月の 1 日なら、確定値のある「今月」は 1 日も無い。
+      return first > yesterday ? null : { from: first, to: yesterday };
+    }
     case 'prev-month': {
       // 今月 1 日の前日が前月末。そこから月初を取る。
       const previousMonthEnd = shiftDays(`${today.slice(0, 7)}-01`, -1);

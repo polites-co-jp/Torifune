@@ -325,3 +325,36 @@ export function deviceRows(
   const total = rows.reduce((sum, row) => sum + row.value, 0);
   return rows.map((row) => ({ ...row, share: ratio(row.value, total) }));
 }
+
+/**
+ * 点の集合から内訳（key ごとの合計）を作る（030-analytics-today 設計 §12.2）。
+ *
+ * 当日タブは確定値（`analytics`）を読まず、生ログから作った点だけを見る（§13-3）ので、
+ * 内訳も同じ点から組む必要がある。
+ *
+ * * 指定した `metric` の点を `key` ごとに合算する（`key === ''` は含めない。
+ *   そちらは期間合計であって内訳の 1 行ではない）
+ * * 並び順は **`value` 降順、同値なら `key` 昇順**。Repository の `sumByKey`
+ *   （`ORDER BY sum(value) DESC, key ASC`）と一致させる。
+ *   当日と確定期間で行の順番が変わらないようにするため
+ * * 出所（`source`）はまたいで合算する（現行の内訳と同じ規則）
+ * * 値が 0 の key も落とさない。落とすと確定期間と当日で行の数が変わる
+ */
+export function breakdownFromPoints(
+  points: readonly AnalyticsPoint[],
+  metric: string,
+): readonly BreakdownItem[] {
+  const byKey = new Map<string, number>();
+  for (const point of points) {
+    if (point.metric !== metric || point.key === '') {
+      continue;
+    }
+    byKey.set(point.key, (byKey.get(point.key) ?? 0) + point.value);
+  }
+
+  return [...byKey.entries()]
+    .map(([key, value]) => ({ key, value }))
+    .sort((a, b) =>
+      a.value === b.value ? (a.key < b.key ? -1 : a.key > b.key ? 1 : 0) : b.value - a.value,
+    );
+}

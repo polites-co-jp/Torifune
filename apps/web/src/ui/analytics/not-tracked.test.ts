@@ -12,6 +12,23 @@ import { NotTracked, type NotTrackedData } from './not-tracked';
  * - `not-received`：Badge「計測タグ未設置」、h2「まだアクセスの記録がありません」、Button「計測タグを取得」（既存 E2E の locator を保つ）
  * - `pending-rollup`：Badge「受信済み・集計待ち」、h2「アクセスは届いています。集計を待っています」、ボタン無し、リンク「受信状況を見る」
  * - `bots-only`：Badge「Bot のみ受信」、h2「届いたアクセスはすべて Bot と判定されています」、ボタン無し、同じリンク
+ *
+ * **030-analytics-today 設計 §7.5 で 2 フィールドを足した**（受け入れ条件 #63 / #64）：
+ *
+ * ```ts
+ * interface NotTrackedData {
+ *   // …既存…
+ *   readonly receivedToday: boolean;      // 最終受信が運用タイムゾーンの今日か
+ *   readonly todayHref: string | null;    // 「当日」（?period=today）への導線。当期が既に当日なら null
+ * }
+ * ```
+ *
+ * プリセットの `to` が昨日になったので、計測を始めた初日は `7d` が空になる。
+ * この状態を**「集計待ち」と誤って説明しない**。
+ * **`receivedToday` が真のとき「次回の集計のあとに数字が出ます」と書いてはならない。**
+ * 次の集計が走っても、今日の分は末尾が昨日の期間には入らないので、その文は嘘になる。
+ *
+ * `not-received` は**現行のまま**（既存 E2E の locator を保つ。#64）。
  */
 
 vi.mock('next/navigation', () => ({
@@ -19,6 +36,7 @@ vi.mock('next/navigation', () => ({
 }));
 
 const SETTINGS_HREF = '/analytics?siteId=site-1&tab=settings';
+const TODAY_HREF = '/analytics?siteId=site-1&period=today';
 
 const BASE: NotTrackedData = {
   state: 'not-received',
@@ -27,6 +45,8 @@ const BASE: NotTrackedData = {
   scheduled: true,
   intervalMinutes: 15,
   nextRunAt: '2026-09-04 10:30',
+  receivedToday: false,
+  todayHref: TODAY_HREF,
 };
 
 function render(
@@ -179,5 +199,133 @@ describe('bots-only（Bot のみ受信）', () => {
   /** §7.1.3。同じリンク。 */
   it('「受信状況を見る」のリンクを出す', () => {
     expect(textOf(render(data))).toContain('受信状況を見る');
+  });
+});
+
+/**
+ * 前日までが空で、今日だけアクセスがある状態（030 設計 §7.5、受け入れ条件 #63）。
+ *
+ * `receivedToday` で文言を出し分け、「当日を見る」を添える。
+ * **`not-received` は変えない**（#64）。
+ */
+describe('届いているのが今日の分だけのとき（#63）', () => {
+  const PENDING_TODAY: Partial<NotTrackedData> = {
+    state: 'pending-rollup',
+    lastReceivedAt: '2026-09-05 10:12',
+    pendingText: '3 件（うち Bot 1 件）',
+    receivedToday: true,
+  };
+
+  const BOTS_TODAY: Partial<NotTrackedData> = {
+    state: 'bots-only',
+    lastReceivedAt: '2026-09-05 10:12',
+    pendingText: '2 件（うち Bot 2 件）',
+    receivedToday: true,
+  };
+
+  /** #63。「届いているのは今日の分です」。 */
+  it('pending-rollup で receivedToday なら「届いているのは今日の分です」を出す', () => {
+    const text = textOf(render(PENDING_TODAY));
+
+    expect(text).toContain('届いているのは今日の分です');
+    expect(text).toContain('確定値はまだありません');
+  });
+
+  /**
+   * #63。**ここが要点。** 次の集計が走っても、今日の分は末尾が昨日の期間には入らない。
+   * 「次回の集計のあとに数字が出ます」は嘘になる。
+   */
+  it('pending-rollup で receivedToday なら「次回の集計」を待たせない', () => {
+    const text = textOf(render(PENDING_TODAY));
+
+    expect(text).not.toContain('次回の集計');
+    expect(text).not.toContain('そのあとにこの画面へ数字が出ます');
+  });
+
+  /** #63。「当日」への導線。 */
+  it('pending-rollup で receivedToday なら「当日を見る」が ?period=today を指す', () => {
+    const html = render(PENDING_TODAY);
+
+    expect(textOf(html)).toContain('当日を見る');
+    expect(html).toContain('period=today');
+  });
+
+  /** #63。当期が既に当日なら導線を出さない（自分自身へのリンクにしない）。 */
+  it('todayHref が null なら「当日を見る」を出さない', () => {
+    expect(textOf(render({ ...PENDING_TODAY, todayHref: null }))).not.toContain('当日を見る');
+  });
+
+  /** #63。今日でなければ現行どおり「次回の集計は {HH:mm} 頃」。 */
+  it('pending-rollup で receivedToday でなければ現行どおり次回の集計を案内する', () => {
+    const text = textOf(
+      render({ ...PENDING_TODAY, receivedToday: false, lastReceivedAt: '2026-09-04 10:12' }),
+    );
+
+    expect(text).toContain('次回の集計は 10:30 頃');
+    expect(text).toContain('そのあとにこの画面へ数字が出ます');
+    expect(text).not.toContain('届いているのは今日の分です');
+    expect(text).not.toContain('当日を見る');
+  });
+
+  /** #63。bots-only は現行の Bot の説明を残したうえで、今日の分であることを足す。 */
+  it('bots-only で receivedToday なら Bot の説明に「届いたアクセスは今日の分です」を足す', () => {
+    const text = textOf(render(BOTS_TODAY));
+
+    expect(text).toContain('届いたアクセスは今日の分です');
+    expect(text).toContain('「当日」でも同じく Bot だけが見えます');
+    // 現行の Bot の説明は残す。
+    expect(text).toContain('User-Agent');
+    expect(text).toContain('実際のブラウザでページを開いて確かめてください');
+  });
+
+  /** #63。bots-only にも「当日を見る」を添える。 */
+  it('bots-only で receivedToday なら「当日を見る」を出す', () => {
+    expect(textOf(render(BOTS_TODAY))).toContain('当日を見る');
+  });
+
+  /** #63。今日でなければ Bot の説明はそのまま。 */
+  it('bots-only で receivedToday でなければ今日の分の説明を出さない', () => {
+    const text = textOf(render({ ...BOTS_TODAY, receivedToday: false }));
+
+    expect(text).not.toContain('届いたアクセスは今日の分です');
+    expect(text).not.toContain('当日を見る');
+    expect(text).toContain('User-Agent');
+  });
+});
+
+/**
+ * #64。一度も受信していないサイトは、当日でも現行どおりの導線を出す。
+ *
+ * **既存 E2E の locator（Badge / h2 / Button の文言）を保つ。**
+ * `receivedToday` は `lastReceivedAt === null` のとき必ず偽なので、この状態には効かない。
+ */
+describe('not-received は変えない（#64）', () => {
+  /** #64 */
+  it.each([false, true])(
+    'receivedToday が %s でも Badge / 見出し / ボタンの文言が変わらない',
+    (receivedToday) => {
+      const html = render({ state: 'not-received', receivedToday });
+
+      expect(textOf(html)).toContain('計測タグ未設置');
+      expect(headingOf(html)).toBe('まだアクセスの記録がありません');
+      expect(html).toMatch(/<button[^>]*>計測タグを取得<\/button>/);
+    },
+  );
+
+  /** #64。今日の分の文言も「当日を見る」も出さない（一度も届いていないので嘘になる）。 */
+  it('not-received では「届いているのは今日の分です」も「当日を見る」も出さない', () => {
+    const text = textOf(render({ state: 'not-received' }));
+
+    expect(text).not.toContain('届いているのは今日の分です');
+    expect(text).not.toContain('当日を見る');
+  });
+
+  /** #64。3 ステップ（タグを貼る → 受信を確かめる → 集計を待つ）も現行のまま。 */
+  it('not-received の 3 ステップが現行のまま出る', () => {
+    const text = textOf(render({ state: 'not-received' }));
+
+    expect(text).toContain('タグを貼る');
+    expect(text).toContain('受信を確かめる');
+    expect(text).toContain('集計を待つ');
   });
 });

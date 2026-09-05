@@ -179,11 +179,13 @@ function breakdownUrl(siteId: string, extra = ''): string {
 /**
  * データベースへ直接触る（`global-setup.ts` と同じ経路）。
  *
- * 使うのは 2 箇所だけ。
+ * 使うのは 3 箇所だけ。
  * - サイトを 0 件にする（#89）。API には「全部消す」口が無い
  * - 前期間の集計値を入れる（#86）。`collect` は `occurred_at` を今にするので、
  *   昨日の分は API からは作れない。`source = 'e2e'` の行を `analytics` へ直接入れる
  *   （画面は出所をまたいで足す。設計 §7.3.3）
+ * - **昨日の生ログ**を入れる（030 の #65）。「最終受信はあるが今日の生ログは 0 件」も
+ *   同じ理由で API からは作れない
  */
 async function withDatabase<T>(fn: (client: pg.Client) => Promise<T>): Promise<T> {
   const connectionString = process.env['DATABASE_URL'];
@@ -1700,5 +1702,678 @@ test.describe('kind=topPaths の互換', () => {
     expect(kind).toBeDefined();
     expect(kind?.description).toContain('/analytics/breakdown');
     expect(kind?.description).toContain('topPaths');
+  });
+});
+
+/**
+ * 「当日」（030-analytics-today 設計 §7、受け入れ条件 #48〜#69、#74、#76、#79〜#83、#86）。
+ *
+ * 既存のタブ（概要 / ページ / 参照元 / 訪問者）から本日を外し、
+ * そこに出ているのが**前日までの確定値**であることを画面で分かるようにする。
+ * 本日の値は「当日」（`?period=today`）で、`access_logs` を直接集計して出す。
+ *
+ * **既存のデータ系テストは `todayUrl`（`period=custom&from=今日&to=今日`）を使っており、
+ * プリセットの `to` が昨日になっても影響を受けない。**
+ */
+
+/** 「当日」だけの `SegmentedControl`（`aria-label="当日"` の `nav`）。 */
+function todayNav(page: Page): Locator {
+  return page.getByRole('navigation', { name: '当日', exact: true });
+}
+
+/** `?period=today` で開く URL。 */
+function todayPeriodUrl(siteId: string, extra = ''): string {
+  return `/analytics?siteId=${siteId}&period=today${extra}`;
+}
+
+/** §7.5.1 の案内（`receiving` なのに当期が空で、今日は届いている状態）。 */
+function staleRangeNotice(page: Page): Locator {
+  return page
+    .locator('[role="status"], [role="alert"]')
+    .filter({ hasText: 'アクセスは今日届いています' });
+}
+
+/** §7.4.3 の注記（今日を含むカスタム期間）。 */
+function todayInCustomNotice(page: Page): Locator {
+  return page.locator('[role="status"], [role="alert"]').filter({ hasText: '今日を含む期間です' });
+}
+
+/**
+ * **昨日**の生ログを 1 行だけ直接 INSERT する（#65 の下ごしらえ）。
+ *
+ * `collect` は `occurred_at` を今にするので、「最終受信はあるが今日の生ログは 0 件」を
+ * API からは作れない。
+ */
+async function seedYesterdayAccessLog(siteId: string): Promise<void> {
+  await withDatabase((client) =>
+    client.query(
+      `INSERT INTO access_logs (id, site_id, occurred_at, path, referrer_host, visitor_hash, device)
+       VALUES ($1, $2, now() - interval '1 day', '/', NULL, $3, 'desktop')`,
+      [crypto.randomUUID(), siteId, `e2e-${unique()}`],
+    ),
+  );
+}
+
+/**
+ * **この describe だけで使い回す下ごしらえ。**
+ *
+ * `GET /api/v1/auth/csrf` の Rate Limit は 1 分あたり 300 回（`DEFAULT_RATE_LIMIT`）で、
+ * キーは `operationId:IP`。**E2E の全ファイルがこの 1 つのバケツを共有する。**
+ * 全件が 1.5〜2 分で走り切るので、テストごとにサイトを作ると当日の 36 件だけで
+ * 40 回以上を消費し、後続のファイル（jobs / api-token / social など）が 429 で落ちる。
+ * 実際、この describe を `--grep-invert` で外すと全件が通り、入れると 8〜24 件が
+ * 実行のたびに別の場所で落ちた。
+ *
+ * そこで**サイトの状態を変えない（読むだけの）テストは下ごしらえを共有する。**
+ * 集計値や生ログを足すテスト・未集計であることに依存するテストは、
+ * これまでどおり自分のサイトを作る（共有すると実行順に依存してしまう）。
+ *
+ * `workers: 1` かつ `fullyParallel: false` なので、遅延生成に競合は起きない。
+ * `global-setup` が実行ごとに `sites` を消すので、実行をまたいで残ることもない。
+ */
+let pristineSiteId: string | null = null;
+let todayHitsSiteId: string | null = null;
+let rolledUpTodaySiteId: string | null = null;
+
+/** 一度も受信していないサイト。期間セグメントの描画と「計測タグ未設置」の見た目に使う。 */
+async function pristineSite(request: APIRequestContext): Promise<string> {
+  pristineSiteId ??= await makeTrackedSite(request);
+  return pristineSiteId;
+}
+
+/**
+ * 今日の生ログがあるサイト。人は `/` ×2 と `/pricing` の 3 PV、Bot が 1 件。
+ * **集計は流さない**（当日は生ログを直接読むので要らない）。
+ */
+async function todayHitsSite(page: Page, request: APIRequestContext): Promise<string> {
+  if (todayHitsSiteId === null) {
+    const siteId = await makeTrackedSite(request);
+    const publicKey = await publicKeyOf(page, siteId);
+    await collectHits(request, publicKey, ['/', '/', '/pricing']);
+    await collectBotHit(request, publicKey, '/');
+    todayHitsSiteId = siteId;
+  }
+  return todayHitsSiteId;
+}
+
+/**
+ * 今日の生ログを集計済みのサイト（未集計 0 件 ＝ `diagnoseReception` は `receiving`）。
+ * §7.5.1 の案内の出し分けに使う。
+ */
+async function rolledUpTodaySite(page: Page, request: APIRequestContext): Promise<string> {
+  if (rolledUpTodaySiteId === null) {
+    const siteId = await makeTrackedSite(request);
+    const publicKey = await publicKeyOf(page, siteId);
+    await collectHits(request, publicKey, ['/']);
+    await rollupToday(request);
+    rolledUpTodaySiteId = siteId;
+  }
+  return rolledUpTodaySiteId;
+}
+
+test.describe('当日', () => {
+  /** #48。期間セグメントの左に、**別のグループ（別の `nav`）**として出る（裁定 3.2）。 */
+  test('「当日」が期間セグメントとは別の nav として、その左に出る', async ({ page, request }) => {
+    const siteId = await pristineSite(request);
+
+    await page.goto(`/analytics?siteId=${siteId}`);
+
+    await expect(todayNav(page)).toBeVisible();
+    await expect(todayNav(page).getByRole('link', { name: '当日', exact: true })).toBeVisible();
+    // 期間セグメント（「前月」を含む nav）とは別物。
+    await expect(presetNav(page).getByRole('link', { name: '当日', exact: true })).toHaveCount(0);
+
+    // DOM 順で「当日」が期間セグメントより先（＝左）。
+    const labels = await page
+      .getByRole('navigation')
+      .evaluateAll((navs) => navs.map((nav) => nav.getAttribute('aria-label') ?? ''));
+    const todayIndex = labels.indexOf('当日');
+    const presetIndex = labels.indexOf('期間');
+    expect(todayIndex, `nav の aria-label: ${labels.join(' / ')}`).toBeGreaterThanOrEqual(0);
+    expect(presetIndex).toBeGreaterThanOrEqual(0);
+    expect(todayIndex).toBeLessThan(presetIndex);
+  });
+
+  /** #49。`period === 'today'` のとき期間セグメントは**どれも選択状態にならない**。 */
+  test('?period=today で「当日」が選択状態になり、期間の 6 項目はどれも選択されない', async ({
+    page,
+    request,
+  }) => {
+    const siteId = await pristineSite(request);
+
+    await page.goto(todayPeriodUrl(siteId));
+
+    await expect(todayNav(page).getByRole('link', { name: '当日', exact: true })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+    for (const label of ['7日', '30日', '90日', '今月', '前月', 'カスタム']) {
+      await expect(
+        presetNav(page).getByRole('link', { name: label, exact: true }),
+        label,
+      ).not.toHaveAttribute('aria-current', 'page');
+    }
+  });
+
+  /** #50。期間セグメントを押せば「当日」から抜ける。 */
+  test('期間セグメントを押すと「当日」が非選択になる', async ({ page, request }) => {
+    const siteId = await pristineSite(request);
+
+    await page.goto(todayPeriodUrl(siteId));
+    await presetNav(page).getByRole('link', { name: '7日', exact: true }).click();
+
+    await page.waitForURL((url) => url.searchParams.get('period') === '7d');
+    await expect(
+      todayNav(page).getByRole('link', { name: '当日', exact: true }),
+    ).not.toHaveAttribute('aria-current', 'page');
+    await expect(presetNav(page).getByRole('link', { name: '7日', exact: true })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+  });
+
+  /** #51。既存の選択の見え方を壊さない（「当日」が増えても 7日 は選べる）。 */
+  test('?period=7d では「7日」が選択で「当日」は非選択', async ({ page, request }) => {
+    const siteId = await pristineSite(request);
+
+    await page.goto(`/analytics?siteId=${siteId}&period=7d`);
+
+    await expect(presetNav(page).getByRole('link', { name: '7日', exact: true })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+    await expect(
+      todayNav(page).getByRole('link', { name: '当日', exact: true }),
+    ).not.toHaveAttribute('aria-current', 'page');
+  });
+
+  /**
+   * #52。**確定値ではないことと、いつ時点かを出す**（§7.4.1）。
+   *
+   * `{HH:mm}` はサーバーが集計した瞬間であって、ブラウザの時計ではない。
+   */
+  test('?period=today に「{日時} 時点の速報値」と「確定値ではありません」が出る', async ({
+    page,
+    request,
+  }) => {
+    const siteId = await todayHitsSite(page, request);
+
+    await page.goto(todayPeriodUrl(siteId));
+
+    await expect(page.getByText(/\d{4}-\d{2}-\d{2} \d{2}:\d{2} 時点の速報値/)).toBeVisible();
+    await expect(page.getByText('確定値ではありません', { exact: false })).toBeVisible();
+    // 当日は前期間比を出さないので、ヘッダ行に「前期間（…）と比較」は出ない。
+    await expect(page.getByText(/前期間（\d{4}-\d{2}-\d{2} 〜/)).toHaveCount(0);
+  });
+
+  /** #52。約 N 分ごとに確定することを添える（§7.4.2）。 */
+  test('?period=today に「約 N 分ごとに確定します」が出る', async ({ page, request }) => {
+    const siteId = await todayHitsSite(page, request);
+
+    await page.goto(todayPeriodUrl(siteId));
+
+    await expect(page.getByText(/約 \d+ 分ごとに確定します/)).toBeVisible();
+  });
+
+  /**
+   * #53。前期間比の代わりに**前日の確定値を並記**する（§13-1）。
+   *
+   * 「今日はいまのところ n、昨日は 1 日で m だった」が読めれば、進み具合の把握には足りる。
+   */
+  test('?period=today に前日の確定値（ページビュー・訪問者）が並記される', async ({
+    page,
+    request,
+  }) => {
+    const siteId = await makeTrackedSite(request);
+    const publicKey = await publicKeyOf(page, siteId);
+    await collectHits(request, publicKey, ['/']);
+    await seedAnalytics(siteId, yesterday(), { pageviews: 10, visitors: 4 });
+
+    await page.goto(todayPeriodUrl(siteId));
+
+    const banner = page.getByText(`前日（${yesterday()}）の確定値`, { exact: false });
+    await expect(banner).toBeVisible();
+    await expect(banner).toContainText('10');
+    await expect(banner).toContainText('4');
+  });
+
+  /** #54。当日は「比べていない」ので、矢印も `—` も出さない。 */
+  test('?period=today の概要タブに前期間比が出ない', async ({ page, request }) => {
+    const siteId = await todayHitsSite(page, request);
+
+    await page.goto(todayPeriodUrl(siteId));
+
+    await expect(statTile(page, 'ページビュー')).toContainText('3');
+    await expect(page.locator('[data-tone]')).toHaveCount(0);
+  });
+
+  /** #55。1 日の折れ線に意味が無い。カードごと出さない。 */
+  test('?period=today の概要タブに「日次の推移」カードが出ない', async ({ page, request }) => {
+    const siteId = await todayHitsSite(page, request);
+
+    await page.goto(todayPeriodUrl(siteId));
+
+    await expect(page.getByText('日次の推移', { exact: true })).toHaveCount(0);
+    // 当日は時間帯別がその役割を担う。
+    await expect(page.getByText('時間帯別のページビュー', { exact: true })).toBeVisible();
+  });
+
+  /** #56。1 日しかないので「訪問者」と同じ数になる。同じ数を 2 枚並べない。 */
+  test('?period=today の訪問者タブに「1日あたり訪問者」が出ない', async ({ page, request }) => {
+    const siteId = await todayHitsSite(page, request);
+
+    await page.goto(todayPeriodUrl(siteId, '&tab=visitors'));
+
+    await expect(page.getByText('1日あたり訪問者', { exact: true })).toHaveCount(0);
+    await expect(statTile(page, '訪問者')).toBeVisible();
+    // 「Bot のアクセス」は当日でも出す（未決事項 #3）。
+    await expect(page.getByText('Bot のアクセス', { exact: true })).toBeVisible();
+  });
+
+  /** #57。補正も除外もしない代わりに、偏りを注記で担保する（§13-2）。 */
+  test('?period=today の直帰率と平均滞在時間に偏りの注記が出る', async ({ page, request }) => {
+    const siteId = await todayHitsSite(page, request);
+
+    await page.goto(todayPeriodUrl(siteId));
+
+    await expect(statTile(page, '直帰率')).toContainText('確定後より高めに出ます');
+    await expect(statTile(page, '平均滞在時間')).toContainText('実際より短めに出ます');
+  });
+
+  /** #58。表は本日の値で出る。並び順と 1 ページの件数は確定期間と同じ。 */
+  test('?period=today のページタブに本日のパスが行として並ぶ', async ({ page, request }) => {
+    const siteId = await todayHitsSite(page, request);
+
+    await page.goto(todayPeriodUrl(siteId, '&tab=pages'));
+
+    for (const column of ['ページビュー', '訪問者', 'ランディング', '直帰率', '平均滞在']) {
+      await expect(page.getByRole('columnheader', { name: column })).toBeVisible();
+    }
+    // ページビュー降順（`sumByKey` と同じ並び）。
+    await expect(page.getByRole('row', { name: /\/pricing/ })).toBeVisible();
+    await expect(page.getByRole('row').nth(1)).toContainText('2');
+  });
+
+  /** #58。参照元タブ。referrer 無しは `(direct)`。 */
+  test('?period=today の参照元タブに (direct) の行が出る', async ({ page, request }) => {
+    const siteId = await todayHitsSite(page, request);
+
+    await page.goto(todayPeriodUrl(siteId, '&tab=referrers'));
+
+    await expect(page.getByRole('row', { name: /\(direct\)/ })).toBeVisible();
+  });
+
+  /** #58。ページ送りも動く（メモリ上でスライスする。§11.3）。 */
+  test('?period=today&tab=pages&page=2 が 500 にならず、空のまま描ける', async ({
+    page,
+    request,
+  }) => {
+    const siteId = await todayHitsSite(page, request);
+
+    const response = await page.goto(todayPeriodUrl(siteId, '&tab=pages&page=2'));
+
+    expect(response?.status()).toBe(200);
+    await expect(page.getByRole('heading', { name: 'アナリティクス' })).toBeVisible();
+    await expect(page.getByRole('row', { name: /\/pricing/ })).toHaveCount(0);
+  });
+
+  /**
+   * #59。**既存の期間のグラフに本日の点が現れない**（要件 §4）。
+   *
+   * 今日だけ計測して集計しても、`7d`（末尾が昨日）には 1 件も入らない。
+   * 混ぜると「午前 10 時の本日」が急落に見える。
+   */
+  test('今日だけ計測して集計しても ?period=7d には本日の値が出ない', async ({ page, request }) => {
+    const siteId = await makeTrackedSite(request);
+    const publicKey = await publicKeyOf(page, siteId);
+    await collectHits(request, publicKey, ['/', '/', '/pricing']);
+    // 本日分は `analytics` へ入る（`todayUrl` で見れば 3 と出る）。
+    expect(await metricToday(request, siteId, 'pageviews')).toBe(3);
+
+    await page.goto(`/analytics?siteId=${siteId}&period=7d`);
+
+    await expect(statTile(page, 'ページビュー')).toContainText('0');
+    await expect(page.getByText('この期間のアクセスの記録はありません。')).toBeVisible();
+  });
+
+  /** #60。既存の期間で「集計は前日まで」と分かる（裁定 3.3）。 */
+  test('?period=7d のヘッダ行に「集計は前日まで」が出る', async ({ page, request }) => {
+    const siteId = await pristineSite(request);
+
+    await page.goto(`/analytics?siteId=${siteId}&period=7d`);
+
+    await expect(page.getByText('集計は前日まで', { exact: false })).toBeVisible();
+  });
+
+  /** #60。当日では出さない（当日は前日までではない）。 */
+  test('?period=today のヘッダ行に「集計は前日まで」は出ない', async ({ page, request }) => {
+    const siteId = await pristineSite(request);
+
+    await page.goto(todayPeriodUrl(siteId));
+
+    await expect(page.getByText('集計は前日まで', { exact: false })).toHaveCount(0);
+  });
+
+  /**
+   * #61。**今日が月の 1 日でも 500 にならない**（§7.2）。
+   *
+   * `to` を昨日にすると `month` は `from > to` になり、そのまま渡すと `ValidationError` で
+   * 画面ごと落ちる。`presetRange` が `null` を返し、画面は集計をせず空状態を出す。
+   *
+   * 実行日が 1 日でないと空状態そのものは再現できない（`presetRange('month', 月初) === null` は
+   * ユニット #5、解決は `analytics-query.test.ts` で決定的に見ている）。
+   * ここでは 500 にならないことを見て、1 日なら空状態も確かめる。
+   */
+  test('?period=month が 500 にならない（今日が月の 1 日でも）', async ({ page, request }) => {
+    const siteId = await pristineSite(request);
+
+    const response = await page.goto(`/analytics?siteId=${siteId}&period=month`);
+
+    expect(response?.status()).toBe(200);
+    await expect(page.getByRole('heading', { name: 'アナリティクス' })).toBeVisible();
+
+    if (today().endsWith('-01')) {
+      await expect(page.getByText('今月の確定値はまだありません', { exact: false })).toBeVisible();
+      await expect(page.getByRole('link', { name: '当日を見る' })).toBeVisible();
+      // #84。「当日を見る」導線が 2 つ並ばない（§7.5.1 の案内は出さない）。
+      await expect(staleRangeNotice(page)).toHaveCount(0);
+    }
+  });
+
+  /**
+   * #62 / #86。今日を含むカスタム期間には、値が古く見える理由を出す（§7.4.3）。
+   *
+   * 逃げ道（カスタムで今日を明示）は塞がない。値は集計値（最大 15 分遅れ）のまま。
+   */
+  test('?period=custom で今日を含むと注記と「当日を見る」が出る', async ({ page, request }) => {
+    const siteId = await makeRolledUpSite(page, request);
+
+    await page.goto(todayUrl(siteId));
+
+    await expect(todayInCustomNotice(page)).toBeVisible();
+    await expect(page.getByText('いまの値は「当日」で見られます', { exact: false })).toBeVisible();
+    await expect(page.getByRole('link', { name: '当日を見る' })).toBeVisible();
+    // #86。`tone="info"` は `role="status"`（`danger` の `role="alert"` ではない）。
+    await expect(todayInCustomNotice(page)).toHaveAttribute('role', 'status');
+    // 今日を含む custom では「集計は前日まで」を出さない。
+    await expect(page.getByText('集計は前日まで', { exact: false })).toHaveCount(0);
+  });
+
+  /** #62。今日を含まないカスタム期間には注記を出さない。 */
+  test('?period=custom で今日を含まなければ注記が出ない', async ({ page, request }) => {
+    const siteId = await pristineSite(request);
+
+    await page.goto(
+      `/analytics?siteId=${siteId}&period=custom&from=${shiftDate(today(), -10)}&to=${yesterday()}`,
+    );
+
+    await expect(todayInCustomNotice(page)).toHaveCount(0);
+    await expect(page.getByText('集計は前日まで', { exact: false })).toBeVisible();
+  });
+
+  /**
+   * #63。前日までが空で今日だけ届いている状態を、「集計待ち」と誤って説明しない（§7.5）。
+   *
+   * 定期ロールアップ（1 分間隔）が `collect` と画面表示の間に走ると `pending` が 0 になり、
+   * 導線ではなく §7.5.1 の案内（`receiving`）になる。**どちらでもよい**が、
+   * どちらの場合も「次回の集計のあとに数字が出ます」は出してはならない。
+   * 決定的な担保は `not-tracked.test.ts` のユニットで取る。
+   */
+  test('今日だけ届いている状態の ?period=7d で「当日」への導線が出る', async ({
+    page,
+    request,
+  }) => {
+    const siteId = await makeTrackedSite(request);
+    const publicKey = await publicKeyOf(page, siteId);
+    await collectHits(request, publicKey, ['/']);
+
+    await page.goto(`/analytics?siteId=${siteId}&period=7d`);
+
+    await expect(
+      page
+        .getByText('届いているのは今日の分です', { exact: false })
+        .or(page.getByText('アクセスは今日届いています', { exact: false })),
+    ).toBeVisible();
+    await expect(page.getByRole('link', { name: '当日を見る' }).first()).toBeVisible();
+    await expect(page.getByText('そのあとにこの画面へ数字が出ます', { exact: false })).toHaveCount(
+      0,
+    );
+  });
+
+  /** #64。一度も受信していないサイトは、当日でも現行どおりの導線（既存 E2E の locator を保つ）。 */
+  test('一度も受信していないサイトは ?period=today でも「計測タグ未設置」の導線が出る', async ({
+    page,
+    request,
+  }) => {
+    const siteId = await pristineSite(request);
+
+    await page.goto(todayPeriodUrl(siteId));
+
+    await expect(page.getByText('計測タグ未設置')).toBeVisible();
+    await expect(
+      page.getByRole('heading', { name: 'まだアクセスの記録がありません' }),
+    ).toBeVisible();
+    await expect(page.getByRole('button', { name: '計測タグを取得' })).toBeVisible();
+  });
+
+  /**
+   * #65。今日 0 件・過去に受信ありのとき、**導線ではなく通常のタブ**を出す（§7.6）。
+   *
+   * 「当日」は未集計の値を見るための期間なので、届いているのに中身を隠すのは矛盾する。
+   */
+  test('今日の生ログが 0 件で過去に受信があるサイトは、?period=today で通常のタブと 0 が出る', async ({
+    page,
+    request,
+  }) => {
+    const siteId = await makeTrackedSite(request);
+    await seedYesterdayAccessLog(siteId);
+
+    await page.goto(todayPeriodUrl(siteId));
+
+    // 導線は出さない。
+    await expect(page.getByText('計測タグ未設置')).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: /アクセスは届いています/ })).toHaveCount(0);
+    // 値はすべて 0。
+    await expect(statTile(page, 'ページビュー')).toContainText('0');
+    await expect(statTile(page, '訪問者')).toContainText('0');
+    await expect(page.getByText('今日のアクセスはまだありません', { exact: false })).toBeVisible();
+  });
+
+  /** #66。「Bot を集計に含める」は当日でも同じ規則で効く（§7.3.4）。 */
+  test('?period=today&bots=1 で Bot を含めた値になる', async ({ page, request }) => {
+    const siteId = await todayHitsSite(page, request);
+
+    await page.goto(todayPeriodUrl(siteId));
+    await expect(statTile(page, 'ページビュー')).toContainText('3');
+
+    await page.goto(todayPeriodUrl(siteId, '&bots=1'));
+    await expect(statTile(page, 'ページビュー')).toContainText('4');
+  });
+
+  /** #67。`analytics.read` を持たない利用者は、当日でも現行どおり権限なしの画面。 */
+  test('analytics.read を持たない利用者は ?period=today でも権限なしの画面', async ({
+    browser,
+    request,
+    playwright,
+  }) => {
+    const api = await contextWithoutPermissions(request, playwright);
+    let storage;
+    try {
+      storage = await api.storageState();
+    } finally {
+      await api.dispose();
+    }
+
+    const context = await browser.newContext({ baseURL: origin, storageState: storage });
+    try {
+      const page = await context.newPage();
+      const response = await page.goto('/analytics?period=today');
+
+      expect(response?.status()).toBe(200);
+      await expect(page.getByText('この操作を行う権限がありません')).toBeVisible();
+      await expect(todayNav(page)).toHaveCount(0);
+      await expect(siteSelect(page)).toHaveCount(0);
+    } finally {
+      await context.close();
+    }
+  });
+
+  /**
+   * #68。未認証は現行どおり `/login` へリダイレクト。
+   *
+   * **`browser.newContext()` では未認証にならない。** `playwright.config.ts` の
+   * `use.storageState`（管理者でログイン済み）は新しく作ったコンテキストにも効くため、
+   * 何も渡さずに作ると**管理者のまま**開いてしまい、この検査が素通りする。
+   *
+   * 既存の未認証テスト（`ui-shell.spec.ts`「未ログインでダッシュボードを開くと
+   * ログイン画面へ送られる」）と同じく、`page` の Cookie を消してから開く。
+   * `storageState: undefined` を渡す形にしないのは、それが config の既定を
+   * 打ち消すかどうかが Playwright のバージョンに依るため。
+   */
+  test('未認証で ?period=today を開くと /login へリダイレクトされる', async ({ page }) => {
+    await page.context().clearCookies();
+    // 未認証になっていることを先に確かめる。ここが空でないとリダイレクトの検査が意味を失う。
+    expect(await page.context().cookies()).toEqual([]);
+
+    await page.goto('/analytics?period=today');
+
+    await expect(page).toHaveURL(/\/login/);
+    await expect(page.getByLabel('ログインID')).toBeVisible();
+  });
+
+  /** #69。存在しない siteId は現行どおり 404（当日でも変わらない）。 */
+  test('存在しない siteId の ?period=today は 404', async ({ page }) => {
+    const response = await page.goto(`/analytics?siteId=${crypto.randomUUID()}&period=today`);
+
+    expect(response?.status()).toBe(404);
+  });
+
+  /** #69。UUID でない siteId も 404（キャストエラーで 500 にしない）。 */
+  test('UUID でない siteId の ?period=today は 404', async ({ page }) => {
+    const response = await page.goto('/analytics?siteId=not-a-uuid&period=today');
+
+    expect(response?.status()).toBe(404);
+  });
+
+  /**
+   * #74。**参照 API は変更しない**（§6）。`period` を受け付けない。
+   *
+   * 生ログを直接集計する例外は、有界であることを保証できる経路にだけ開く。
+   * API に開くと、外から任意の頻度で重い集計を起こせる口になる。
+   */
+  test('GET /api/v1/analytics は period を受け付けず、応答が変わらない', async ({
+    page,
+    request,
+  }) => {
+    const siteId = await makeRolledUpSite(page, request);
+    const base = `/api/v1/analytics?siteId=${siteId}&from=${today()}&to=${today()}&key=&perPage=100`;
+
+    const plain = await request.get(base);
+    const withPeriod = await request.get(`${base}&period=today`);
+
+    expect(plain.status()).toBe(200);
+    expect(withPeriod.status()).toBe(200);
+    expect(await withPeriod.json()).toEqual(await plain.json());
+  });
+
+  /**
+   * #76。定期ロールアップが走った直後（未集計 0 件）で当期の集計値が 0 件、
+   * 最終受信が今日のとき、案内と「当日を見る」を出す（§7.5.1）。
+   *
+   * `rollupToday` は `runJob` を通るので、以後 `pending` は 0 にしかならない（決定的）。
+   * `diagnoseReception` は `receiving` を返しており、導線は出ていない。
+   */
+  test('集計済み・当期 0 件・今日受信ありの ?period=7d に案内と「当日を見る」が出る', async ({
+    page,
+    request,
+  }) => {
+    const siteId = await rolledUpTodaySite(page, request);
+
+    await page.goto(`/analytics?siteId=${siteId}&period=7d`);
+
+    await expect(staleRangeNotice(page)).toBeVisible();
+    await expect(staleRangeNotice(page)).toContainText('確定値はまだありません');
+    await expect(staleRangeNotice(page)).toContainText('集計は前日まで');
+    await expect(page.getByRole('link', { name: '当日を見る' }).first()).toBeVisible();
+    // 導線（`not-tracked`）は出ていない。
+    await expect(page.getByRole('heading', { name: /アクセスは届いています/ })).toHaveCount(0);
+    await expect(page.getByText('計測タグ未設置')).toHaveCount(0);
+  });
+
+  /** #77 / #86。案内は `tone="info"`（`role="status"`）。`danger` の `role="alert"` にしない。 */
+  test('案内の role が status', async ({ page, request }) => {
+    const siteId = await rolledUpTodaySite(page, request);
+
+    await page.goto(`/analytics?siteId=${siteId}&period=7d`);
+
+    await expect(staleRangeNotice(page)).toHaveAttribute('role', 'status');
+  });
+
+  /** #79。一度も受信していなければ、案内ではなく `not-received` の導線が出る。 */
+  test('未受信のサイトでは案内が出ず、「計測タグ未設置」の導線が出る', async ({
+    page,
+    request,
+  }) => {
+    const siteId = await pristineSite(request);
+
+    await page.goto(`/analytics?siteId=${siteId}&period=7d`);
+
+    await expect(staleRangeNotice(page)).toHaveCount(0);
+    await expect(page.getByText('計測タグ未設置')).toBeVisible();
+  });
+
+  /** #80。当期に集計値が 1 件でもあれば案内は出ない（数字が出ているときに案内しない）。 */
+  test('当期に集計値があれば案内が出ない', async ({ page, request }) => {
+    const siteId = await makeTrackedSite(request);
+    const publicKey = await publicKeyOf(page, siteId);
+    await collectHits(request, publicKey, ['/']);
+    await rollupToday(request);
+    // 当期（末尾が昨日）に確定値を入れる。
+    await seedAnalytics(siteId, yesterday(), { pageviews: 10, visitors: 4 });
+
+    await page.goto(`/analytics?siteId=${siteId}&period=7d`);
+
+    await expect(statTile(page, 'ページビュー')).toContainText('10');
+    await expect(staleRangeNotice(page)).toHaveCount(0);
+  });
+
+  /** #81。当日を見ているのに当日への導線は出さない。 */
+  test('?period=today では案内が出ない', async ({ page, request }) => {
+    const siteId = await rolledUpTodaySite(page, request);
+
+    await page.goto(todayPeriodUrl(siteId));
+
+    await expect(staleRangeNotice(page)).toHaveCount(0);
+  });
+
+  /**
+   * #82。導線と案内が**二重に出ない**。
+   *
+   * `collect` 直後は定期ロールアップ（1 分間隔）との競合で
+   * `pending-rollup`（導線）にも `receiving`（案内）にもなりうる。
+   * **どちらか一方だけ**であることは、どちらに転んでも成り立つ。
+   */
+  test('導線と案内が同時に出ない', async ({ page, request }) => {
+    const siteId = await makeTrackedSite(request);
+    const publicKey = await publicKeyOf(page, siteId);
+    await collectHits(request, publicKey, ['/']);
+
+    await page.goto(`/analytics?siteId=${siteId}&period=7d`);
+    await expect(page.getByRole('heading', { name: 'アナリティクス' })).toBeVisible();
+
+    const guidance = await page.getByRole('heading', { name: /アクセスは届いています/ }).count();
+    const notice = await staleRangeNotice(page).count();
+
+    expect(guidance + notice, `導線 ${guidance} 件 / 案内 ${notice} 件`).toBe(1);
+  });
+
+  /** #83。設定タブは期間に依存しない。 */
+  test('?tab=settings では案内が出ない', async ({ page, request }) => {
+    const siteId = await rolledUpTodaySite(page, request);
+
+    await page.goto(`/analytics?siteId=${siteId}&period=7d&tab=settings`);
+
+    await expect(snippetOf(page, siteId)).toBeVisible();
+    await expect(staleRangeNotice(page)).toHaveCount(0);
   });
 });

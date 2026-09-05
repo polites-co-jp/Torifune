@@ -16,11 +16,18 @@ import {
   type TrackedSite,
 } from '@/domain/analytics/analytics';
 import { NotFoundError, ValidationError } from '@/domain/repository';
+import { analyticsTimeZone } from '@/application/analytics/timezone';
 import { schedulerConfig } from '@/application/jobs/config';
 import { ROLLUP_JOB } from '@/application/jobs/definitions';
 import { schedulerSnapshot } from '@/application/jobs/scheduler';
-import { analyticsRepository, PENDING_COUNT_LIMIT } from '@/infrastructure/analytics-repository';
+import { todayInTimeZone } from '@/domain/analytics/day';
+import {
+  analyticsRepository,
+  PENDING_COUNT_LIMIT,
+  TODAY_AGGREGATION_TIMEOUT_MS,
+} from '@/infrastructure/analytics-repository';
 import { jobRunRepository } from '@/infrastructure/job-run-repository';
+import { log } from '@/infrastructure/logging';
 
 /**
  * アクセス・分析データの参照（05_API設計.md §20、018-analytics）。
@@ -357,6 +364,84 @@ export const getAnalyticsStatus = defineUseCase<{ readonly siteId: string }, Ana
         nextRunAt: scheduled?.nextRunAt ?? null,
       },
     };
+  },
+});
+
+/**
+ * 「当日」の値（030-analytics-today 設計 §12.1）。
+ *
+ * `points` は `analytics` に保存された確定値ではなく、
+ * **その瞬間の生ログをその場で畳んだもの**。出所は常に `core`。
+ */
+export interface TodayAnalytics {
+  /** 運用タイムゾーンの今日（`YYYY-MM-DD`）。 */
+  readonly date: string;
+  /** 集計した瞬間（サーバーの時計。ブラウザの時計ではない）。 */
+  readonly generatedAt: Date;
+  /** 集計できなかった（打ち切り等）。true なら `points` は空。 */
+  readonly unavailable: boolean;
+  readonly points: readonly AnalyticsPoint[];
+}
+
+/**
+ * 「当日」の集計（030-analytics-today 設計 §4.1 / §11.2 / §13-3）。
+ *
+ * **「画面から生ログを集計しない」原則に対する、明示的な例外。**
+ * 原則の根拠は「期間が延びるほど遅くなり、1 年分を見たら固まる」ことにあり、
+ * 当日は **常に 1 日 × 常に 1 サイト**に有界なのでその根拠に当たらない。
+ * 例外の範囲が広がらないように、次を守る。
+ *
+ * * **期間を引数で受けない。** 日付は自分で決める（`siteId` しか受けない）
+ * * API へ露出しない（設計 §6）。Plugin へも露出しない（設計 §9）
+ * * 実行時間に上限を掛ける（`TODAY_AGGREGATION_TIMEOUT_MS`）
+ *
+ * **`analytics` を読まない。生ログだけを見る**（設計 §13-3）。足す・混ぜる・優先するをしない。
+ * 足せば必ず 2 倍になり、「新しい方を採る」規則にすると同じ画面の中で数の出どころが揃わなくなる。
+ *
+ * **書き込まない**（設計 §5.3 / 裁定 3.1）。画面の表示が DB 書き込みを起こす作りにしない。
+ *
+ * 集計できなかったときは**握り潰さずに警告へ残し**、`unavailable: true` と空の点を返す。
+ * 当日は「あると便利な速報値」で、確定値は別経路（`analytics`）で必ず見られる。
+ * 当日の集計が重い環境で画面全体を止めるより、当日だけ諦める方が損害が小さい。
+ */
+export const getTodayAnalytics = defineUseCase<{ readonly siteId: string }, TodayAnalytics>({
+  name: 'analytics.today',
+  permission: 'analytics.read',
+  handler: async (context, input) => {
+    const timeZone = analyticsTimeZone();
+    const date = todayInTimeZone(timeZone);
+    const generatedAt = new Date();
+
+    try {
+      const rows = await analyticsRepository.aggregateDailyBreakdown(context.connection, {
+        from: date,
+        to: date,
+        timeZone,
+        siteId: input.siteId,
+        statementTimeoutMs: TODAY_AGGREGATION_TIMEOUT_MS,
+      });
+
+      return {
+        date,
+        generatedAt,
+        unavailable: false,
+        points: rows.map((row) => ({
+          siteId: row.siteId,
+          metricDate: row.metricDate,
+          source: CORE_SOURCE,
+          metric: row.metric,
+          key: row.key,
+          value: row.value,
+        })),
+      };
+    } catch (error) {
+      log.warn('当日の集計に失敗したため速報値を出さない', {
+        siteId: input.siteId,
+        date,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+      return { date, generatedAt, unavailable: true, points: [] };
+    }
   },
 });
 
