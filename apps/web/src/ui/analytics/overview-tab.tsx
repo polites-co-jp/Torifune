@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import type { ReactNode } from 'react';
 import { botsOnlyInPeriod } from '@/domain/analytics/reception';
 import type { DeviceRow } from '@/domain/analytics/summary';
 import {
@@ -34,15 +35,22 @@ import {
  * 出したものを `app/analytics/page.tsx` が組み立て、ここでは並べるだけ。
  */
 
+/**
+ * 件数。
+ *
+ * **`delta` は任意**（030-analytics-today 設計 §13-1）。当日は前期間比を出さないので渡さない。
+ * 渡さなければ矢印も `—` も出ない（`—` は「比を出せない」の意味で、
+ * 当日は「比べていない」であって「比べたが出せない」ではない）。
+ */
 export interface CountStat {
   readonly value: number;
-  readonly delta: StatDelta;
+  readonly delta?: StatDelta;
 }
 
-/** 率や平均。分母 0 は null。 */
+/** 率や平均。分母 0 は null。`delta` は `CountStat` と同じく任意。 */
 export interface RatioStat {
   readonly value: number | null;
-  readonly delta: StatDelta;
+  readonly delta?: StatDelta;
 }
 
 export interface DailyRow {
@@ -59,14 +67,23 @@ export interface OverviewData {
   readonly bounceRate: RatioStat;
   /** 平均滞在（ms）。 */
   readonly dwellAvg: RatioStat;
-  /** 期間の日次。記録の無い日は 0。期間に記録が 1 つも無ければ空配列。 */
-  readonly daily: readonly DailyRow[];
+  /**
+   * 期間の日次。記録の無い日は 0。期間に記録が 1 つも無ければ空配列。
+   *
+   * **`null` は「日次の推移」カードごと描かない**（030-analytics-today 設計 §7.3）。
+   * 当日は 1 日しかなく、1 日の折れ線に意味が無い。空配列（＝記録が無い）とは別の状態。
+   */
+  readonly daily: readonly DailyRow[] | null;
   readonly topPages: readonly RankedItem[];
   readonly topReferrers: readonly RankedItem[];
   /** 0 時〜23 時のページビュー。 */
   readonly hours: readonly number[];
   readonly devices: readonly DeviceRow[];
   readonly botPageviews: number;
+  /** 直帰率の注記（当日の偏り。030-analytics-today 設計 §13-2）。 */
+  readonly bounceRateNote?: ReactNode;
+  /** 平均滞在時間の注記（同上）。 */
+  readonly dwellAvgNote?: ReactNode;
 }
 
 const LINK_STYLE = {
@@ -91,20 +108,25 @@ export function OverviewTab({
   readonly pagesHref: string;
   readonly referrersHref: string;
 }) {
-  const series: readonly ChartSeries[] = [
-    {
-      key: 'pageviews',
-      label: 'ページビュー',
-      tone: 'chart-1',
-      points: data.daily.map((row) => ({ label: shortDate(row.date), value: row.pageviews })),
-    },
-    {
-      key: 'visitors',
-      label: '訪問者',
-      tone: 'chart-2',
-      points: data.daily.map((row) => ({ label: shortDate(row.date), value: row.visitors })),
-    },
-  ];
+  // 当日は 1 日しかないので折れ線に意味が無い。カードごと描かない（設計 §7.3）。
+  const daily = data.daily;
+  const series: readonly ChartSeries[] =
+    daily === null
+      ? []
+      : [
+          {
+            key: 'pageviews',
+            label: 'ページビュー',
+            tone: 'chart-1',
+            points: daily.map((row) => ({ label: shortDate(row.date), value: row.pageviews })),
+          },
+          {
+            key: 'visitors',
+            label: '訪問者',
+            tone: 'chart-2',
+            points: daily.map((row) => ({ label: shortDate(row.date), value: row.visitors })),
+          },
+        ];
 
   const dailyColumns: readonly Column<DailyRow>[] = [
     { key: 'date', header: '日付', render: (row) => row.date },
@@ -168,6 +190,7 @@ export function OverviewTab({
             label="直帰率"
             value={formatRate(data.bounceRate.value)}
             delta={data.bounceRate.delta}
+            note={data.bounceRateNote}
           />
         </Tile>
         <Tile>
@@ -175,38 +198,41 @@ export function OverviewTab({
             label="平均滞在時間"
             value={formatDuration(data.dwellAvg.value)}
             delta={data.dwellAvg.delta}
+            note={data.dwellAvgNote}
           />
         </Tile>
       </StatGrid>
 
-      <Card>
-        <SectionHeader title="日次の推移" aside={rangeText(from, to)} />
-        <Chart
-          title="ページビューと訪問者の日次推移"
-          series={series}
-          height="lg"
-          legend
-          yAxis
-          xTicks
-          fallback={
-            data.daily.length === 0 ? (
-              <EmptyState message="この期間のアクセスの記録はありません。" />
-            ) : (
-              <details style={{ marginTop: 'var(--tf-space-3)' }}>
-                <summary
-                  style={{
-                    fontSize: 'var(--tf-text-caption)',
-                    color: 'var(--tf-color-text-subtle)',
-                  }}
-                >
-                  日ごとの値を表で見る
-                </summary>
-                <Table columns={dailyColumns} rows={data.daily} rowKey={(row) => row.date} />
-              </details>
-            )
-          }
-        />
-      </Card>
+      {daily !== null && (
+        <Card>
+          <SectionHeader title="日次の推移" aside={rangeText(from, to)} />
+          <Chart
+            title="ページビューと訪問者の日次推移"
+            series={series}
+            height="lg"
+            legend
+            yAxis
+            xTicks
+            fallback={
+              daily.length === 0 ? (
+                <EmptyState message="この期間のアクセスの記録はありません。" />
+              ) : (
+                <details style={{ marginTop: 'var(--tf-space-3)' }}>
+                  <summary
+                    style={{
+                      fontSize: 'var(--tf-text-caption)',
+                      color: 'var(--tf-color-text-subtle)',
+                    }}
+                  >
+                    日ごとの値を表で見る
+                  </summary>
+                  <Table columns={dailyColumns} rows={daily} rowKey={(row) => row.date} />
+                </details>
+              )
+            }
+          />
+        </Card>
+      )}
 
       <div
         style={{

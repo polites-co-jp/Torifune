@@ -35,6 +35,17 @@ export interface NotTrackedData {
   readonly intervalMinutes: number;
   /** 次回の予定（`YYYY-MM-DD HH:mm`）。無効なら null。 */
   readonly nextRunAt: string | null;
+  /**
+   * 最終受信が運用タイムゾーンの今日か（030-analytics-today 設計 §7.5）。
+   *
+   * プリセットの `to` は昨日なので、計測を始めた初日は当期が空になる。
+   * この状態を**「集計待ち」と誤って説明しない**。
+   * **真のとき「次回の集計のあとに数字が出ます」と書いてはならない。**
+   * 次の集計が走っても、今日の分は末尾が昨日の期間には入らないので、その文は嘘になる。
+   */
+  readonly receivedToday: boolean;
+  /** 「当日」（`?period=today`）への導線。当期が既に当日なら null。 */
+  readonly todayHref: string | null;
 }
 
 const ROLLUP_API = 'POST /api/v1/analytics/rollup';
@@ -105,18 +116,25 @@ function contentFor(data: NotTrackedData): {
         badge: '受信済み・集計待ち',
         tone: 'warning',
         heading: 'アクセスは届いています。集計を待っています',
-        description:
-          data.scheduled && next !== null ? (
-            <>
-              {received}
-              {pending}次回の集計は {next} 頃で、そのあとにこの画面へ数字が出ます。
-            </>
-          ) : (
-            <>
-              {received}
-              {pending}定期実行が無効です。<code>{ROLLUP_API}</code> を実行すると数字が出ます。
-            </>
-          ),
+        description: data.receivedToday ? (
+          // **「次回の集計のあとに数字が出ます」と書かない。** 今日の分は
+          // 末尾が昨日の期間には入らないので、その文は嘘になる（設計 §7.5）。
+          <>
+            {received}
+            {pending}
+            届いているのは今日の分です。この期間（前日まで）の確定値はまだありません。今日の値は「当日」で見られます。
+          </>
+        ) : data.scheduled && next !== null ? (
+          <>
+            {received}
+            {pending}次回の集計は {next} 頃で、そのあとにこの画面へ数字が出ます。
+          </>
+        ) : (
+          <>
+            {received}
+            {pending}定期実行が無効です。<code>{ROLLUP_API}</code> を実行すると数字が出ます。
+          </>
+        ),
       };
 
     case 'bots-only':
@@ -131,6 +149,8 @@ function contentFor(data: NotTrackedData): {
             User-Agent が空、または bot / crawler / spider / curl / headless
             などを含むアクセスは集計に含めません。実際のブラウザでページを開いて確かめてください。
             集計後は「Bot を集計に含める」で件数を見られます。
+            {data.receivedToday &&
+              '届いたアクセスは今日の分です。「当日」でも同じく Bot だけが見えます。'}
           </>
         ),
       };
@@ -152,6 +172,9 @@ export function NotTracked({
   const content = contentFor(data);
   // 「計測タグを取得」は未受信のときだけ。届いているサイトで貼り直しを促さない。
   const showSnippetButton = data.state === 'not-received';
+  // 一度も届いていないサイトに「当日を見る」は出さない（見ても空で、嘘になる）。
+  // 当期が既に当日なら `todayHref` は null（自分自身へのリンクにしない）。
+  const todayHref = !showSnippetButton && data.receivedToday ? data.todayHref : null;
 
   return (
     <section
@@ -204,6 +227,12 @@ export function NotTracked({
             </li>
           ))}
         </ol>
+      )}
+
+      {todayHref !== null && (
+        <Link href={todayHref} style={{ color: 'var(--tf-color-primary)', fontWeight: 600 }}>
+          当日を見る
+        </Link>
       )}
 
       {/* **表示制御であって認可ではない。** 認可は UseCase（`analytics.trackedSites`）が行う。 */}

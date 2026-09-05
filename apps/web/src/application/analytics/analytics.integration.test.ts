@@ -1,8 +1,9 @@
 import { sql } from 'kysely';
 import { uuidv7 } from 'uuidv7';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   getAnalyticsStatus,
+  getTodayAnalytics,
   listAnalytics,
   listAnalyticsBreakdown,
   listAnalyticsPage,
@@ -13,7 +14,11 @@ import {
 import { collectAccess, resetDailySalts } from '@/application/analytics/collect';
 import { analyticsTimeZone, resetTimeZoneWarning } from '@/application/analytics/timezone';
 import { pruneAccessLogs, rollupAnalytics } from '@/application/analytics/rollup';
-import { ForbiddenError, type AuthorizationContext } from '@/application/authorization/authorize';
+import {
+  ForbiddenError,
+  UnauthenticatedError,
+  type AuthorizationContext,
+} from '@/application/authorization/authorize';
 import { authorizationContextFor } from '@/application/authorization/context';
 import { resetEventHandlers, subscribe } from '@/application/events';
 import { ROLLUP_JOB } from '@/application/jobs/definitions';
@@ -21,9 +26,21 @@ import { runJob } from '@/application/jobs/run-job';
 import { createSite, regenerateSitePublicKey } from '@/application/site/site-use-cases';
 import { withConnection } from '@/application/transaction';
 import type { UserIdentity } from '@/authentication/identity';
-import { isValidBreakdownKey, type AnalyticsPoint } from '@/domain/analytics/analytics';
+import {
+  CORE_SOURCE,
+  isValidBreakdownKey,
+  KEYLESS_CORE_METRICS,
+  type AnalyticsPoint,
+} from '@/domain/analytics/analytics';
 import { daysAgoInTimeZone, todayInTimeZone } from '@/domain/analytics/day';
+import { summarize } from '@/domain/analytics/summary';
 import { NotFoundError, ValidationError } from '@/domain/repository';
+import {
+  analyticsRepository,
+  TODAY_AGGREGATION_TIMEOUT_MS,
+  type DailyBreakdownRow,
+} from '@/infrastructure/analytics-repository';
+import { resetLogger, setLogger, type LogRecord } from '@/infrastructure/logging';
 import { roleRepository } from '@/infrastructure/role-repository';
 import { useScratchDatabase, type ScratchDatabase } from '@/test-support/database';
 
@@ -2638,5 +2655,640 @@ describe('公開キーの再発行と計測', () => {
 
     const outcome = await hit(site.publicKey);
     expect(outcome.ok).toBe(true);
+  });
+});
+
+/**
+ * 当日 1 日分の集計（030-analytics-today 設計 §5.2 / §11.2、受け入れ条件 #21〜#28）。
+ *
+ * `aggregateDailyBreakdown` の引数を広げる。**SQL の本体は変えない。**
+ *
+ * ```ts
+ * aggregateDailyBreakdown(connection, {
+ *   from, to, timeZone,
+ *   siteId?: string | null,        // 追加。null / 省略は全サイト（ロールアップの現行動作）
+ *   statementTimeoutMs?: number,   // 追加。省略なら設定しない（ロールアップの現行動作）
+ * })
+ * ```
+ *
+ * `siteId` を渡したときだけ `logs` CTE の `WHERE` に一致条件を足す。
+ * **UUID でない値は「どの行にも当たらない条件」**にする（キャストエラーで 500 にしない）。
+ * 窓関数のパーティションは元から `site_id` を含むので、絞っても値は変わらない。
+ */
+describe('当日 1 日分の集計（aggregateDailyBreakdown）', () => {
+  afterEach(() => {
+    delete process.env['TORIFUNE_TIMEZONE'];
+    resetTimeZoneWarning();
+  });
+
+  function aggregate(options: {
+    readonly from: string;
+    readonly to?: string;
+    readonly timeZone?: string;
+    readonly siteId?: string | null;
+    readonly statementTimeoutMs?: number;
+  }): Promise<readonly DailyBreakdownRow[]> {
+    return withConnection((connection) =>
+      analyticsRepository.aggregateDailyBreakdown(connection, {
+        from: options.from,
+        to: options.to ?? options.from,
+        timeZone: options.timeZone ?? 'UTC',
+        ...(options.siteId === undefined ? {} : { siteId: options.siteId }),
+        ...(options.statementTimeoutMs === undefined
+          ? {}
+          : { statementTimeoutMs: options.statementTimeoutMs }),
+      }),
+    );
+  }
+
+  /** `{ metric, key, value }` だけを取り出して並べる（比較しやすい形）。 */
+  function shapeOf(
+    rows: readonly { readonly metric: string; readonly key: string; readonly value: number }[],
+  ): { metric: string; key: string; value: number }[] {
+    return rows
+      .map((row) => ({ metric: row.metric, key: row.key, value: row.value }))
+      .sort((a, b) =>
+        a.metric === b.metric ? a.key.localeCompare(b.key) : a.metric.localeCompare(b.metric),
+      );
+  }
+
+  /**
+   * #21。**他のサイトの生ログが 1 行も混ざらない。**
+   *
+   * ID を差し替えるだけで別サイトのアクセスが見えるようでは、当日タブが漏れの口になる。
+   */
+  it('siteId を渡すと、そのサイトの行だけが返る', async () => {
+    const mine = await makeSite();
+    const other = await makeSite();
+    await insertLogs(mine.id, [{ at: at('10:00'), visitor: 'v1', path: '/mine' }]);
+    await insertLogs(other.id, [{ at: at('10:00'), visitor: 'v2', path: '/other' }]);
+
+    const rows = await aggregate({ from: DAY, siteId: mine.id });
+
+    expect(rows.length).toBeGreaterThan(0);
+    expect([...new Set(rows.map((row) => row.siteId))]).toEqual([mine.id]);
+    expect(rows.map((row) => row.key)).not.toContain('/other');
+  });
+
+  /** #21。絞っても値は変わらない（窓関数のパーティションが元から site_id を含む）。 */
+  it('siteId で絞っても、そのサイトの値は全サイトで集計したときと同じ', async () => {
+    const mine = await makeSite();
+    const other = await makeSite();
+    await insertLogs(mine.id, [
+      { at: at('10:00'), visitor: 'v1', path: '/a' },
+      { at: at('10:10'), visitor: 'v1', path: '/b' },
+    ]);
+    await insertLogs(other.id, [{ at: at('10:00'), visitor: 'v1', path: '/a' }]);
+
+    const filtered = await aggregate({ from: DAY, siteId: mine.id });
+    const all = await aggregate({ from: DAY });
+
+    expect(shapeOf(filtered)).toEqual(shapeOf(all.filter((row) => row.siteId === mine.id)));
+  });
+
+  /** #22。ロールアップの経路（引数を渡さない）が変わらない。 */
+  it('siteId を省略すると全サイトの行が返る', async () => {
+    const first = await makeSite();
+    const second = await makeSite();
+    await insertLogs(first.id, [{ at: at('10:00'), visitor: 'v1' }]);
+    await insertLogs(second.id, [{ at: at('10:00'), visitor: 'v2' }]);
+
+    const rows = await aggregate({ from: DAY });
+
+    expect([...new Set(rows.map((row) => row.siteId))].sort()).toEqual(
+      [first.id, second.id].sort(),
+    );
+  });
+
+  /** #22。`null` は「全サイト」（省略と同じ）。 */
+  it('siteId に null を渡しても全サイトの行が返る', async () => {
+    const first = await makeSite();
+    const second = await makeSite();
+    await insertLogs(first.id, [{ at: at('10:00'), visitor: 'v1' }]);
+    await insertLogs(second.id, [{ at: at('10:00'), visitor: 'v2' }]);
+
+    expect(shapeOf(await aggregate({ from: DAY, siteId: null }))).toEqual(
+      shapeOf(await aggregate({ from: DAY })),
+    );
+  });
+
+  /** #23。UUID でない値でキャストエラーにして 500 を返さない（既存の `siteCondition` と同じ規則）。 */
+  it('siteId が UUID でなければ、例外にならず空配列', async () => {
+    const site = await makeSite();
+    await insertLogs(site.id, [{ at: at('10:00'), visitor: 'v1' }]);
+
+    await expect(aggregate({ from: DAY, siteId: 'not-a-uuid' })).resolves.toEqual([]);
+  });
+
+  /** #23。SQL を差し込む形の値でも同じ（例外にも全件にもならない）。 */
+  it('siteId が SQL の断片でも空配列', async () => {
+    const site = await makeSite();
+    await insertLogs(site.id, [{ at: at('10:00'), visitor: 'v1' }]);
+
+    await expect(aggregate({ from: DAY, siteId: `' OR 1=1 --` })).resolves.toEqual([]);
+  });
+
+  /**
+   * #24。**同じ定義であることの担保**（設計 §13-2）。
+   *
+   * 当日の値がロールアップ済みの本日分と食い違うと、15 分後に数字が変わって見える。
+   * 進行中セッションを除く・直帰の数え方を変える、といった補正を入れていないことを
+   * ここで固定する。
+   */
+  it('from = to = 今日 の結果が、rollupAnalytics が書く本日分と metric / key / value まで一致する', async () => {
+    const site = await makeSite();
+    await insertLogs(site.id, [
+      { at: `${today()}T00:10:00Z`, visitor: 'v1', path: '/', referrer: 'ref.example' },
+      { at: `${today()}T00:20:00Z`, visitor: 'v1', path: '/pricing' },
+      { at: `${today()}T01:30:00Z`, visitor: 'v2', path: '/', device: 'mobile' },
+      { at: `${today()}T02:00:00Z`, visitor: 'b1', path: '/', device: 'bot' },
+    ]);
+
+    const direct = await aggregate({ from: today(), siteId: site.id });
+    await rollup(today());
+    const rolledUp = await corePoints(site.id, today());
+
+    expect(shapeOf(direct)).toEqual(shapeOf(rolledUp));
+  });
+
+  /** #25。0 行の指標も作らない（消された生ログの日を 0 で埋めない）。 */
+  it('その日の生ログが 1 行も無いサイトでは空配列', async () => {
+    const site = await makeSite();
+    const other = await makeSite();
+    // 別サイトには生ログがある。絞り込みが効いていなければここで空にならない。
+    await insertLogs(other.id, [{ at: at('10:00'), visitor: 'v1' }]);
+
+    await expect(aggregate({ from: DAY, siteId: site.id })).resolves.toEqual([]);
+  });
+
+  /** #25。日をずらせば同じサイトでも空。 */
+  it('その日に生ログが無ければ空配列（別の日にはある）', async () => {
+    const site = await makeSite();
+    await insertLogs(site.id, [{ at: at('10:00'), visitor: 'v1' }]);
+
+    await expect(aggregate({ from: NEXT_DAY, siteId: site.id })).resolves.toEqual([]);
+  });
+
+  /**
+   * #26。生ログが 1 行でもあれば `key = ''` の 8 指標を 0 でも出す。
+   *
+   * Bot だけの日でも、人の指標が 0 として並ぶ（画面が「0」を出せる）。
+   */
+  it('生ログが 1 行でもあれば、key が空の 8 指標が値 0 でも返る', async () => {
+    const site = await makeSite();
+    await insertLogs(site.id, [{ at: at('10:00'), visitor: 'b1', device: 'bot' }]);
+
+    const rows = await aggregate({ from: DAY, siteId: site.id });
+    const keyless = new Map(
+      rows.filter((row) => row.key === '').map((row) => [row.metric, row.value]),
+    );
+
+    expect([...keyless.keys()].sort()).toEqual([...KEYLESS_CORE_METRICS].sort());
+    expect(keyless.get('pageviews')).toBe(0);
+    expect(keyless.get('visitors')).toBe(0);
+    expect(keyless.get('sessions')).toBe(0);
+    expect(keyless.get('bot_pageviews')).toBe(1);
+    expect(keyless.get('bot_visitors')).toBe(1);
+  });
+
+  /**
+   * #27。運用タイムゾーンの日の境目で切られる。
+   *
+   * JST（UTC+9）では 2026-09-02T23:00Z は 9/3 08:00 なので「9/3」に入る。
+   * ここがずれると、JST の朝に見る「当日」が常に空になる。
+   */
+  it('Asia/Tokyo では UTC で前日 23:00 の生ログが「今日」に入る', async () => {
+    process.env['TORIFUNE_TIMEZONE'] = 'Asia/Tokyo';
+    const site = await makeSite();
+    await insertLogs(site.id, [{ at: '2026-09-02T23:00:00Z', visitor: 'v1' }]);
+
+    const rows = await aggregate({
+      from: '2026-09-03',
+      timeZone: 'Asia/Tokyo',
+      siteId: site.id,
+    });
+
+    expect(rows.find((row) => row.metric === 'pageviews' && row.key === '')?.value).toBe(1);
+    expect([...new Set(rows.map((row) => row.metricDate))]).toEqual(['2026-09-03']);
+  });
+
+  /** #27 の対。UTC で切ると同じ生ログは前日に入る。 */
+  it('UTC では同じ生ログが前日に入る', async () => {
+    const site = await makeSite();
+    await insertLogs(site.id, [{ at: '2026-09-02T23:00:00Z', visitor: 'v1' }]);
+
+    await expect(
+      aggregate({ from: '2026-09-03', timeZone: 'UTC', siteId: site.id }),
+    ).resolves.toEqual([]);
+    await expect(
+      aggregate({ from: '2026-09-02', timeZone: 'UTC', siteId: site.id }),
+    ).resolves.not.toEqual([]);
+  });
+
+  /**
+   * #28。`SET LOCAL` はトランザクション終了で戻るので、プールされた接続に設定が残らない。
+   *
+   * ここが漏れると、当日タブを 1 度開いただけで、以後その接続を使うすべての処理
+   * （ロールアップを含む）が 5 秒で打ち切られるようになる。
+   *
+   * **「時間切れが実際に起きる」ことは決定的に検査できない**（行数依存で、
+   * 小さな scratch DB では必ず間に合う）。縮退の経路は #37 で担保する。
+   */
+  it('statementTimeoutMs を渡した呼び出しのあと、プールの接続に statement_timeout が残らない', async () => {
+    const site = await makeSite();
+    await insertLogs(site.id, [{ at: at('10:00'), visitor: 'v1' }]);
+
+    await aggregate({
+      from: DAY,
+      siteId: site.id,
+      statementTimeoutMs: TODAY_AGGREGATION_TIMEOUT_MS,
+    });
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const shown = await withConnection((connection) =>
+        sql<{ statement_timeout: string }>`SHOW statement_timeout`.execute(connection.db),
+      );
+      expect(shown.rows[0]?.statement_timeout).toBe('0');
+    }
+  });
+
+  /** #28。`statementTimeoutMs` を渡しても結果は変わらない（実行の器だけの違い）。 */
+  it('statementTimeoutMs の有無で結果が変わらない', async () => {
+    const site = await makeSite();
+    await insertLogs(site.id, [
+      { at: at('10:00'), visitor: 'v1', path: '/a' },
+      { at: at('10:10'), visitor: 'v1', path: '/b' },
+    ]);
+
+    const withTimeout = await aggregate({
+      from: DAY,
+      siteId: site.id,
+      statementTimeoutMs: TODAY_AGGREGATION_TIMEOUT_MS,
+    });
+    const without = await aggregate({ from: DAY, siteId: site.id });
+
+    expect(shapeOf(withTimeout)).toEqual(shapeOf(without));
+  });
+
+  /** #28。定数は Infrastructure が持ち、UseCase が渡す（環境変数を増やさない）。 */
+  it('TODAY_AGGREGATION_TIMEOUT_MS が 5000', () => {
+    expect(TODAY_AGGREGATION_TIMEOUT_MS).toBe(5000);
+  });
+});
+
+/**
+ * 当日の UseCase（030-analytics-today 設計 §12.1 / §8 / §11.2 / §13-3、
+ * 受け入れ条件 #29〜#38、#70、#71）。
+ *
+ * ```ts
+ * interface TodayAnalytics {
+ *   readonly date: string;                       // 運用タイムゾーンの今日（YYYY-MM-DD）
+ *   readonly generatedAt: Date;                  // 集計した瞬間（サーバーの時計）
+ *   readonly unavailable: boolean;               // 集計できなかった（打ち切り等）。true なら points は空
+ *   readonly points: readonly AnalyticsPoint[];  // source は常に CORE_SOURCE
+ * }
+ *
+ * getTodayAnalytics: UseCase<{ readonly siteId: string }, TodayAnalytics>
+ * // name: 'analytics.today' / permission: 'analytics.read' / audit: なし（参照系）
+ * ```
+ *
+ * **期間を引数で受けない。** 日付は自分で決める（例外の範囲を 1 日 × 1 サイトに固定する。§4.1）。
+ * **当日は `analytics` を読まない。生ログだけを見る**（§13-3）。足す・混ぜる・優先するをしない。
+ * **書き込まない**（`replaceCorePoints` / `putPoint` / `touchLastSeen` を呼ばない。§5.3）。
+ */
+describe('当日（getTodayAnalytics）', () => {
+  /** 未認証の文脈。`identity` が null。 */
+  async function anonymousContext(): Promise<AuthorizationContext> {
+    return withConnection(async (connection) => ({
+      identity: null,
+      permissions: new Set<string>(),
+      connection,
+    }));
+  }
+
+  /** ログを差し替えて記録を貯める（`logging.test.ts` と同じ形）。 */
+  function captureLogs(): { records: LogRecord[] } {
+    const records: LogRecord[] = [];
+    setLogger({
+      log(level, message, fields) {
+        records.push({ level, message, ...(fields === undefined ? {} : { fields }) });
+      },
+    });
+    return { records };
+  }
+
+  afterEach(() => {
+    resetLogger();
+    vi.restoreAllMocks();
+  });
+
+  /** `{ metric, key }` の値を引く。 */
+  function todayValue(result: { points: readonly AnalyticsPoint[] }, metric: string, key = '') {
+    return result.points.find((point) => point.metric === metric && point.key === key)?.value;
+  }
+
+  /** 今日の生ログを 3 件（人 2 訪問者 + Bot 1）入れる。 */
+  async function seedTodayLogs(siteId: string): Promise<void> {
+    await insertLogs(siteId, [
+      { at: `${today()}T00:10:00Z`, visitor: 'v1', path: '/' },
+      { at: `${today()}T00:20:00Z`, visitor: 'v1', path: '/pricing' },
+      { at: `${today()}T01:30:00Z`, visitor: 'v2', path: '/' },
+      { at: `${today()}T02:00:00Z`, visitor: 'b1', path: '/', device: 'bot' },
+    ]);
+  }
+
+  /** #29 */
+  it('analytics.read を持つ主体が呼ぶと成功し、date が運用タイムゾーンの今日', async () => {
+    const site = await makeSite();
+    const viewer = await contextFor('viewer');
+    await seedTodayLogs(site.id);
+
+    const result = await getTodayAnalytics(viewer, { siteId: site.id });
+
+    expect(result.date).toBe(todayInTimeZone(analyticsTimeZone()));
+    expect(result.unavailable).toBe(false);
+    expect(todayValue(result, 'pageviews')).toBe(3);
+    expect(todayValue(result, 'visitors')).toBe(2);
+  });
+
+  /** #29。集計した瞬間はサーバーの時計（ブラウザの時計ではない）。 */
+  it('generatedAt に集計した瞬間が入る', async () => {
+    const site = await makeSite();
+    const before = Date.now();
+
+    const result = await getTodayAnalytics(admin, { siteId: site.id });
+
+    expect(result.generatedAt).toBeInstanceOf(Date);
+    expect(result.generatedAt.getTime()).toBeGreaterThanOrEqual(before - 1000);
+    expect(result.generatedAt.getTime()).toBeLessThanOrEqual(Date.now() + 1000);
+  });
+
+  /** #30。**権限なし → ForbiddenError（API 経由なら 403）。** */
+  it('analytics.read を持たない主体が呼ぶと ForbiddenError', async () => {
+    const site = await makeSite();
+    const noRole = await contextFor('viewer');
+    const stripped: AuthorizationContext = { ...noRole, permissions: new Set() };
+
+    await expect(getTodayAnalytics(stripped, { siteId: site.id })).rejects.toBeInstanceOf(
+      ForbiddenError,
+    );
+  });
+
+  /** #31。**未認証 → UnauthenticatedError（API 経由なら 401）。** */
+  it('未認証で呼ぶと UnauthenticatedError', async () => {
+    const site = await makeSite();
+    const anonymous = await anonymousContext();
+
+    await expect(getTodayAnalytics(anonymous, { siteId: site.id })).rejects.toBeInstanceOf(
+      UnauthenticatedError,
+    );
+  });
+
+  /** #30 / #31。未認証は 403 ではなく 401（ログインを促せなくなる）。 */
+  it('未認証は ForbiddenError ではない', async () => {
+    const site = await makeSite();
+    const anonymous = await anonymousContext();
+
+    await expect(getTodayAnalytics(anonymous, { siteId: site.id })).rejects.not.toBeInstanceOf(
+      ForbiddenError,
+    );
+  });
+
+  /**
+   * #21 の UseCase 側。**ID を差し替えても他サイトの値は取れない。**
+   */
+  it('別サイトの生ログは 1 行も混ざらない', async () => {
+    const mine = await makeSite();
+    const other = await makeSite();
+    await insertLogs(mine.id, [{ at: `${today()}T00:10:00Z`, visitor: 'v1', path: '/mine' }]);
+    await insertLogs(other.id, [
+      { at: `${today()}T00:10:00Z`, visitor: 'v2', path: '/other' },
+      { at: `${today()}T00:20:00Z`, visitor: 'v3', path: '/other' },
+    ]);
+
+    const result = await getTodayAnalytics(admin, { siteId: mine.id });
+
+    expect(todayValue(result, 'pageviews')).toBe(1);
+    expect(result.points.map((point) => point.key)).not.toContain('/other');
+    expect([...new Set(result.points.map((point) => point.siteId))]).toEqual([mine.id]);
+  });
+
+  /** #32。写すだけで指標も値も変換しない。出所は常に core。 */
+  it('返る点の source がすべて CORE_SOURCE で、metricDate がすべて date と等しい', async () => {
+    const site = await makeSite();
+    await seedTodayLogs(site.id);
+
+    const result = await getTodayAnalytics(admin, { siteId: site.id });
+
+    expect(result.points.length).toBeGreaterThan(0);
+    expect([...new Set(result.points.map((point) => point.source))]).toEqual([CORE_SOURCE]);
+    expect([...new Set(result.points.map((point) => point.metricDate))]).toEqual([result.date]);
+  });
+
+  /**
+   * #33。**計測タグを貼った直後の確認**（要件 §1）。
+   *
+   * ロールアップを 1 度も流していなくても、生ログから値が出る。
+   */
+  it('analytics に本日の集計値が 1 行も無い状態でも、生ログから値が出る', async () => {
+    const site = await makeSite();
+    await seedTodayLogs(site.id);
+
+    const stored = await withConnection((connection) =>
+      connection.db.selectFrom('analytics').selectAll().execute(),
+    );
+    expect(stored).toHaveLength(0);
+
+    const result = await getTodayAnalytics(admin, { siteId: site.id });
+
+    expect(todayValue(result, 'pageviews')).toBe(3);
+    expect(todayValue(result, 'bot_pageviews')).toBe(1);
+  });
+
+  /**
+   * #34。**二重計上を構造的に起こせなくする**（§13-3）。
+   *
+   * 足せば必ず 2 倍になる。生ログの方が常に新しく、常に正しい。
+   */
+  it('analytics に本日の集計値が既にあっても、返る値は生ログの集計だけ', async () => {
+    const site = await makeSite();
+    await seedTodayLogs(site.id);
+    await rollup(today());
+
+    // 集計値は入っている（前提の確認）。
+    expect((await corePoints(site.id, today())).length).toBeGreaterThan(0);
+
+    const result = await getTodayAnalytics(admin, { siteId: site.id });
+
+    expect(todayValue(result, 'pageviews')).toBe(3);
+    expect(todayValue(result, 'visitors')).toBe(2);
+  });
+
+  /**
+   * #35。Plugin が `analytics.record` で入れた本日分（`source <> 'core'`）は当日タブに出ない。
+   *
+   * 当日は生ログだけを見るため。仕様であり、画面のバナーで説明する（§9）。
+   */
+  it('source が core でない本日の点は結果に含まれない', async () => {
+    const site = await makeSite();
+    await seedTodayLogs(site.id);
+    await recordAnalytics(admin, {
+      siteId: site.id,
+      metricDate: today(),
+      source: 'com.example.ga',
+      metric: 'pageviews',
+      value: 1000,
+    });
+
+    const result = await getTodayAnalytics(admin, { siteId: site.id });
+
+    expect(todayValue(result, 'pageviews')).toBe(3);
+    expect(result.points.every((point) => point.source === CORE_SOURCE)).toBe(true);
+  });
+
+  /** #36。今日まだ 1 件も届いていない日でも落ちない（画面は 0 を並べる）。 */
+  it('生ログが 1 件も無い日でも例外にならず、points が空で unavailable が false', async () => {
+    const site = await makeSite();
+
+    const result = await getTodayAnalytics(admin, { siteId: site.id });
+
+    expect(result.points).toEqual([]);
+    expect(result.unavailable).toBe(false);
+    expect(result.date).toBe(todayInTimeZone(analyticsTimeZone()));
+  });
+
+  /**
+   * #37。**縮退する。** 当日の集計が重い環境で画面全体を止めない。
+   *
+   * 確定値は別経路（`analytics`）で必ず見られるので、当日だけ諦める方が損害が小さい。
+   * ただし**握り潰さない**。原因の切り分けは運用者の仕事で、ログに残っている必要がある。
+   */
+  it('Repository が例外を投げたとき、伝播せず unavailable: true と空の points を返す', async () => {
+    const site = await makeSite();
+    await seedTodayLogs(site.id);
+    captureLogs();
+    vi.spyOn(analyticsRepository, 'aggregateDailyBreakdown').mockRejectedValueOnce(
+      new Error('canceling statement due to statement timeout'),
+    );
+
+    const result = await getTodayAnalytics(admin, { siteId: site.id });
+
+    expect(result.unavailable).toBe(true);
+    expect(result.points).toEqual([]);
+    expect(result.date).toBe(todayInTimeZone(analyticsTimeZone()));
+    expect(result.generatedAt).toBeInstanceOf(Date);
+  });
+
+  /** #37。警告ログを 1 件残す。 */
+  it('Repository が例外を投げたとき、警告ログを 1 件残す', async () => {
+    const site = await makeSite();
+    const { records } = captureLogs();
+    vi.spyOn(analyticsRepository, 'aggregateDailyBreakdown').mockRejectedValueOnce(
+      new Error('canceling statement due to statement timeout'),
+    );
+
+    await getTodayAnalytics(admin, { siteId: site.id });
+
+    const warnings = records.filter((record) => record.level === 'warn');
+    expect(warnings).toHaveLength(1);
+  });
+
+  /**
+   * #38。**当日の値とロールアップ後の値が食い違わない**（要件 §4 の 2 つ目）。
+   *
+   * 同じ生ログから同じ定義で出しているので、`summarize` に通しても一致する。
+   * 一致しなくなったら、当日にだけ補正が入ったということ。
+   */
+  it('summarize に通した値が、ロールアップ後の listAnalytics → summarize と一致する', async () => {
+    const site = await makeSite();
+    await seedTodayLogs(site.id);
+
+    const beforeRollup = await getTodayAnalytics(admin, { siteId: site.id });
+    await rollup(today());
+    const stored = await corePoints(site.id, today());
+
+    for (const includeBots of [false, true]) {
+      expect(summarize(beforeRollup.points, { includeBots }), String(includeBots)).toEqual(
+        summarize(stored, { includeBots }),
+      );
+    }
+  });
+
+  /**
+   * #70。**画面の表示が DB 書き込みを起こす作りにしない**（裁定 3.1）。
+   *
+   * E2E にしない理由：定期ロールアップが 1 分間隔で `analytics` を書き換えるので
+   * 「表示の前後で変わらない」は E2E では必ず不安定になる。UseCase の前後で見れば決定的。
+   */
+  it('呼び出しの前後で analytics の行が 1 つも変わらない', async () => {
+    const site = await makeSite();
+    await seedTodayLogs(site.id);
+    await rollup(today());
+
+    const readRows = () =>
+      withConnection((connection) =>
+        connection.db
+          .selectFrom('analytics')
+          .selectAll()
+          .orderBy('site_id')
+          .orderBy('metric_date')
+          .orderBy('source')
+          .orderBy('metric')
+          .orderBy('key')
+          .execute(),
+      );
+
+    const before = await readRows();
+    expect(before.length).toBeGreaterThan(0);
+
+    await getTodayAnalytics(admin, { siteId: site.id });
+
+    expect(await readRows()).toEqual(before);
+  });
+
+  /** #70。集計値が 1 行も無い状態から呼んでも、行が生まれない。 */
+  it('集計値が無い状態で呼んでも analytics に行が増えない', async () => {
+    const site = await makeSite();
+    await seedTodayLogs(site.id);
+
+    await getTodayAnalytics(admin, { siteId: site.id });
+
+    const rows = await withConnection((connection) =>
+      connection.db.selectFrom('analytics').selectAll().execute(),
+    );
+    expect(rows).toEqual([]);
+  });
+
+  /** #71。最終受信は `findLatestAccessAt`（生ログ 1 行）から出すので、書き戻す必要が無い。 */
+  it('呼び出しで sites.analytics_last_seen_at が更新されない', async () => {
+    const site = await makeSite();
+    await seedTodayLogs(site.id);
+
+    const before = await lastSeenOf(site.id);
+    expect(before).toBeNull();
+
+    await getTodayAnalytics(admin, { siteId: site.id });
+
+    expect(await lastSeenOf(site.id)).toBeNull();
+  });
+
+  /** #71。既に値がある場合も動かさない。 */
+  it('既に analytics_last_seen_at がある場合も値が変わらない', async () => {
+    const site = await makeSite();
+    await seedTodayLogs(site.id);
+    await rollup(today());
+
+    const before = await lastSeenOf(site.id);
+    expect(before).not.toBeNull();
+
+    await getTodayAnalytics(admin, { siteId: site.id });
+
+    expect((await lastSeenOf(site.id))?.getTime()).toBe(before?.getTime());
+  });
+
+  /** §8。UseCase 名と Permission を宣言で持つ（認可を書く場所は Application）。 */
+  it('UseCase 名が analytics.today で Permission が analytics.read', () => {
+    expect(getTodayAnalytics.name).toBe('analytics.today');
+    expect(getTodayAnalytics.permission).toBe('analytics.read');
   });
 });

@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { AnalyticsPoint } from './analytics';
-import { botShare, campaignProgress, delta, deltaPt, summarize } from './summary';
+import {
+  botShare,
+  breakdownFromPoints,
+  campaignProgress,
+  delta,
+  deltaPt,
+  summarize,
+} from './summary';
 
 /**
  * 期間合計・Bot 合算・前期間比較・KPI 計算（028-analytics-dashboard-redesign 設計 §7.2 / §7.3.4 / §7.3.5、
@@ -392,5 +399,118 @@ describe('campaignProgress', () => {
   /** #62。1 日だけのキャンペーン。 */
   it('開始日と終了日が同じなら初日で 100', () => {
     expect(campaignProgress('2026-04-01', '2026-04-01', '2026-04-01').percent).toBe(100);
+  });
+});
+
+/**
+ * 点の集合から内訳を作る純関数（030-analytics-today 設計 §12.2、受け入れ条件 #12〜#17）。
+ *
+ * ```ts
+ * breakdownFromPoints(points: readonly AnalyticsPoint[], metric: string): readonly BreakdownItem[]
+ * ```
+ *
+ * 当日タブは `analytics`（確定値）を読まず、生ログから作った点だけを見る（設計 §13-3）。
+ * 内訳（ページ・参照元・時間帯・デバイス）を確定期間と**同じ行順**で出すために、
+ * Repository の `sumByKey`（`ORDER BY sum(value) DESC, key ASC`）と並びを一致させる。
+ *
+ * - 指定した `metric` の点を `key` ごとに合算する（`key === ''` は含めない）
+ * - 並び順は `value` 降順、同値なら `key` 昇順
+ * - 出所（`source`）はまたいで合算する（現行の内訳と同じ規則）
+ * - 空配列・未知の指標・全部 0 を通す（落ちない）
+ */
+describe('breakdownFromPoints', () => {
+  /** #12。出所をまたいで足す（Plugin が取り込んだ同名の指標も内訳に入る）。 */
+  it('同じ metric・同じ key の点が複数の出所にあれば、合算した 1 行になる', () => {
+    const points = [
+      point('path_pageviews', 3, { key: '/a', source: 'core' }),
+      point('path_pageviews', 4, { key: '/a', source: 'ga4' }),
+    ];
+
+    expect(breakdownFromPoints(points, 'path_pageviews')).toEqual([{ key: '/a', value: 7 }]);
+  });
+
+  /** #12。日もまたいで足す。 */
+  it('日をまたいで合算する', () => {
+    const points = [
+      point('path_pageviews', 2, { key: '/a', metricDate: '2026-06-01' }),
+      point('path_pageviews', 5, { key: '/a', metricDate: '2026-06-02' }),
+    ];
+
+    expect(breakdownFromPoints(points, 'path_pageviews')).toEqual([{ key: '/a', value: 7 }]);
+  });
+
+  /** #13。`sumByKey` の `ORDER BY sum(value) DESC, key ASC` と一致させる。 */
+  it('value 降順に並ぶ', () => {
+    const points = [
+      point('referrer', 1, { key: 'a.example' }),
+      point('referrer', 9, { key: 'b.example' }),
+      point('referrer', 5, { key: 'c.example' }),
+    ];
+
+    expect(breakdownFromPoints(points, 'referrer').map((item) => item.key)).toEqual([
+      'b.example',
+      'c.example',
+      'a.example',
+    ]);
+  });
+
+  /** #13。同値の並びが揺れると、当日と確定期間で行の順番が変わる。 */
+  it('同値なら key 昇順に並ぶ', () => {
+    const points = [
+      point('referrer', 3, { key: 'c.example' }),
+      point('referrer', 3, { key: 'a.example' }),
+      point('referrer', 3, { key: 'b.example' }),
+    ];
+
+    expect(breakdownFromPoints(points, 'referrer').map((item) => item.key)).toEqual([
+      'a.example',
+      'b.example',
+      'c.example',
+    ]);
+  });
+
+  /** #14。同じ key を持つ別の指標を混ぜない。 */
+  it('指定した metric 以外の点を含めない', () => {
+    const points = [
+      point('path_pageviews', 3, { key: '/a' }),
+      point('path_visitors', 100, { key: '/a' }),
+    ];
+
+    expect(breakdownFromPoints(points, 'path_pageviews')).toEqual([{ key: '/a', value: 3 }]);
+  });
+
+  /** #15。`key === ''` は期間合計（`summarize` の担当）であって内訳の 1 行ではない。 */
+  it("key === '' の点を含めない", () => {
+    const points = [point('pageviews', 10, { key: '' }), point('pageviews', 4, { key: '/a' })];
+
+    expect(breakdownFromPoints(points, 'pageviews')).toEqual([{ key: '/a', value: 4 }]);
+  });
+
+  /** #15。`key === ''` しか無ければ空配列。 */
+  it("key === '' しか無ければ空配列", () => {
+    expect(breakdownFromPoints([point('pageviews', 10, { key: '' })], 'pageviews')).toEqual([]);
+  });
+
+  /** #16 */
+  it('空配列を渡すと空配列', () => {
+    expect(breakdownFromPoints([], 'path_pageviews')).toEqual([]);
+  });
+
+  /** #16。知らない指標でも落ちない（Plugin が任意の指標名を入れられる）。 */
+  it('未知の metric を渡しても落ちず空配列', () => {
+    expect(breakdownFromPoints(BASE_POINTS, 'no_such_metric')).toEqual([]);
+  });
+
+  /** #17。0 の行を落とすと、確定期間と当日で行の数が変わる。 */
+  it('すべての値が 0 でも行は出て、値は 0 のまま', () => {
+    const points = [
+      point('pageviews_device', 0, { key: 'mobile' }),
+      point('pageviews_device', 0, { key: 'desktop' }),
+    ];
+
+    expect(breakdownFromPoints(points, 'pageviews_device')).toEqual([
+      { key: 'desktop', value: 0 },
+      { key: 'mobile', value: 0 },
+    ]);
   });
 });

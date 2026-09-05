@@ -27,6 +27,17 @@ import type { SiteStatus } from '../domain/site/site';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
+ * 「当日」の集計に掛ける実行時間の上限（030-analytics-today 設計 §11.2）。
+ *
+ * **行数ではなく時間で上限を掛ける。** 行数で掛けるには先に数える必要があり、
+ * その数え上げ自体が同じ範囲の走査になる（遅い環境でコストが 2 回掛かる）。
+ *
+ * **ロールアップには渡さない。** 定期実行は長く掛かってよい。
+ * 環境変数は増やさない（設定項目を増やすほどの判断材料が無い）。
+ */
+export const TODAY_AGGREGATION_TIMEOUT_MS = 5000;
+
+/**
  * `siteId` の絞り込み。UUID でなければ**どの行にも当たらない条件**にする。
  *
  * `site_id` は `uuid` 型なので、そのまま比べると PG のキャストエラーで 500 になる。
@@ -497,27 +508,62 @@ export const analyticsRepository = {
    *   生ログが 1 行も無い (site, day) には何も返さない
    * * **制御文字を含むパス**は `path_*` / `landing` の key に出さない（§5.3.6 (b)）。
    *   その PV 自体は `pageviews` 等とセッション判定には数える
+   *
+   * 030-analytics-today 設計 §5.2 で引数を 2 つ広げた。**SQL の本体は変えていない。**
+   *
+   * * `siteId`：渡したときだけ `logs` CTE の `WHERE` に一致条件を足す。
+   *   窓関数のパーティションは元から `site_id` を含むので、絞っても値は変わらない。
+   *   `null` / 省略は全サイト（ロールアップの現行動作）
+   * * `statementTimeoutMs`：渡したときだけ、同じセッションで上限を設定した
+   *   トランザクションの中で流す。省略なら設定しない（ロールアップの現行動作）
+   *
+   * **`statementTimeoutMs` を渡すときは、トランザクションの外から呼ぶこと**（設計 §15 未決 #7）。
+   * 接続の解決は「既にトランザクション内ならその外側に参加する」ため、外側の中から呼ぶと
+   * ここで設定する上限が**外側のトランザクション全体**に掛かり、ロールアップなど無関係な処理まで
+   * 巻き込んで打ち切られる。いまの呼び出しは `getTodayAnalytics` の 1 箇所だけで、
+   * トランザクションの外から呼んでいる（到達不能なので防御コードは置かない）。
    */
   async aggregateDailyBreakdown(
     connection: Connection,
-    range: { readonly from: string; readonly to: string; readonly timeZone: string },
+    range: {
+      readonly from: string;
+      readonly to: string;
+      readonly timeZone: string;
+      /** 1 サイトに絞る。`null` / 省略は全サイト（ロールアップの現行動作）。 */
+      readonly siteId?: string | null;
+      /** 実行時間の上限（ms）。省略なら設定しない（ロールアップの現行動作）。 */
+      readonly statementTimeoutMs?: number;
+    },
   ): Promise<readonly DailyBreakdownRow[]> {
     const tz = range.timeZone;
     const direct = DIRECT_REFERRER_KEY;
+    const siteId = range.siteId ?? null;
 
-    const result = await sql<{
-      site_id: string;
-      day: string;
-      metric: string;
-      key: string;
-      value: string | number;
-    }>`
+    // `siteCondition` は Kysely の `ExpressionBuilder` を取るので、`sql` テンプレートからは
+    // そのまま流用できない。判定（`UUID_PATTERN`）だけを共有し、条件は SQL 片として組む。
+    // **UUID でない値はどの行にも当たらない条件**にする（キャストエラーで 500 にしない）。
+    const siteFilter =
+      siteId === null
+        ? sql`TRUE`
+        : UUID_PATTERN.test(siteId)
+          ? sql`site_id = ${siteId}::uuid`
+          : sql`FALSE`;
+
+    const aggregate = async (target: Connection): Promise<readonly DailyBreakdownRow[]> => {
+      const result = await sql<{
+        site_id: string;
+        day: string;
+        metric: string;
+        key: string;
+        value: string | number;
+      }>`
       WITH logs AS (
         SELECT id, site_id, occurred_at, path, referrer_host, visitor_hash, device,
                (occurred_at AT TIME ZONE ${tz})::date AS day,
                to_char(occurred_at AT TIME ZONE ${tz}, 'HH24') AS hour
         FROM access_logs
-        WHERE occurred_at >= (${range.from}::date::timestamp AT TIME ZONE ${tz})
+        WHERE ${siteFilter}
+          AND occurred_at >= (${range.from}::date::timestamp AT TIME ZONE ${tz})
           AND occurred_at <  ((${range.to}::date + interval '1 day')::timestamp AT TIME ZONE ${tz})
       ),
       -- 生ログが 1 行でもある (site, day)。key 無しの指標はこれを土台に 0 でも出す。
@@ -642,15 +688,32 @@ export const analyticsRepository = {
         UNION ALL SELECT site_id, day, metric, key, value FROM keyed WHERE value > 0
       ) points
       ORDER BY site_id, day, metric, key
-    `.execute(connection.db);
+    `.execute(target.db);
 
-    return result.rows.map((row) => ({
-      siteId: row.site_id,
-      metricDate: row.day,
-      metric: row.metric,
-      key: row.key,
-      value: Number(row.value),
-    }));
+      return result.rows.map((row) => ({
+        siteId: row.site_id,
+        metricDate: row.day,
+        metric: row.metric,
+        key: row.key,
+        value: Number(row.value),
+      }));
+    };
+
+    const { statementTimeoutMs } = range;
+    if (statementTimeoutMs === undefined) {
+      // **ロールアップの経路。** 定期実行は長く掛かってよいので、上限を掛けない。
+      return aggregate(connection);
+    }
+
+    // 当日の集計だけに上限を掛ける（030-analytics-today 設計 §11.2）。
+    // **`SET LOCAL` はトランザクション終了で戻る**ので、プールされた接続に設定が残らない。
+    // セッション単位の `SET` にすると、以後その接続を使うすべての処理が打ち切られる。
+    return connection.transaction(async (tx) => {
+      await sql`SET LOCAL statement_timeout = ${sql.lit(Math.max(1, Math.floor(statementTimeoutMs)))}`.execute(
+        tx.db,
+      );
+      return aggregate(tx);
+    });
   },
 
   /**
