@@ -3,6 +3,14 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { Chart, type ChartSeries } from './chart';
 import { chartLayout, chartPolyline, niceMax, type ChartPoint } from './chart-geometry';
+// 031-chart-tooltip で足すもの（設計 §5.2 / §5.5 / §7.2）。既存の import 行は変えない。
+import {
+  CHART_VIEW_HEIGHT,
+  CHART_VIEW_WIDTH,
+  chartHitTest,
+  chartHoverPoints,
+  type ChartHoverPoint,
+} from './chart-geometry';
 
 /**
  * Chart の座標計算（06_画面設計.md §32、014-dashboard 設計 §3.1）。
@@ -437,4 +445,1032 @@ describe('Chart の描画', () => {
     const html = render({ series: twoSeries, title: '推移', fallback: 'FALLBACK', height: 'lg' });
     expect(html).toContain('var(--tf-size-chart-lg)');
   });
+});
+
+/* ============================================================================
+ * 031-chart-tooltip（折れ線グラフのプロット点のポップアップ）
+ *
+ * 設計 §10 の受け入れ条件 A2〜A6 / B1〜B12 / C1〜C10 / D1〜D6 に 1 対 1 で対応する。
+ * D7 / D8（`'use client'` の位置）は実行時には見えないので
+ * `static-checks.test.ts` に置いた（実装プラン §8 #1）。
+ * E1〜E14（操作）は Playwright（`e2e/analytics.spec.ts` / `e2e/dashboard.spec.ts`）。
+ *
+ * **上の既存テストは 1 行も書き換えていない**（A1）。ここから下は追加だけである。
+ * ========================================================================== */
+
+/** "x,y x,y ..." の index 番目の座標。無ければ null。 */
+function coordAt(line: string, index: number): { x: number; y: number } | null {
+  const pair = line === '' ? undefined : line.split(' ')[index];
+  if (pair === undefined) {
+    return null;
+  }
+  const [x, y] = pair.split(',');
+  return { x: Number(x), y: Number(y) };
+}
+
+/**
+ * 許容差（実装プラン §8 #7）。
+ *
+ * `polyline` の文字列は `toFixed(1)`（`viewBox` 単位）で丸めるが、
+ * `hover` は丸める前の値から作る（設計 §5.3 末尾）。差は最大 0.05 `viewBox` 単位。
+ */
+const X_TOLERANCE = (0.05 / CHART_VIEW_WIDTH) * 100;
+const Y_TOLERANCE = (0.05 / CHART_VIEW_HEIGHT) * 100;
+
+function expectClose(actual: number, expected: number, tolerance: number, message: string): void {
+  expect(Math.abs(actual - expected) <= tolerance, `${message}: ${actual} vs ${expected}`).toBe(
+    true,
+  );
+}
+
+function pointsOf(values: readonly number[], labels?: readonly string[]): readonly ChartPoint[] {
+  return values.map((value, index) => ({ label: labels?.[index] ?? `${index}`, value }));
+}
+
+/* --------------------------------------------------------------------------
+ * A. 既存の描画を壊さない
+ * ------------------------------------------------------------------------ */
+
+/**
+ * A2。`chartPolyline` の出力を**現行の文字列そのもの**で凍結する。
+ *
+ * 設計 §5.1：`points` だけを渡したときの `<polyline points>` は 1 文字も変わらない。
+ * 期待値は実装プラン §2 の golden 表（現行実装の実測値）。
+ */
+describe('chartPolyline の出力を凍結する（A2）', () => {
+  it.each([
+    ['[1, 5, 3]', [1, 5, 3], '8.0,123.2 300.0,8.0 592.0,65.6'],
+    ['全点 0', [0, 0], '8.0,80.0 592.0,80.0'],
+    ['全点同値', [7, 7], '8.0,8.0 592.0,8.0'],
+    ['1 点', [3], '8.0,8.0'],
+    ['負を含む', [-5, 5], '8.0,152.0 592.0,8.0'],
+    ['大きな値', [1_000_000, 1], '8.0,8.0 592.0,152.0'],
+  ] as const)('%s の出力が現行と 1 文字も変わらない', (_label, values, expected) => {
+    expect(chartPolyline(pointsOf(values))).toBe(expected);
+  });
+});
+
+/**
+ * A3。`chartLayout` の既存フィールドを凍結する。
+ *
+ * **戻り値を丸ごと `toEqual` しない。** `hover` の追加で落ちるため、
+ * `series` / `yMax` / `yMid` / `yLabels` / `ticks` を**フィールドごとに**見る。
+ * 期待値は現行実装の実測値。
+ */
+describe('chartLayout の既存フィールドを凍結する（A3）', () => {
+  it('空配列', () => {
+    const layout = chartLayout([]);
+    expect(layout.series).toEqual([]);
+    expect(layout.yMax).toBe(1);
+    expect(layout.yMid).toBe(0.5);
+    expect(layout.yLabels).toEqual([1, 0.5, 0]);
+    expect(layout.ticks).toEqual([]);
+  });
+
+  it('1 系列 1 点', () => {
+    const layout = chartLayout([series('a', [3])]);
+    expect(layout.series).toEqual([{ key: 'a', label: 'a', tone: 'chart-1', points: '8.0,8.0' }]);
+    expect(layout.yMax).toBe(3);
+    expect(layout.yMid).toBe(1.5);
+    expect(layout.yLabels).toEqual([3, 1.5, 0]);
+    expect(layout.ticks).toEqual([{ xPercent: 0, label: '0' }]);
+  });
+
+  it('2 系列 3 点', () => {
+    const layout = chartLayout([
+      series('pv', [10, 40, 25], ['d1', 'd2', 'd3']),
+      series('vi', [5, 12, 8], ['d1', 'd2', 'd3']),
+    ]);
+    expect(layout.series).toEqual([
+      { key: 'pv', label: 'pv', tone: 'chart-1', points: '8.0,116.0 300.0,8.0 592.0,62.0' },
+      { key: 'vi', label: 'vi', tone: 'chart-2', points: '8.0,134.0 300.0,108.8 592.0,123.2' },
+    ]);
+    expect(layout.yMax).toBe(40);
+    expect(layout.yMid).toBe(20);
+    expect(layout.yLabels).toEqual([40, 20, 0]);
+    expect(layout.ticks).toEqual([
+      { xPercent: 0, label: 'd1' },
+      { xPercent: 50, label: 'd2' },
+      { xPercent: 100, label: 'd3' },
+    ]);
+  });
+
+  it('全点 0', () => {
+    const layout = chartLayout([series('a', [0, 0])]);
+    expect(layout.series).toEqual([
+      { key: 'a', label: 'a', tone: 'chart-1', points: '8.0,152.0 592.0,152.0' },
+    ]);
+    expect(layout.yMax).toBe(1);
+    expect(layout.yMid).toBe(0.5);
+    expect(layout.yLabels).toEqual([1, 0.5, 0]);
+    expect(layout.ticks).toEqual([
+      { xPercent: 0, label: '0' },
+      { xPercent: 100, label: '1' },
+    ]);
+  });
+
+  it('点数の違う 2 系列', () => {
+    const layout = chartLayout([series('a', [1, 2, 3, 4]), series('b', [5, 6])]);
+    expect(layout.series).toEqual([
+      {
+        key: 'a',
+        label: 'a',
+        tone: 'chart-1',
+        points: '8.0,128.0 202.7,104.0 397.3,80.0 592.0,56.0',
+      },
+      { key: 'b', label: 'b', tone: 'chart-2', points: '8.0,32.0 202.7,8.0' },
+    ]);
+    expect(layout.yMax).toBe(6);
+    expect(layout.yMid).toBe(3);
+    expect(layout.yLabels).toEqual([6, 3, 0]);
+    expect(layout.ticks).toEqual([
+      { xPercent: 0, label: '0' },
+      { xPercent: 33.33333333333333, label: '1' },
+      { xPercent: 66.66666666666666, label: '2' },
+      { xPercent: 100, label: '3' },
+    ]);
+  });
+
+  it('NaN を含む系列（非有限は 0 として描く）', () => {
+    const layout = chartLayout([series('a', [1, Number.NaN, 3])]);
+    expect(layout.series).toEqual([
+      { key: 'a', label: 'a', tone: 'chart-1', points: '8.0,104.0 300.0,152.0 592.0,8.0' },
+    ]);
+    expect(layout.yMax).toBe(3);
+    expect(layout.yMid).toBe(1.5);
+    expect(layout.yLabels).toEqual([3, 1.5, 0]);
+    expect(layout.ticks).toEqual([
+      { xPercent: 0, label: '0' },
+      { xPercent: 50, label: '1' },
+      { xPercent: 100, label: '2' },
+    ]);
+  });
+});
+
+/* --------------------------------------------------------------------------
+ * B. `chartLayout(...).hover` と `chartHoverPoints`
+ * ------------------------------------------------------------------------ */
+
+/** 2 系列 × 3 点。B と D で共有する。 */
+const HOVER_TWO_SERIES: readonly ChartSeries[] = [
+  {
+    key: 'pageviews',
+    label: 'ページビュー',
+    tone: 'chart-1',
+    points: [
+      { label: 'd1', value: 10 },
+      { label: 'd2', value: 40 },
+      { label: 'd3', value: 25 },
+    ],
+  },
+  {
+    key: 'visitors',
+    label: '訪問者',
+    tone: 'chart-2',
+    points: [
+      { label: 'd1', value: 5 },
+      { label: 'd2', value: 12 },
+      { label: 'd3', value: 8 },
+    ],
+  },
+];
+
+/** B1・B2・B3・B6・B8・B9・B10・B11。 */
+describe('chartLayout の hover', () => {
+  /** B1 */
+  it('2 系列 × 3 点で hover の長さが 6 になる', () => {
+    expect(chartLayout(HOVER_TWO_SERIES).hover).toHaveLength(6);
+  });
+
+  /**
+   * B2。**マーカーが線からずれない**ことの担保（設計 §5.3）。
+   * `hover` の割合が、同じ `chartLayout` が出した `polyline` の座標と一致する。
+   */
+  it('hover の xPercent / yPercent が series[].points の座標を 600 / 160 で割った値と一致する', () => {
+    const layout = chartLayout(HOVER_TWO_SERIES);
+
+    expect(layout.hover.length).toBeGreaterThan(0);
+    for (const hover of layout.hover) {
+      const line = layout.series.find((item) => item.key === hover.seriesKey)?.points ?? '';
+      const coord = coordAt(line, hover.index);
+
+      expect(coord, `${hover.seriesKey}[${hover.index}] の座標が polyline に無い`).not.toBeNull();
+      expectClose(
+        hover.xPercent,
+        ((coord?.x ?? Number.NaN) / CHART_VIEW_WIDTH) * 100,
+        X_TOLERANCE,
+        `${hover.seriesKey}[${hover.index}] の xPercent`,
+      );
+      expectClose(
+        hover.yPercent,
+        ((coord?.y ?? Number.NaN) / CHART_VIEW_HEIGHT) * 100,
+        Y_TOLERANCE,
+        `${hover.seriesKey}[${hover.index}] の yPercent`,
+      );
+    }
+  });
+
+  /** B3 */
+  it('seriesKey / seriesLabel / tone / index / label が渡した内容と一致する', () => {
+    const hover = chartLayout(HOVER_TWO_SERIES).hover;
+
+    expect(
+      hover.map((point) => ({
+        seriesKey: point.seriesKey,
+        seriesLabel: point.seriesLabel,
+        tone: point.tone,
+        index: point.index,
+        label: point.label,
+        value: point.value,
+      })),
+    ).toEqual([
+      {
+        seriesKey: 'pageviews',
+        seriesLabel: 'ページビュー',
+        tone: 'chart-1',
+        index: 0,
+        label: 'd1',
+        value: 10,
+      },
+      {
+        seriesKey: 'pageviews',
+        seriesLabel: 'ページビュー',
+        tone: 'chart-1',
+        index: 1,
+        label: 'd2',
+        value: 40,
+      },
+      {
+        seriesKey: 'pageviews',
+        seriesLabel: 'ページビュー',
+        tone: 'chart-1',
+        index: 2,
+        label: 'd3',
+        value: 25,
+      },
+      {
+        seriesKey: 'visitors',
+        seriesLabel: '訪問者',
+        tone: 'chart-2',
+        index: 0,
+        label: 'd1',
+        value: 5,
+      },
+      {
+        seriesKey: 'visitors',
+        seriesLabel: '訪問者',
+        tone: 'chart-2',
+        index: 1,
+        label: 'd2',
+        value: 12,
+      },
+      {
+        seriesKey: 'visitors',
+        seriesLabel: '訪問者',
+        tone: 'chart-2',
+        index: 2,
+        label: 'd3',
+        value: 8,
+      },
+    ]);
+  });
+
+  /**
+   * B6。**描かれている値**を出す（設計 §5.4）。
+   * `chartLayout` は非有限を 0 として描くので、`hover.value` も同じ 0 になる。
+   */
+  it.each([
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['-Infinity', Number.NEGATIVE_INFINITY],
+  ])('値が %s の点でも hover.value は 0（線の高さと食い違わない）', (_label, value) => {
+    const hover = chartLayout([series('a', [1, value, 3])]).hover;
+
+    expect(hover).toHaveLength(3);
+    expect(hover[1]?.value).toBe(0);
+    expect(hover[0]?.value).toBe(1);
+    expect(hover[2]?.value).toBe(3);
+  });
+
+  /** B8（hover 側）。非有限の入力でも割合に NaN / Infinity を出さない。 */
+  it.each([
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['-Infinity', Number.NEGATIVE_INFINITY],
+  ])('値が %s を含んでも xPercent / yPercent は有限', (_label, value) => {
+    const hover = chartLayout([series('a', [1, value, 3])]).hover;
+
+    expect(hover.length).toBeGreaterThan(0);
+    for (const point of hover) {
+      expect(Number.isFinite(point.xPercent), `xPercent=${point.xPercent}`).toBe(true);
+      expect(Number.isFinite(point.yPercent), `yPercent=${point.yPercent}`).toBe(true);
+    }
+  });
+
+  /** B9（前半） */
+  it('空配列では hover が空になる', () => {
+    expect(chartLayout([]).hover).toEqual([]);
+    expect(chartLayout([series('a', [])]).hover).toEqual([]);
+  });
+
+  /** B10 */
+  it('1 点だけの系列で hover の長さが 1 になり、xPercent が有限', () => {
+    const hover = chartLayout([series('a', [3])]).hover;
+
+    expect(hover).toHaveLength(1);
+    expect(Number.isFinite(hover[0]?.xPercent ?? Number.NaN)).toBe(true);
+    expect(Number.isFinite(hover[0]?.yPercent ?? Number.NaN)).toBe(true);
+  });
+
+  /**
+   * B11。X は点数の一番多い系列に合わせる（`chartLayout` の既存の規則）。
+   * 短い系列の点は、同じ添字の列にそのまま乗る。
+   */
+  it('点数の違う系列でも、同じ添字の点は同じ xPercent になる', () => {
+    const hover = chartLayout([series('a', [1, 2, 3, 4]), series('b', [5, 6])]).hover;
+    const xOf = (key: string, index: number): number | undefined =>
+      hover.find((point) => point.seriesKey === key && point.index === index)?.xPercent;
+
+    expect(xOf('b', 0)).toBeDefined();
+    expect(xOf('b', 1)).toBeDefined();
+    expect(xOf('b', 0)).toBe(xOf('a', 0));
+    expect(xOf('b', 1)).toBe(xOf('a', 1));
+  });
+});
+
+/** B4・B5・B7・B8・B9・B12。 */
+describe('chartHoverPoints', () => {
+  /**
+   * B4。**式が二重に存在することを縛る**（設計 §5.5 / §12-1）。
+   * `chartHoverPoints` の座標は `chartPolyline` の座標と一致しなければならない。
+   *
+   * **配列の添字ではなく `ChartHoverPoint.index` で引く。**
+   * 非有限の座標になる点は配列から落ちるので（B7）、添字はずれる。
+   */
+  it.each([
+    ['[1, 5, 3]', [1, 5, 3]],
+    ['全点 0', [0, 0]],
+    ['全点同値', [7, 7]],
+    ['1 点', [3]],
+    ['負を含む', [-5, 5]],
+    ['大きな値', [1_000_000, 1]],
+    ['+Infinity を含む', [1, Number.POSITIVE_INFINITY, 3]],
+  ] as const)('%s で chartPolyline と同じ座標を出す', (_label, values) => {
+    const points = pointsOf(values);
+    const line = chartPolyline(points);
+    const hover = chartHoverPoints(points);
+
+    expect(hover.length).toBeGreaterThan(0);
+    for (const point of hover) {
+      const coord = coordAt(line, point.index);
+
+      expect(coord, `index ${point.index} の座標が polyline に無い`).not.toBeNull();
+      expectClose(
+        point.xPercent,
+        ((coord?.x ?? Number.NaN) / CHART_VIEW_WIDTH) * 100,
+        X_TOLERANCE,
+        `index ${point.index} の xPercent`,
+      );
+      expectClose(
+        point.yPercent,
+        ((coord?.y ?? Number.NaN) / CHART_VIEW_HEIGHT) * 100,
+        Y_TOLERANCE,
+        `index ${point.index} の yPercent`,
+      );
+    }
+  });
+
+  /** B5。1 系列の経路には区別すべき相手がいない（設計 §7.3）。 */
+  it('seriesKey と seriesLabel が空文字、tone が chart-1 になる', () => {
+    const hover = chartHoverPoints(pointsOf([1, 5, 3], ['a', 'b', 'c']));
+
+    expect(hover).toHaveLength(3);
+    for (const point of hover) {
+      expect(point.seriesKey).toBe('');
+      expect(point.seriesLabel).toBe('');
+      expect(point.tone).toBe('chart-1');
+    }
+    expect(hover.map((point) => point.label)).toEqual(['a', 'b', 'c']);
+    expect(hover.map((point) => point.index)).toEqual([0, 1, 2]);
+    expect(hover.map((point) => point.value)).toEqual([1, 5, 3]);
+  });
+
+  /**
+   * B7（前半）。**判定の対象は入力値ではなく出力座標**（設計 §5.4.1）。
+   *
+   * `chartPolyline` は `span` を全点で 1 つだけ求めるので、
+   * `NaN` / `-Infinity` が 1 つでもあると `span` が壊れ、**全点**の y が非有限になる。
+   * 描かれていない点は 1 つも指せないので、配列は空になる。
+   */
+  it.each([
+    ['NaN を含む', [1, Number.NaN, 3]],
+    ['-Infinity を含む', [1, Number.NEGATIVE_INFINITY, 3]],
+  ] as const)('%s と全点の y が非有限になり、配列が空になる', (_label, values) => {
+    // 前提（`chartPolyline` の現行の挙動）。ここが変わったら B7 の読み方も変わる。
+    expect(chartPolyline(pointsOf(values))).toBe('8.0,NaN 300.0,NaN 592.0,NaN');
+
+    expect(chartHoverPoints(pointsOf(values))).toEqual([]);
+  });
+
+  /**
+   * B7（後半）。**`+Infinity` はその点だけが落ちる。**
+   *
+   * `min` は `Math.min(...values, 0)` なので 0 のまま、`span` が `Infinity` になり、
+   * 有限の点は `有限 / Infinity = 0` で y = 152.0（底）になる。
+   * 落ちるのは `Infinity` の点だけで、**残った要素の `index` は元の添字を保つ**。
+   */
+  it('+Infinity を含む入力ではその点だけが落ち、index は元の添字を保つ', () => {
+    const values = [1, Number.POSITIVE_INFINITY, 3];
+
+    // 前提（`chartPolyline` の現行の挙動）。真ん中だけが NaN。
+    expect(chartPolyline(pointsOf(values))).toBe('8.0,152.0 300.0,NaN 592.0,152.0');
+
+    const hover = chartHoverPoints(pointsOf(values));
+
+    expect(hover).toHaveLength(2);
+    expect(hover.map((point) => point.index)).toEqual([0, 2]);
+    expect(hover.map((point) => point.value)).toEqual([1, 3]);
+  });
+
+  /** B8（chartHoverPoints 側）。 */
+  it.each([
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['-Infinity', Number.NEGATIVE_INFINITY],
+  ])('値が %s を含んでも、残った点の xPercent / yPercent は有限', (_label, value) => {
+    for (const point of chartHoverPoints(pointsOf([1, value, 3]))) {
+      expect(Number.isFinite(point.xPercent), `xPercent=${point.xPercent}`).toBe(true);
+      expect(Number.isFinite(point.yPercent), `yPercent=${point.yPercent}`).toBe(true);
+    }
+  });
+
+  /** B9（後半） */
+  it('空配列を渡すと空配列を返す', () => {
+    expect(chartHoverPoints([])).toEqual([]);
+  });
+
+  /**
+   * B12。全点が同じ値なら高さも同じ。
+   *
+   * `min` は 0 との小さいほうなので、**`span === 0`（0.5 寄せ）に入るのは全点 0 のときだけ**。
+   * `[7, 7]` は `span = 7` / `ratio = 1` で天井、`[0, 0]` は真ん中になる。
+   * **どちらも「すべて等しい」を満たす**ので、両方を入力にして規則を固定する。
+   */
+  it.each([
+    ['全点同値（span が 0 でない）', [7, 7]],
+    ['全点 0（span が 0 で 0.5 寄せ）', [0, 0]],
+  ] as const)('%s では yPercent がすべて等しい', (_label, values) => {
+    const hover = chartHoverPoints(pointsOf(values));
+
+    expect(hover).toHaveLength(values.length);
+    expect(new Set(hover.map((point) => point.yPercent)).size).toBe(1);
+  });
+});
+
+/* --------------------------------------------------------------------------
+ * C. `chartHitTest`（当たり判定。設計 §7.2）
+ * ------------------------------------------------------------------------ */
+
+describe('chartHitTest', () => {
+  function hoverPoint(overrides: Partial<ChartHoverPoint>): ChartHoverPoint {
+    return {
+      seriesKey: 'a',
+      seriesLabel: 'A',
+      tone: 'chart-1',
+      index: 0,
+      label: 'd',
+      value: 0,
+      xPercent: 0,
+      yPercent: 0,
+      ...overrides,
+    };
+  }
+
+  /** 3 点 × 1 系列。列は 0 / 50 / 100。 */
+  const threePoints: readonly ChartHoverPoint[] = [
+    hoverPoint({ index: 0, label: 'd1', value: 1, xPercent: 0, yPercent: 90 }),
+    hoverPoint({ index: 1, label: 'd2', value: 5, xPercent: 50, yPercent: 10 }),
+    hoverPoint({ index: 2, label: 'd3', value: 3, xPercent: 100, yPercent: 50 }),
+  ];
+
+  /** C1 */
+  it('空配列を渡すと null', () => {
+    expect(chartHitTest([], 50, 50)).toBeNull();
+  });
+
+  /** C2。例外を投げない（要素の実寸が 0 のときなどに NaN が渡っても壊れない）。 */
+  it.each([
+    ['xPercent が NaN', Number.NaN, 50],
+    ['yPercent が NaN', 50, Number.NaN],
+    ['yPercent が Infinity', 50, Number.POSITIVE_INFINITY],
+    ['xPercent が Infinity', Number.POSITIVE_INFINITY, 50],
+    ['yPercent が -Infinity', 50, Number.NEGATIVE_INFINITY],
+  ])('%s なら null を返す（例外を投げない）', (_label, xPercent, yPercent) => {
+    expect(chartHitTest(threePoints, xPercent, yPercent)).toBeNull();
+  });
+
+  /** C3 */
+  it('ある点の座標をそのまま渡すと、その点が返る', () => {
+    for (const point of threePoints) {
+      expect(chartHitTest(threePoints, point.xPercent, point.yPercent)).toBe(point);
+    }
+  });
+
+  /** C4 */
+  it('左端寄りを指すと添字 0、右端寄りを指すと添字 2 が返る', () => {
+    expect(chartHitTest(threePoints, 0, 50)?.index).toBe(0);
+    expect(chartHitTest(threePoints, 100, 50)?.index).toBe(2);
+  });
+
+  /**
+   * C5。**同点なら右（新しい日）**（設計 §7.2-3）。
+   * 25 は列 0 と列 50 のちょうど中間である。
+   */
+  it('X が同点なら xPercent が大きいほうの列が返る', () => {
+    expect(chartHitTest(threePoints, 25, 50)?.index).toBe(1);
+    // 列 50 と列 100 の中間も同じ規則。
+    expect(chartHitTest(threePoints, 75, 50)?.index).toBe(2);
+  });
+
+  /**
+   * C6。**同じ列で Y も同点なら、配列の先に現れるほう**（設計 §7.2-5）。
+   * ＝ `series` に渡した順＝凡例の並び順。
+   */
+  it('同じ列で Y も同点なら、配列の先に現れる系列が返る', () => {
+    const first = hoverPoint({ seriesKey: 'pv', index: 0, xPercent: 50, yPercent: 40, value: 9 });
+    const second = hoverPoint({ seriesKey: 'vi', index: 0, xPercent: 50, yPercent: 40, value: 9 });
+
+    expect(chartHitTest([first, second], 50, 40)).toBe(first);
+    expect(chartHitTest([second, first], 50, 40)).toBe(second);
+  });
+
+  /** C7。同じ日の 2 系列。値が大きい系列ほど上（yPercent が小さい）にある。 */
+  it('値の違う日で、上を指すと値の大きい系列・下を指すと小さい系列が返る', () => {
+    const big = hoverPoint({ seriesKey: 'pv', xPercent: 50, yPercent: 10, value: 100 });
+    const small = hoverPoint({ seriesKey: 'vi', xPercent: 50, yPercent: 90, value: 10 });
+    const points = [big, small];
+
+    expect(chartHitTest(points, 50, 12)).toBe(big);
+    expect(chartHitTest(points, 50, 88)).toBe(small);
+  });
+
+  /** C8。**半径を設けない**（設計 §7.2）。膜の内側であれば必ず 1 点が決まる。 */
+  it.each([0, 100])('yPercent が %d でも null を返さず、その列の点が返る', (yPercent) => {
+    const hit = chartHitTest(threePoints, 50, yPercent);
+
+    expect(hit).not.toBeNull();
+    expect(hit?.xPercent).toBe(50);
+  });
+
+  /** C9。90 点 × 2 系列で、どの列を指してもその添字の点が返る（全 90 通り）。 */
+  it('90 点 × 2 系列で、i 番目の列を指すと添字 i の点が返る', () => {
+    const count = 90;
+    const upper: ChartHoverPoint[] = [];
+    const lower: ChartHoverPoint[] = [];
+    for (let index = 0; index < count; index += 1) {
+      const xPercent = (index / (count - 1)) * 100;
+      upper.push(hoverPoint({ seriesKey: 'pv', index, xPercent, yPercent: 20, value: 100 }));
+      lower.push(hoverPoint({ seriesKey: 'vi', index, xPercent, yPercent: 80, value: 10 }));
+    }
+    const points = [...upper, ...lower];
+
+    for (let index = 0; index < count; index += 1) {
+      const xPercent = (index / (count - 1)) * 100;
+
+      const top = chartHitTest(points, xPercent, 20);
+      expect(top?.index, `上側 ${index} 番目`).toBe(index);
+      expect(top?.seriesKey, `上側 ${index} 番目の系列`).toBe('pv');
+
+      const bottom = chartHitTest(points, xPercent, 80);
+      expect(bottom?.index, `下側 ${index} 番目`).toBe(index);
+      expect(bottom?.seriesKey, `下側 ${index} 番目の系列`).toBe('vi');
+    }
+  });
+
+  /**
+   * C10。**配列の要素をそのまま返す**（設計 §11.3）。
+   *
+   * 「同じ点か」を参照比較 1 回で判定できることが、再描画を抑える前提になっている。
+   * `toEqual` では作り直していても通ってしまうので `toBe` で見る。
+   */
+  it('同じ引数を 2 度渡すと同一の参照が返る', () => {
+    const first = chartHitTest(threePoints, 30, 40);
+    const second = chartHitTest(threePoints, 30, 40);
+
+    expect(first).not.toBeNull();
+    expect(first).toBe(second);
+    // 配列の中の要素そのものであること（作り直していない）。
+    expect(threePoints).toContain(first);
+  });
+});
+
+/* --------------------------------------------------------------------------
+ * D1〜D6. ポップアップの初期描画（`renderToStaticMarkup`）
+ *
+ * **Vitest は `environment: 'node'` で DOM が無い**（設計 §4 末尾）。
+ * `pointermove` を起こして状態遷移を確かめることはできないので、
+ * ここで見るのは「操作前の静的 HTML」だけである。操作は E2E（E1〜E14）。
+ * ------------------------------------------------------------------------ */
+
+describe('ポップアップの初期描画', () => {
+  const singlePoints: readonly ChartPoint[] = [
+    { label: 'a', value: 1 },
+    { label: 'b', value: 5 },
+    { label: 'c', value: 3 },
+  ];
+
+  const bothPaths = [
+    ['series の経路', { series: HOVER_TWO_SERIES, title: '推移', fallback: 'FALLBACK' }],
+    ['points の経路', { points: singlePoints, title: '推移', fallback: 'FALLBACK' }],
+  ] as const;
+
+  function render(props: Parameters<typeof Chart>[0]): string {
+    return renderToStaticMarkup(createElement(Chart, props));
+  }
+
+  function countOf(html: string, needle: string): number {
+    return html.split(needle).length - 1;
+  }
+
+  /** 属性を持つ開始タグを 1 つ取り出す。無ければ空文字。 */
+  function tagWith(html: string, attribute: string): string {
+    return new RegExp(`<[a-zA-Z]+[^>]*\\b${attribute}\\b[^>]*>`).exec(html)?.[0] ?? '';
+  }
+
+  /** `<svg …>` から最初の `</svg>` まで（SVG は入れ子にならない）。 */
+  function svgMarkup(html: string): string {
+    const start = html.indexOf('<svg');
+    const end = html.indexOf('</svg>');
+    return start < 0 || end < 0 ? '' : html.slice(start, end + '</svg>'.length);
+  }
+
+  /** D1。操作前は何も出ない（裁定 §3.3。常時のマーカーを描かない）。 */
+  it.each(bothPaths)('%s の初期 HTML にポップアップもマーカーも出ていない', (_label, props) => {
+    const html = render(props);
+
+    expect(html).not.toContain('data-chart-tooltip');
+    expect(html).not.toContain('data-chart-marker');
+  });
+
+  /** D2。当たり判定の膜は、どちらの経路でもちょうど 1 つ。 */
+  it.each(bothPaths)('%s で膜が 1 つ出る', (_label, props) => {
+    expect(countOf(render(props), 'data-chart-hover-area')).toBe(1);
+  });
+
+  /** D3。膜・マーカー・ポップアップは装飾。読み上げの経路は表のまま（設計 §7.7）。 */
+  it.each(bothPaths)('%s の膜に aria-hidden="true" が付いている', (_label, props) => {
+    const tag = tagWith(render(props), 'data-chart-hover-area');
+
+    expect(tag, '膜が見つからない').not.toBe('');
+    expect(tag).toContain('aria-hidden="true"');
+  });
+
+  /** D4。読み上げの木を変えない。膜は `<svg role="img">` の**兄弟**である。 */
+  it.each(bothPaths)('%s で膜が <svg role="img"> の子ではない', (_label, props) => {
+    const html = render(props);
+    const svg = svgMarkup(html);
+
+    expect(svg, '<svg> が見つからない').not.toBe('');
+    expect(svg).toContain('role="img"');
+    expect(svg).not.toContain('data-chart-hover-area');
+  });
+
+  /** D5。点が 1 つも無ければ、指せる点も無い。膜を出さない。 */
+  it.each([
+    ['series が空', { series: [], title: '推移', fallback: 'FALLBACK' }],
+    [
+      '系列に点が無い',
+      { series: [{ key: 'a', label: 'A', points: [] }], title: '推移', fallback: 'FALLBACK' },
+    ],
+    ['points が空', { points: [], title: '推移', fallback: 'FALLBACK' }],
+  ] as const)('%s のとき膜が出ない', (_label, props) => {
+    const html = render(props);
+
+    expect(html).not.toContain('data-chart-hover-area');
+    expect(html).toContain('FALLBACK');
+  });
+
+  /**
+   * D6。**`fallback` の中身は膜の有無にかかわらず必ず描かれる**（要件 §4 / 設計 §7.7）。
+   *
+   * チャートが描かれる経路では `<figure>` の中の `<figcaption>` に入る。
+   */
+  it.each(bothPaths)('%s では fallback が <figcaption> の中に描かれる', (_label, props) => {
+    const html = render(props);
+
+    expect(html).toContain('<figure');
+    expect(html).toMatch(/<figcaption[^>]*>[\s\S]*FALLBACK[\s\S]*<\/figcaption>/);
+  });
+
+  /**
+   * D6（続き）。点が 1 つも無いときは `Chart` が `<figure>` を出さず
+   * `fallback` だけを返す（**現行の挙動。本設計は変えない**。実装プラン §8 #4）。
+   * 値を読む経路が常に `fallback` として存在することは、それでも成り立つ。
+   */
+  it.each([
+    ['series が空', { series: [], title: '推移', fallback: 'FALLBACK' }],
+    ['points が空', { points: [], title: '推移', fallback: 'FALLBACK' }],
+  ] as const)('%s でも fallback は描かれる（figcaption は出ない）', (_label, props) => {
+    const html = render(props);
+
+    expect(html).toContain('FALLBACK');
+    expect(html).not.toContain('<figcaption');
+  });
+});
+
+/* --------------------------------------------------------------------------
+ * A4〜A6. 膜を足しても、現行の描画が変わらない
+ * ------------------------------------------------------------------------ */
+
+describe('膜を足しても描画が変わらない（A4 / A5 / A6）', () => {
+  function render(props: Parameters<typeof Chart>[0]): string {
+    return renderToStaticMarkup(createElement(Chart, props));
+  }
+
+  function polylinePoints(html: string): string[] {
+    return [...html.matchAll(/<polyline\b[^>]*\bpoints="([^"]*)"/g)].map((match) => match[1] ?? '');
+  }
+
+  function textTokens(html: string): string[] {
+    return html
+      .replace(/<[^>]+>/g, ' ')
+      .split(/\s+/)
+      .filter((token) => token !== '');
+  }
+
+  /** A4 */
+  it('points だけを渡した静的 HTML の role / aria-label / polyline / fallback が現行と同じ', () => {
+    const points: readonly ChartPoint[] = [
+      { label: 'a', value: 1 },
+      { label: 'b', value: 5 },
+      { label: 'c', value: 3 },
+    ];
+    const html = render({ points, title: '推移', fallback: 'FALLBACK' });
+
+    expect(html).toContain('role="img"');
+    expect(html).toContain('aria-label="推移"');
+    expect(polylinePoints(html)).toEqual(['8.0,123.2 300.0,8.0 592.0,65.6']);
+    expect(html).toContain('FALLBACK');
+  });
+
+  /** A5 */
+  it('series の polyline が系列数ぶん出て、chartLayout の座標と一致する', () => {
+    const html = render({ series: HOVER_TWO_SERIES, title: '推移', fallback: 'FALLBACK' });
+
+    expect(polylinePoints(html)).toHaveLength(2);
+    expect(polylinePoints(html)).toEqual(
+      chartLayout(HOVER_TWO_SERIES).series.map((item) => item.points),
+    );
+  });
+
+  /** A6。`legend` / `yAxis` / `xTicks` の出し分けが現行と同じ。 */
+  it('legend の true / false で系列名の出方が変わらない', () => {
+    const on = textTokens(
+      render({ series: HOVER_TWO_SERIES, title: '推移', fallback: 'FB', legend: true }),
+    );
+    const off = textTokens(
+      render({ series: HOVER_TWO_SERIES, title: '推移', fallback: 'FB', legend: false }),
+    );
+
+    expect(on).toContain('ページビュー');
+    expect(on).toContain('訪問者');
+    expect(off).not.toContain('ページビュー');
+    expect(off).not.toContain('訪問者');
+  });
+
+  it('yAxis の true / false で軸ラベルの出方が変わらない', () => {
+    const on = textTokens(
+      render({ series: HOVER_TWO_SERIES, title: '推移', fallback: 'FB', yAxis: true }),
+    ).filter((token) => /^\d+$/.test(token));
+    const off = textTokens(
+      render({ series: HOVER_TWO_SERIES, title: '推移', fallback: 'FB', yAxis: false }),
+    ).filter((token) => /^\d+$/.test(token));
+
+    expect(on).toEqual(['40', '20', '0']);
+    expect(off).toEqual([]);
+  });
+
+  it('xTicks の true / false で目盛りラベルの出方が変わらない', () => {
+    const on = textTokens(
+      render({ series: HOVER_TWO_SERIES, title: '推移', fallback: 'FB', xTicks: true }),
+    );
+    const off = textTokens(
+      render({ series: HOVER_TWO_SERIES, title: '推移', fallback: 'FB', xTicks: false }),
+    );
+
+    for (const label of ['d1', 'd2', 'd3']) {
+      expect(on).toContain(label);
+      expect(off).not.toContain(label);
+    }
+  });
+});
+
+/* ============================================================================
+ * F. 検証で見つかった穴を塞ぐ条件（設計 §10-F。2026-09-06 に追加）
+ *
+ * A1〜E14 の番号と文言は動かさない。ここは**末尾への追加**である。
+ * どれも実装の振る舞いを変えない。**いま通ることを固定する**ための条件で、
+ * 「実装は正しいが、それを縛るテストが 1 件も無い」経路を埋める。
+ * ========================================================================== */
+
+/** `"x,y x,y ..."` のうち、x と y の**どちらも有限**な座標の数。 */
+function finiteCoordCount(line: string): number {
+  return parseCoords(line).filter((coord) => Number.isFinite(coord.x) && Number.isFinite(coord.y))
+    .length;
+}
+
+/**
+ * F1。**`ChartHoverLayer` 自身の空ガードを通す。**
+ *
+ * D5 の 3 入力（`series: []` / 点の無い系列 / `points: []`）はいずれも
+ * `chart.tsx` の早期 return で `<figure>` ごと出ないため、
+ * `ChartHoverLayer` の `points.length === 0 → null` の分岐を**通っていない**。
+ *
+ * 値が `NaN` の点を 1 つだけ渡すと、`chart.tsx` の早期 return（`points.length === 0`）には
+ * 掛からないので `<figure>` と `<polyline>` は描かれる。それでも
+ * `chartHoverPoints` は座標が非有限になった点を落として `[]` を返すので、
+ * **膜が出ないのは `ChartHoverLayer` 自身のガードのおかげ**である。この入力だけがそこを通す。
+ */
+describe('ChartHoverLayer 自身の空ガード（F1）', () => {
+  const nanPoints: readonly ChartPoint[] = [{ label: 'a', value: Number.NaN }];
+
+  /** 前提。この入力で `chartHoverPoints` は空を返す（D5 の 3 入力とは別の経路）。 */
+  it('値が NaN の 1 点では chartHoverPoints が空になる', () => {
+    expect(nanPoints).toHaveLength(1);
+    expect(chartHoverPoints(nanPoints)).toEqual([]);
+  });
+
+  it('値が NaN の 1 点では polyline は出るが、膜もマーカーもポップアップも出ない', () => {
+    const html = renderToStaticMarkup(
+      createElement(Chart, { points: nanPoints, title: '推移', fallback: 'FALLBACK' }),
+    );
+
+    // `chart.tsx` の早期 return には掛からない。図そのものは描かれる。
+    expect(html).toContain('<figure');
+    expect(html).toMatch(/<polyline\b/);
+    // 座標は NaN なので線は見えないが、要素としては出ている（現行の挙動）。
+    expect(html).toContain('points="8.0,NaN"');
+
+    // 指せる点が 1 つも無いので膜が出ない（`ChartHoverLayer` の `points.length === 0 → null`）。
+    expect(html).not.toContain('data-chart-hover-area');
+    expect(html).not.toContain('data-chart-marker');
+    expect(html).not.toContain('data-chart-tooltip');
+
+    // 値を読む経路（`fallback`）は変わらず描かれる。
+    expect(html).toContain('FALLBACK');
+  });
+});
+
+/**
+ * F2。**`label` に markup を入れても、そのまま HTML に出ない**（XSS の回帰）。
+ *
+ * `Chart` は `ui/components/index.ts` から Plugin へ公開されており（設計 §9.2）、
+ * `ChartPoint.label` / `ChartSeries.label` / `title` には**任意の文字列が入りうる**。
+ * 現状の実装は JSX の子・属性として描いており React のエスケープが効くが、
+ * **それを縛る条件が 1 件も無い**。`dangerouslySetInnerHTML` / `innerHTML` を使う
+ * 実装への変更が、この条件で止まる。
+ */
+describe('label に markup を入れてもエスケープされる（F2）', () => {
+  const XSS = '<script>alert(1)</script>';
+
+  function render(props: Parameters<typeof Chart>[0]): string {
+    return renderToStaticMarkup(createElement(Chart, props));
+  }
+
+  /** `series` の経路。`legend` と `xTicks` を有効にして、凡例と目盛りに `label` を出す。 */
+  it('series の経路（凡例・目盛りに label が出る状態）でエスケープされる', () => {
+    const html = render({
+      series: [
+        {
+          key: 'a',
+          label: XSS,
+          tone: 'chart-1',
+          points: [
+            { label: XSS, value: 1 },
+            { label: `${XSS}2`, value: 2 },
+          ],
+        },
+      ],
+      title: '推移',
+      fallback: 'FALLBACK',
+      legend: true,
+      yAxis: true,
+      xTicks: true,
+    });
+
+    expect(html).not.toContain('<script');
+    expect(html).not.toContain('</script>');
+    // 空振り防止：凡例（系列名）と目盛り（点のラベル）の両方に出ているはず。
+    expect(
+      html.split('&lt;script&gt;').length - 1,
+      'label が 1 つも描かれていない',
+    ).toBeGreaterThanOrEqual(2);
+  });
+
+  /**
+   * `points` の経路。ここでは点のラベルが静的 HTML に出ない
+   * （凡例も目盛りも無く、ラベルはポップアップの中にしか出ない）ので、
+   * **属性へ入る `title`** も markup にして、空振りしない形にする。
+   */
+  it('points の経路（title と label）でエスケープされる', () => {
+    const html = render({
+      points: [
+        { label: XSS, value: 1 },
+        { label: 'b', value: 5 },
+      ],
+      title: XSS,
+      fallback: 'FALLBACK',
+    });
+
+    expect(html).not.toContain('<script');
+    expect(html).not.toContain('</script>');
+    // 空振り防止：`aria-label` 属性の中にエスケープされた形で出ている。
+    expect(html).toContain('&lt;script&gt;');
+    // 描画そのものは成立している。
+    expect(html).toMatch(/<polyline\b/);
+  });
+
+  /**
+   * **純関数はエスケープしない。** エスケープは描画側の責務であり、
+   * 純関数がエスケープ済み文字列を返すと**二重エスケープ**になる（設計 §10-F2）。
+   */
+  it('純関数（chartHoverPoints / chartLayout）は label を素のまま持ち回る', () => {
+    expect(chartHoverPoints([{ label: XSS, value: 1 }])[0]?.label).toBe(XSS);
+
+    const hover = chartLayout([
+      { key: 'a', label: XSS, tone: 'chart-1', points: [{ label: XSS, value: 1 }] },
+    ]).hover;
+    expect(hover[0]?.label).toBe(XSS);
+    expect(hover[0]?.seriesLabel).toBe(XSS);
+  });
+});
+
+/**
+ * F3。**`hover` の有限性の規約が 2 経路で同じ**（設計 §5.4.2）。
+ *
+ * > `hover` に載せてよいのは、`xPercent` と `yPercent` がどちらも有限な点だけである。
+ *
+ * `chartLayout` 側では**いま 1 点も落とさない**（`value` は 0 に潰れ、`niceMax` は必ず正）。
+ * 落ちないことも含めて固定する。将来 `yMax` の式が変わったときに、
+ * 片方の経路だけが静かに壊れることを止めるための条件である。
+ *
+ * 「同じ判定が置かれていること」自体は実行時に見えない（いま何も落とさないため）ので、
+ * 構造の側は `static-checks.test.ts` で見る。
+ */
+describe('hover の有限性の規約が 2 経路で同じ（F3）', () => {
+  /** 極端な値を含む共通の入力群（設計 §10-F3）。 */
+  const inputs = [
+    ['全点 0', [0, 0, 0]],
+    ['全点同値', [7, 7, 7]],
+    ['NaN を含む', [1, Number.NaN, 3]],
+    ['+Infinity を含む', [1, Number.POSITIVE_INFINITY, 3]],
+    ['-Infinity を含む', [1, Number.NEGATIVE_INFINITY, 3]],
+    ['Number.MAX_VALUE を含む', [1, Number.MAX_VALUE, 3]],
+  ] as const;
+
+  /** 1 系列の経路。落ちる点があるので、長さは「座標が有限になった点の数」になる。 */
+  it.each(inputs)(
+    '%s：chartHoverPoints は全要素が有限で、長さが座標の有限な点の数と一致する',
+    (_label, values) => {
+      const points = pointsOf(values);
+      const hover = chartHoverPoints(points);
+
+      for (const point of hover) {
+        expect(Number.isFinite(point.xPercent), `xPercent=${point.xPercent}`).toBe(true);
+        expect(Number.isFinite(point.yPercent), `yPercent=${point.yPercent}`).toBe(true);
+      }
+      expect(hover).toHaveLength(finiteCoordCount(chartPolyline(points)));
+    },
+  );
+
+  /** 複数系列の経路。**同じ規約**が掛かる。 */
+  it.each(inputs)(
+    '%s：chartLayout の hover も全要素が有限で、長さが座標の有限な点の数と一致する',
+    (_label, values) => {
+      const layout = chartLayout([series('a', values), series('b', [...values].reverse())]);
+
+      for (const point of layout.hover) {
+        expect(Number.isFinite(point.xPercent), `xPercent=${point.xPercent}`).toBe(true);
+        expect(Number.isFinite(point.yPercent), `yPercent=${point.yPercent}`).toBe(true);
+      }
+      const finite = layout.series.reduce(
+        (total, item) => total + finiteCoordCount(item.points),
+        0,
+      );
+      expect(layout.hover).toHaveLength(finite);
+    },
+  );
+
+  /**
+   * **`chartLayout` 側はいま 1 点も落とさない。**
+   * B1 / B6 / B10 / B11 の結果が変わらないことを、ここでも明示的に固定する。
+   */
+  it.each(inputs)(
+    '%s：chartLayout は 1 点も落とさない（規約は掛かるが該当が無い）',
+    (_label, values) => {
+      const layout = chartLayout([series('a', values), series('b', [...values].reverse())]);
+
+      expect(layout.hover).toHaveLength(values.length * 2);
+    },
+  );
 });
