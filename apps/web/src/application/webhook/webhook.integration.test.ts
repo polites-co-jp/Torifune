@@ -162,6 +162,27 @@ describe('登録', () => {
     ).rejects.toThrow(ValidationError);
   });
 
+  /**
+   * 032-timezone-setting 受け入れ条件 #131（設計 §9.3.2）。
+   *
+   * `analytics.purged` は `CORE_EVENTS` に入るので、`webhook-use-cases.ts` の
+   * `CORE_EVENT_NAMES` にも自動的に入り、**Webhook でも受け取れる**。
+   * 運用者が外部へ通知を飛ばせるのは副次的な利点だが、妨げる理由も無い。
+   */
+  it('analytics.purged を Webhook のイベントに指定できる', async () => {
+    const created = await createWebhook(admin, {
+      name: '洗い替えの通知',
+      url: 'https://hooks.example.com/purged',
+      events: ['analytics.purged'],
+    });
+
+    expect(created.secret).toMatch(/^whsec_/);
+
+    const list = await listWebhooks(admin, {});
+    const registered = list.find((hook) => hook.name === '洗い替えの通知');
+    expect(registered?.events).toContain('analytics.purged');
+  });
+
   /** Core が「外へ送ってよい」と判断できない（設計 §3.1）。 */
   it('Plugin のイベントは登録できない', async () => {
     await expect(

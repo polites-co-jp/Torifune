@@ -17,16 +17,38 @@ import { describe, expect, it } from 'vitest';
 
 const SOURCE_PATH = join(import.meta.dirname, 'analytics-repository.ts');
 
-/** `access_logs` に触れてよいメソッド（受け入れ条件 #52 の 7 つ）。**増やす方向に動かさない。** */
+/**
+ * `access_logs` に触れてよいメソッド。**増やす方向に動かさない。**
+ *
+ * 029 設計 §6.4（受け入れ条件 #52）の 7 つに、
+ * 032-timezone-setting で **3 つ**を足して 10 になる（032 受け入れ条件 #111、実装プラン §8 #A）。
+ * 足す 3 つは、いずれも**「期間で集計するために読む」ものではない**ので、
+ * 018 §4.1 / 029 §6.4 の原則（期間で集計するために読むのは `analytics` に限る）は保たれる。
+ *
+ * | 足す関数 | 生ログへの当たり方 | いつ走るか |
+ * | --- | --- | --- |
+ * | `findOldestAccessAt` | `SELECT min(occurred_at)`。`access_logs_occurred_at_idx` の端を 1 回 | 洗い替えの範囲決定 |
+ * | `summarizeStaleDays` | `NOT EXISTS (SELECT 1 …)` の**存在判定**を (サイト, 日) ごとに 1 回 | `system.manage` のプレビュー |
+ * | `deleteStalePoints` | 同上（削除の条件が同じ CTE を共有する） | 洗い替えの最後に 1 回 |
+ *
+ * 静的検査はメソッド本文に `access_logs` の文字列が出るかを見るので、
+ * 「集計するために読む」か「有無を確かめるために読む」かを区別しない。だから一覧に載せる。
+ */
 const ALLOWED_ACCESS_LOG_READERS = [
   'aggregateDailyBreakdown',
   'countAccessSince',
   'deleteAccessLogsOlderThan',
+  'deleteStalePoints',
   'findLatestAccessAt',
+  'findOldestAccessAt',
   'findSiteByPublicKey',
   'maxOccurredAtBySite',
   'recordAccess',
+  'summarizeStaleDays',
 ];
+
+/** 032 で足した 3 つ（#111）。 */
+const TIMEZONE_REBUILD_READERS = ['findOldestAccessAt', 'summarizeStaleDays', 'deleteStalePoints'];
 
 /** 未集計件数の打ち切り（029 設計 §5.4 / §6.4）。 */
 const PENDING_COUNT_LIMIT = 1000;
@@ -51,8 +73,8 @@ function methodsOf(source: string): MethodSource[] {
 describe('生ログを読む関数の限定', () => {
   const methods = methodsOf(readFileSync(SOURCE_PATH, 'utf8'));
 
-  /** #40 / #52 */
-  it('access_logs に触れるメソッドが許可した 7 つ以外に無い', () => {
+  /** #40 / #52 / 032 #111 */
+  it('access_logs に触れるメソッドが許可した 10 個以外に無い', () => {
     const offending = methods
       .filter((method) => method.body.includes('access_logs'))
       .map((method) => method.name)
@@ -71,6 +93,39 @@ describe('生ログを読む関数の限定', () => {
     expect(readers).toContain('recordAccess');
     expect(readers).toContain('aggregateDailyBreakdown');
     expect(readers).toContain('deleteAccessLogsOlderThan');
+  });
+
+  /**
+   * 032 #111。**許可リストが 10 個になり、増えた 3 つが実際に存在する。**
+   *
+   * 一覧に名前を足すだけなら通ってしまう（空振り）。
+   * 3 つのメソッドが本当にあり、本当に `access_logs` に触れていることを別に見る。
+   */
+  it('許可リストは 10 個で、洗い替えの 3 つを含む', () => {
+    expect(ALLOWED_ACCESS_LOG_READERS).toHaveLength(10);
+    for (const name of TIMEZONE_REBUILD_READERS) {
+      expect(ALLOWED_ACCESS_LOG_READERS, name).toContain(name);
+    }
+  });
+
+  /** 032 #111 */
+  it.each(TIMEZONE_REBUILD_READERS)('%s が存在し、access_logs に触れている', (name) => {
+    const method = methods.find((entry) => entry.name === name);
+
+    expect(method, `${name} が無い`).toBeDefined();
+    expect(method?.body).toContain('access_logs');
+  });
+
+  /**
+   * 032 設計 §5.4。**プレビューと削除で条件を二重に持たない。**
+   *
+   * 数える側と消す側で条件がずれると、ダイアログに出した件数と実際に消える件数が食い違う。
+   */
+  it('生ログの存在判定（NOT EXISTS）がソース全体で 1 箇所しか無い', () => {
+    const source = readFileSync(SOURCE_PATH, 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+
+    // 数える側と消す側の 2 箇所に書いてあれば 2 になる。共有していれば 1。
+    expect((source.match(/NOT EXISTS/g) ?? []).length).toBe(1);
   });
 
   /** #40 / §6.3。生ログから上位ページを引く関数は無い。 */

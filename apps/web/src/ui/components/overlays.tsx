@@ -87,6 +87,13 @@ export interface ConfirmDialogProps {
   readonly confirmLabel?: string;
   readonly onConfirm: () => void;
   readonly onCancel: () => void;
+  /**
+   * `message` の下に足す本文（任意）。
+   *
+   * 1 行では足りない確認のためにある（消える件数の内訳、断り書きなど）。
+   * **既存の props は変えない。** 渡さなければ現行と同じ HTML になる。
+   */
+  readonly children?: ReactNode;
 }
 
 /**
@@ -102,6 +109,7 @@ export function ConfirmDialog({
   confirmLabel = '削除する',
   onConfirm,
   onCancel,
+  children,
 }: ConfirmDialogProps) {
   return (
     <Modal
@@ -120,6 +128,7 @@ export function ConfirmDialog({
       }
     >
       <p style={{ margin: 0 }}>{message}</p>
+      {children}
       <p style={{ color: 'var(--tf-color-text-muted)', marginBottom: 0 }}>
         この操作は取り消せません。
       </p>

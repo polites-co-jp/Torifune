@@ -43,6 +43,7 @@ export type {
 
 export { CORE_EVENTS } from './events';
 export type {
+  AnalyticsPurgedEventPayload,
   AnalyticsRollupEventPayload,
   CampaignEventPayload,
   CoreEventName,

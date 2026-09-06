@@ -20,13 +20,20 @@ import {
  */
 
 describe('JOB_NAMES / isJobName', () => {
-  it('Core の 2 ジョブが名前の順に並ぶ', () => {
-    expect(JOB_NAMES).toEqual(['analytics.rollup', 'webhook.deliver']);
+  /**
+   * 032-timezone-setting 設計 §6.2：洗い替えを**末尾**に足す。
+   *
+   * `JOB_NAMES` の順がそのまま画面（設定 → 一般の「定期実行」）の行順になるので、
+   * 既存の 2 行の間に割り込ませない。
+   */
+  it('Core の 3 ジョブが定義の順に並ぶ', () => {
+    expect(JOB_NAMES).toEqual(['analytics.rollup', 'webhook.deliver', 'analytics.timezoneRebuild']);
   });
 
   it('isJobName は登録済みの名前だけを真にする', () => {
     expect(isJobName('analytics.rollup')).toBe(true);
     expect(isJobName('webhook.deliver')).toBe(true);
+    expect(isJobName('analytics.timezoneRebuild')).toBe(true);
     expect(isJobName('analytics.prune')).toBe(false);
     expect(isJobName('')).toBe(false);
   });

@@ -3,8 +3,8 @@ import pg from 'pg';
 import { uuidv7 } from 'uuidv7';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { rollupAnalytics } from '@/application/analytics/rollup';
-import { runJob, type RunOutcome } from '@/application/jobs/run-job';
-import type { JobDefinition } from '@/application/jobs/scheduler';
+import { runJob, startJobInBackground, type RunOutcome } from '@/application/jobs/run-job';
+import type { JobContext, JobDefinition, JobTask } from '@/application/jobs/scheduler';
 import { withConnection } from '@/application/transaction';
 import type { Connection } from '@/database/provider';
 import { JOB_RUN_RETENTION, type JobName, type JobRun } from '@/domain/jobs/job';
@@ -14,6 +14,7 @@ import {
   jobLockKey,
   resetJobLockWaitingForTests,
 } from '@/infrastructure/job-lock';
+import { jobRunRepository } from '@/infrastructure/job-run-repository';
 import { resetLogger, setLogger, type LogRecord } from '@/infrastructure/logging';
 import { useScratchDatabase, type ScratchDatabase } from '@/test-support/database';
 
@@ -753,6 +754,281 @@ describe('記録に失敗する状況', () => {
       await withConnection((connection) =>
         sql`ALTER TABLE job_runs_broken RENAME TO job_runs`.execute(connection.db),
       );
+    }
+  });
+});
+
+/**
+ * 記録するジョブ名と、取る鍵の名前を分ける
+ * （032-timezone-setting 設計 §6.2.3、受け入れ条件 #48 / #49。実装プラン T5）。
+ *
+ * 洗い替えと定期ロールアップは**同じ資源**（`analytics` の Core 行）を
+ * (site, day) 単位で差し替える。別々の鍵にすると、029 が「同じロックに載せることで
+ * 起きなくなる」と書いた `replaceCorePoints` の DELETE → INSERT の衝突が復活する。
+ *
+ * **既存のジョブは `lockName` を書かない。** 書かなければ `job.lockName ?? job.name` が
+ * `job.name` に落ち、029 の挙動と 1 ビットも変わらない。
+ */
+describe('lockName（鍵の名前をジョブ名と分ける）', () => {
+  /** `lockName` を持つ検証用のジョブ。 */
+  function taskWithLock<TInput = undefined>(
+    name: JobName,
+    lockName: JobName,
+    run: (
+      connection: Connection,
+      input: TInput,
+      job: JobContext,
+    ) => Promise<Readonly<Record<string, unknown>>>,
+  ): JobTask<TInput> {
+    return { name, lockName, run };
+  }
+
+  /**
+   * #48。**鍵の名前ではなくジョブ名で記録される。**
+   *
+   * `analytics.rollup` の鍵で弾かれても `job_runs` に洗い替えの名前が残らなければ、
+   * 画面から「洗い替えが実行されなかった」ことを読み取れない。
+   */
+  it('鍵で弾かれても job_runs.job_name はジョブ名のまま', async () => {
+    const run = vi.fn(async () => ({}));
+    const job = taskWithLock('analytics.timezoneRebuild', 'analytics.rollup', run);
+    const holder = await holdLock('analytics.rollup');
+
+    try {
+      const outcome = await withConnection((connection) =>
+        runJob(connection, job, { trigger: 'manual', wait: false, input: undefined }),
+      );
+
+      expect(outcome.outcome).toBe('skipped');
+      expect(run).not.toHaveBeenCalled();
+      const rows = await rowsOf('analytics.timezoneRebuild');
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.job_name).toBe('analytics.timezoneRebuild');
+      expect(rows[0]?.status).toBe('skipped');
+      // 鍵の名前では 1 行も記録しない。
+      expect(await rowsOf('analytics.rollup')).toHaveLength(0);
+    } finally {
+      await holder.release();
+      await holder.end();
+    }
+  });
+
+  /** #46 / #47 の土台。名前が違っても `lockName` が同じなら排他される。 */
+  it('別名のジョブでも lockName が同じなら排他される', async () => {
+    const run = vi.fn(async () => ({}));
+    const job = taskWithLock('analytics.timezoneRebuild', 'analytics.rollup', run);
+    const holder = await holdLock('analytics.rollup');
+
+    try {
+      const outcome = await withConnection((connection) =>
+        runJob(connection, job, { trigger: 'manual', wait: false, input: undefined }),
+      );
+      expect(outcome.outcome).toBe('skipped');
+    } finally {
+      await holder.release();
+      await holder.end();
+    }
+
+    // 鍵が空けば走る（検査が空振りしていない）。
+    const outcome = await withConnection((connection) =>
+      runJob(connection, job, { trigger: 'manual', wait: false, input: undefined }),
+    );
+    expect(outcome.outcome).toBe('ok');
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  /** #49。**`lockName` を持たない既存の形の挙動が変わらない。** 自分の名前の鍵で排他する。 */
+  it('lockName が無ければ自分の名前の鍵を取る', async () => {
+    const run = vi.fn(async () => ({}));
+    const job = jobOf('webhook.deliver', run);
+    const holder = await holdLock('webhook.deliver');
+
+    try {
+      const outcome = await withConnection((connection) =>
+        runJob(connection, job, { trigger: 'scheduled', wait: false, input: undefined }),
+      );
+
+      expect(outcome.outcome).toBe('skipped');
+      expect(run).not.toHaveBeenCalled();
+    } finally {
+      await holder.release();
+      await holder.end();
+    }
+  });
+
+  /** #49。他のジョブの鍵に巻き込まれない。 */
+  it('lockName が無いジョブは、別のジョブの鍵が握られていても走る', async () => {
+    const run = vi.fn(async () => ({ ok: 1 }));
+    const job = jobOf('webhook.deliver', run);
+    const holder = await holdLock('analytics.rollup');
+
+    try {
+      const outcome = await withConnection((connection) =>
+        runJob(connection, job, { trigger: 'scheduled', wait: false, input: undefined }),
+      );
+
+      expect(outcome.outcome).toBe('ok');
+      expect(run).toHaveBeenCalledTimes(1);
+    } finally {
+      await holder.release();
+      await holder.end();
+    }
+  });
+});
+
+/**
+ * 途中経過（032-timezone-setting 設計 §6.2.5。実装プラン T6）。
+ *
+ * 洗い替えは長く走りうる。`job_runs` に「開始した」と「終わった」の 2 点しか無いと、
+ * 走っているのか止まっているのかが分からない。
+ *
+ * **記録できないことと処理できないことは別。** `report` の失敗は握って続ける。
+ */
+describe('JobContext.report', () => {
+  it('report を呼ぶと走行中に job_runs.summary が更新される', async () => {
+    let duringRun: Record<string, unknown> | undefined;
+
+    const job: JobTask = {
+      name: 'analytics.rollup',
+      async run(_connection, _input, context) {
+        await context.report({ completedThrough: '2026-03-31' });
+        duringRun = (await rowsOf('analytics.rollup'))[0]?.summary;
+        return { completedThrough: '2026-04-30' };
+      },
+    };
+
+    const outcome = await withConnection((connection) =>
+      runJob(connection, job, { trigger: 'manual', wait: true, input: undefined }),
+    );
+
+    expect(outcome.outcome).toBe('ok');
+    expect(duringRun).toEqual({ completedThrough: '2026-03-31' });
+    // 最後にもう一度 summary を書く（途中経過と最終結果で 2 系統の書き方をしない）。
+    expect((await rowsOf('analytics.rollup'))[0]?.summary).toEqual({
+      completedThrough: '2026-04-30',
+    });
+  });
+
+  it('report が受け取る runId は job_runs の id と同じ', async () => {
+    let seen: string | undefined;
+    const job: JobTask = {
+      name: 'analytics.rollup',
+      async run(_connection, _input, context) {
+        seen = context.runId;
+        return {};
+      },
+    };
+
+    await withConnection((connection) =>
+      runJob(connection, job, { trigger: 'manual', wait: true, input: undefined }),
+    );
+
+    expect(seen).toBe((await rowsOf('analytics.rollup'))[0]?.id);
+  });
+
+  it('summary の更新が失敗してもジョブは ok で終わる', async () => {
+    const { records } = capture();
+    vi.spyOn(jobRunRepository, 'updateSummary').mockRejectedValue(new Error('書けない'));
+
+    const job: JobTask = {
+      name: 'analytics.rollup',
+      async run(_connection, _input, context) {
+        await context.report({ completedThrough: '2026-03-31' });
+        return { done: true };
+      },
+    };
+
+    const outcome = await withConnection((connection) =>
+      runJob(connection, job, { trigger: 'manual', wait: true, input: undefined }),
+    );
+
+    expect(outcome.outcome).toBe('ok');
+    expect(
+      records.some(
+        (record) => record.level === 'error' && record.message === 'job run could not be recorded',
+      ),
+    ).toBe(true);
+  });
+
+  /** #49。既存の 2 つのジョブは第 3 引数を受け取らずにそのまま動く。 */
+  it('run が引数を 2 つしか取らなくても動く', async () => {
+    const run = vi.fn(async (_connection: Connection, _input: undefined) => ({ done: true }));
+    const job = jobOf('webhook.deliver', run);
+
+    const outcome = await withConnection((connection) =>
+      runJob(connection, job, { trigger: 'scheduled', wait: false, input: undefined }),
+    );
+
+    expect(outcome.outcome).toBe('ok');
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * `startJobInBackground`（032-timezone-setting 設計 §6.4 末尾。実装プラン T7）。
+ *
+ * **要求の接続を使わない。** 自分で `withConnection` を張るので、
+ * 応答を返したあとに要求のスコープが閉じても影響を受けない。
+ * 呼ぶ側は「起こした」ことだけを知る（fire and forget）。
+ */
+describe('startJobInBackground', () => {
+  /** 条件が満たされるまで待つ（決め打ちの `setTimeout` を書かない）。 */
+  async function waitForRuns(name: JobName, count: number): Promise<JobRunRow[]> {
+    const until = Date.now() + 10_000;
+    let rows = await rowsOf(name);
+    while (rows.length < count) {
+      if (Date.now() > until) {
+        throw new Error(`${name} の記録が ${count} 件にならない（${rows.length} 件）`);
+      }
+      await sleep(50);
+      rows = await rowsOf(name);
+    }
+    return rows;
+  }
+
+  it('呼んだ直後に返り、しばらくすると job_runs に行ができる', async () => {
+    let started = false;
+    const job: JobTask = {
+      name: 'analytics.rollup',
+      async run() {
+        started = true;
+        return { done: true };
+      },
+    };
+
+    // **戻り値を持たない。** 待てないことを型でも示す。
+    const returned: void = startJobInBackground(job, undefined);
+    expect(returned).toBeUndefined();
+
+    const rows = await waitForRuns('analytics.rollup', 1);
+    expect(started).toBe(true);
+    expect(rows[0]?.status).toBe('ok');
+  });
+
+  it('ジョブが投げても未処理の rejection を残さず、error として記録される', async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    process.on('unhandledRejection', onRejection);
+
+    try {
+      const job: JobTask = {
+        name: 'analytics.rollup',
+        async run() {
+          throw new Error('落ちた');
+        },
+      };
+
+      startJobInBackground(job, undefined);
+
+      const rows = await waitForRuns('analytics.rollup', 1);
+      expect(rows[0]?.status).toBe('error');
+      // マイクロタスクを 1 周させてから確かめる。
+      await sleep(100);
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onRejection);
     }
   });
 });

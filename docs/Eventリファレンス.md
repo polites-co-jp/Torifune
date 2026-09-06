@@ -32,7 +32,8 @@ Plugin は `context.events.on(...)` で購読する。使い方は
 | `campaign.created` | キャンペーンを作った | `CampaignEventPayload` |
 | `campaign.updated` | キャンペーンを更新した | `CampaignEventPayload` |
 | `campaign.deleted` | キャンペーンを削除した | `CampaignEventPayload` |
-| `analytics.rolledUp` | アクセスの日次集計が終わった（本体の定期実行、または `POST /api/v1/analytics/rollup`） | `AnalyticsRollupEventPayload` |
+| `analytics.rolledUp` | アクセスの日次集計が終わった（本体の定期実行、`POST /api/v1/analytics/rollup`、または基準タイムゾーンの変更に伴う洗い替え。洗い替えでは 30 日ごとのチャンクを処理するたびに発火する） | `AnalyticsRollupEventPayload` |
+| `analytics.purged` | 基準タイムゾーンの変更に伴う洗い替えで、集計値を消した（**洗い替え 1 回につき 1 度だけ。1 行も消えなければ発火しない**） | `AnalyticsPurgedEventPayload` |
 
 ## Payload
 
@@ -62,6 +63,33 @@ interface AnalyticsRollupEventPayload {
   readonly to: string;
   /** 書き込んだ集計値の件数。 */
   readonly points: number;
+}
+
+/**
+ * 基準タイムゾーンの変更に伴う洗い替えで、集計値を消したとき（032-timezone-setting）。
+ *
+ * **消えたのは「その日に生ログが 1 行も無い (サイト, 日)」の行**で、出所を問わない。
+ * 自分の Plugin が `data.analytics.record` で入れた値も含まれる。
+ * **本体には取り込み直す手段が無い。** 必要なら Plugin 側で再取得すること。
+ *
+ * 計測タグを一度も貼っていないサイト（生ログが 1 行も無いサイト）は対象外なので、
+ * そのサイトの値は消えず、`sites[]` にも現れない。
+ */
+interface AnalyticsPurgedEventPayload {
+  /** 消す根拠になった、新しい基準タイムゾーン（IANA 名）。 */
+  readonly timeZone: string;
+  /** 消した集計値の総行数（出所を問わない）。 */
+  readonly rows: number;
+  /** サイトごとの、消えた範囲。**消えなかったサイトは現れない。** */
+  readonly sites: readonly {
+    readonly siteId: string;
+    /** 消えた `metric_date` の最古・最新。**この範囲の日がすべて消えたとは限らない。** */
+    readonly from: string;
+    readonly to: string;
+    readonly rows: number;
+    /** 消えた行の `source`（Core の分は `core`）。**自分の値が消えたかをここで判定できる。** */
+    readonly sources: readonly string[];
+  }[];
 }
 
 interface CampaignEventPayload {

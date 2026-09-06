@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, type FormEvent } from 'react';
-import { SERVICE_NAME_MAX_LENGTH, type SystemSettings } from '@/domain/system-settings';
+import { SERVICE_NAME_MAX_LENGTH, type PublicSystemSettings } from '@/domain/system-settings';
 import { apiRequest } from '@/ui/client/api-client';
 import { Alert, Button, Card, FormField, Input, Toast, type ToastMessage } from '@/ui/components';
 
@@ -16,7 +16,7 @@ export function GeneralSettings({
   settings,
   canManage,
 }: {
-  readonly settings: SystemSettings;
+  readonly settings: PublicSystemSettings;
   readonly canManage: boolean;
 }) {
   const [serviceName, setServiceName] = useState(settings.serviceName);

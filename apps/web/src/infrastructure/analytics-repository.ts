@@ -182,6 +182,95 @@ export interface NewAccessLog {
   readonly device: DeviceKind;
 }
 
+/** 洗い替えで消える集計値の内訳（032-timezone-setting 設計 §5.4）。 */
+export interface StaleSummary {
+  /** (サイト, 日) の数。 */
+  readonly days: number;
+  /** 対象のサイト数。 */
+  readonly sites: number;
+  /** 消える日の最古（`YYYY-MM-DD`）。対象が無ければ null。 */
+  readonly from: string | null;
+  /** 消える日の最新（`YYYY-MM-DD`）。対象が無ければ null。 */
+  readonly to: string | null;
+  /** `source = 'core'` の行数。 */
+  readonly coreRows: number;
+  /** `source <> 'core'`（Plugin が入れた値）の行数。 */
+  readonly pluginRows: number;
+  /** 消える値を入れた Plugin の ID。**`'core'` は含めない。** */
+  readonly sources: readonly string[];
+}
+
+/** 洗い替えで消した集計値（032-timezone-setting 設計 §5.4 / §9.3）。 */
+export interface PurgeResult {
+  /** 消した `source = 'core'` の行数。 */
+  readonly coreRows: number;
+  /** 消した `source <> 'core'`（Plugin が入れた値）の行数。 */
+  readonly pluginRows: number;
+  /** 消した (サイト, 日) の数。 */
+  readonly days: number;
+  /** サイトごとの要約。**消えなかったサイトは現れない。** */
+  readonly sites: readonly {
+    readonly siteId: string;
+    /** 消えた `metric_date` の最古・最新。**この範囲の日がすべて消えたとは限らない。** */
+    readonly from: string;
+    readonly to: string;
+    readonly rows: number;
+    /** そのサイトで消えた行の `source`（`'core'` を含む）。 */
+    readonly sources: readonly string[];
+  }[];
+}
+
+/**
+ * 「その (サイト, 日) に、そのタイムゾーンで見て生ログが 1 行も無い」を求める共通の CTE
+ * （032-timezone-setting 設計 §5.4 / §5.4.1）。
+ *
+ * **数える側（`summarizeStaleDays`）と消す側（`deleteStalePoints`）で条件を二重に持たない。**
+ * ずれると、確認ダイアログに出した件数と実際に消える件数が食い違う。
+ *
+ * 決めていること。
+ *
+ * * **サイトで絞る。** 生ログが 1 行も無いサイト（計測タグを一度も貼っていないサイト）は
+ *   対象外（§5.4.1）。消す根拠は「**旧タイムゾーンで畳まれた値**が新しい境目の値に混ざるから」で、
+ *   本体が一度も畳んでいないサイトにはその値が 1 行も無い。**消す理由が無い。**
+ *   絞り込みはサイト単位（日付の条件を含まない）なので、索引の先頭列だけで判定できる
+ * * **出所では絞らない。** 対象になったサイトの中では `core` も Plugin の値も
+ *   同じ 1 つの規則で消える（裁定 §3.3 を字義どおり一律に適用する。`要件.md` §7-1）。
+ *   緩めたのは「どのサイトを見るか」だけで、「そのサイトの中で何を消すか」は変えていない
+ * * **「範囲の外」ではなく「その日に生ログが無い」で判定する。** 範囲で切ると、
+ *   境目が動いたせいで空になった端の日を取りこぼす
+ * * **`GROUP BY` を先に置く。** 内訳キーぶんの全行に存在判定を掛けない
+ * * **タイムゾーンは 1 箇所で束ねる。** 接続 TimeZone 依存の比較を書かない（018 §4.1.1）
+ *
+ * CTE 名に `access_logs` を含めてあるのは偶然ではない。この 2 つのメソッドが
+ * 生ログに当たっていることを、`analytics-repository.test.ts` の静的検査に見せるため。
+ */
+function staleDaysCte(timeZone: string) {
+  return sql`
+    WITH metric_days AS (
+      SELECT site_id, metric_date
+      FROM analytics
+      GROUP BY site_id, metric_date
+    ),
+    tracked_sites AS (
+      SELECT DISTINCT d.site_id
+      FROM metric_days d
+      WHERE EXISTS (SELECT 1 FROM access_logs l WHERE l.site_id = d.site_id)
+    ),
+    days_without_access_logs AS (
+      SELECT d.site_id, d.metric_date
+      FROM metric_days d
+      JOIN tracked_sites t ON t.site_id = d.site_id
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM access_logs l
+        WHERE l.site_id = d.site_id
+          AND l.occurred_at >= (d.metric_date::timestamp AT TIME ZONE ${timeZone})
+          AND l.occurred_at <  ((d.metric_date + interval '1 day')::timestamp AT TIME ZONE ${timeZone})
+      )
+    )
+  `;
+}
+
 export const analyticsRepository = {
   /** 生ログを1件記録する。**受け口は認証しない**ので、呼ぶ前に検証を済ませること。 */
   async recordAccess(connection: Connection, entry: NewAccessLog): Promise<void> {
@@ -765,6 +854,134 @@ export const analyticsRepository = {
       .executeTakeFirst();
 
     return Number(result.numDeletedRows ?? 0);
+  },
+
+  /**
+   * 生ログの最古の受信時刻（032-timezone-setting 設計 §6.2.1）。無ければ null。
+   *
+   * 洗い替えの開始日をここから決める。
+   * **全走査しない。** `access_logs_occurred_at_idx` の端を 1 回読むだけ。
+   */
+  async findOldestAccessAt(connection: Connection): Promise<Date | null> {
+    const row = await connection.db
+      .selectFrom('access_logs')
+      .select(sql<Date | null>`min(occurred_at)`.as('oldest'))
+      .executeTakeFirst();
+
+    return row?.oldest ?? null;
+  },
+
+  /**
+   * 洗い替えで消える集計値を数える（設計 §5.4 / §7.2）。**何も変更しない。**
+   *
+   * 削除と**同じ条件**（`staleDaysCte`）を使う。行数は出所ごとに分けて返す
+   * ——合計だけでは「Plugin が取り込んだ値も消える」ことが読み取れない。
+   */
+  async summarizeStaleDays(connection: Connection, timeZone: string): Promise<StaleSummary> {
+    const result = await sql<{
+      days: string;
+      sites: string;
+      from_date: Date | string | null;
+      to_date: Date | string | null;
+      core_rows: string;
+      plugin_rows: string;
+      sources: string[];
+    }>`
+      ${staleDaysCte(timeZone)}
+      SELECT
+        count(DISTINCT (a.site_id, a.metric_date)) AS days,
+        count(DISTINCT a.site_id) AS sites,
+        min(a.metric_date) AS from_date,
+        max(a.metric_date) AS to_date,
+        count(*) FILTER (WHERE a.source = ${CORE_SOURCE}) AS core_rows,
+        count(*) FILTER (WHERE a.source <> ${CORE_SOURCE}) AS plugin_rows,
+        coalesce(
+          array_agg(DISTINCT a.source) FILTER (WHERE a.source <> ${CORE_SOURCE}),
+          ARRAY[]::text[]
+        ) AS sources
+      FROM analytics a
+      JOIN days_without_access_logs s
+        ON s.site_id = a.site_id AND s.metric_date = a.metric_date
+    `.execute(connection.db);
+
+    const row = result.rows[0];
+
+    return {
+      days: Number(row?.days ?? 0),
+      sites: Number(row?.sites ?? 0),
+      from: row?.from_date == null ? null : dateOnly(row.from_date),
+      to: row?.to_date == null ? null : dateOnly(row.to_date),
+      coreRows: Number(row?.core_rows ?? 0),
+      pluginRows: Number(row?.plugin_rows ?? 0),
+      sources: row?.sources ?? [],
+    };
+  },
+
+  /**
+   * 生ログの無い (サイト, 日) の集計値を消す（設計 §5.4 / §5.4.1）。
+   *
+   * **生ログが 1 行も無いサイトは対象外**（§5.4.1）。対象になったサイトの中では
+   * **出所で絞らない**——`source = 'core'` も Plugin が入れた値も消える
+   * （`要件.md` §7-1 の追加裁定）。**本体には Plugin の値を作り直す手段が無い。**
+   *
+   * **サイトの状態で例外を作らない。** 停止中（`archived`）のサイトの行も同じ規則で消える。
+   * 状態で分けると、旧境目の値が残るサイトができて混在の説明が付かない。
+   *
+   * 1 文 = 1 トランザクションなので、途中の状態が残らない（冪等。設計 §6.2.2）。
+   *
+   * **サイトごとの集約は SQL の中で行う。** 1 行ずつ返させてアプリで畳むと、
+   * 消した行数だけメモリに載る。返る行数はサイト数で上限が付く。
+   * この要約が `analytics.purged` の Payload になる（設計 §9.3）。
+   */
+  async deleteStalePoints(connection: Connection, timeZone: string): Promise<PurgeResult> {
+    const result = await sql<{
+      site_id: string;
+      from_date: Date | string;
+      to_date: Date | string;
+      days: string;
+      rows: string;
+      core_rows: string;
+      plugin_rows: string;
+      sources: string[];
+    }>`
+      ${staleDaysCte(timeZone)}
+      , deleted AS (
+        DELETE FROM analytics a
+        USING days_without_access_logs s
+        WHERE a.site_id = s.site_id
+          AND a.metric_date = s.metric_date
+        RETURNING a.site_id, a.metric_date, a.source
+      )
+      SELECT
+        site_id,
+        min(metric_date) AS from_date,
+        max(metric_date) AS to_date,
+        count(DISTINCT metric_date) AS days,
+        count(*) AS rows,
+        count(*) FILTER (WHERE source = ${CORE_SOURCE}) AS core_rows,
+        count(*) FILTER (WHERE source <> ${CORE_SOURCE}) AS plugin_rows,
+        array_agg(DISTINCT source) AS sources
+      FROM deleted
+      GROUP BY site_id
+    `.execute(connection.db);
+
+    let coreRows = 0;
+    let pluginRows = 0;
+    let days = 0;
+    const sites = result.rows.map((row) => {
+      coreRows += Number(row.core_rows);
+      pluginRows += Number(row.plugin_rows);
+      days += Number(row.days);
+      return {
+        siteId: row.site_id,
+        from: dateOnly(row.from_date),
+        to: dateOnly(row.to_date),
+        rows: Number(row.rows),
+        sources: row.sources,
+      };
+    });
+
+    return { coreRows, pluginRows, days, sites };
   },
 
   /** 計測タグの公開キーからサイトを引く。無ければ null。 */

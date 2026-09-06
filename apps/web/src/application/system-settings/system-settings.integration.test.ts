@@ -9,7 +9,7 @@ import {
 } from '@/application/system-settings/system-settings-use-cases';
 import { withConnection } from '@/application/transaction';
 import type { UserIdentity } from '@/authentication/identity';
-import { DEFAULT_SERVICE_NAME } from '@/domain/system-settings';
+import { DEFAULT_SERVICE_NAME, SYSTEM_SETTING_KEYS } from '@/domain/system-settings';
 import { ValidationError } from '@/domain/repository';
 import { roleRepository } from '@/infrastructure/role-repository';
 import { useScratchDatabase, type ScratchDatabase } from '@/test-support/database';
@@ -140,5 +140,93 @@ describe('システム設定', () => {
       connection.db.selectFrom('audit_logs').select(['action', 'resource_type']).execute(),
     );
     expect(rows).toEqual([{ action: 'updated', resource_type: 'system_settings' }]);
+  });
+});
+
+/**
+ * 追加 G：認可の文脈を持たない口の戻り値を射影型へ狭める
+ * （032-timezone-setting 設計 §6.5.1、受け入れ条件 #147・#148・#153・#154）。
+ *
+ * **塞いだのがルート 1 ファイルだけでは足りない。**
+ * `getSystemSettings`（`permission: null`）と `loadSystemSettings()` が
+ * `toSystemSettings(...)` の全項目を返したままだと、将来「未認証で読める公開設定」の口を
+ * もう 1 つ足す人が戻り値をそのまま返した瞬間、基準タイムゾーンがまた未認証へ出る。
+ *
+ * **認可の文脈を持たない口が、そもそも `analyticsTimeZone` に触れないようにする。**
+ */
+describe('未認証で読める設定の射影', () => {
+  /** `analytics.time_zone` を保存した状態を作る（射影が効いていなければ漏れる）。 */
+  async function storeTimeZone(value: string): Promise<void> {
+    await withConnection((connection) =>
+      connection.db
+        .insertInto('system_settings')
+        .values({ key: SYSTEM_SETTING_KEYS.analyticsTimeZone, value: JSON.stringify(value) })
+        .onConflict((oc) => oc.column('key').doUpdateSet({ value: JSON.stringify(value) }))
+        .execute(),
+    );
+  }
+
+  /** #147。`permission: null` の UseCase。 */
+  it('getSystemSettings の戻り値が 2 項目だけで、analyticsTimeZone を持たない', async () => {
+    const context = await contextFor('administrator');
+    await storeTimeZone('Asia/Tokyo');
+
+    const settings = await getSystemSettings(context, {});
+
+    expect(Object.keys(settings).sort()).toEqual(['rememberMeEnabled', 'serviceName']);
+    expect(settings).not.toHaveProperty('analyticsTimeZone');
+    expect(JSON.stringify(settings)).not.toContain('Asia/Tokyo');
+  });
+
+  /** #148。認可の文脈を持たない読み出し（ログイン画面・レイアウトが使う）。 */
+  it('loadSystemSettings の戻り値も 2 項目だけで、analyticsTimeZone を持たない', async () => {
+    await storeTimeZone('America/Los_Angeles');
+
+    const settings = await loadSystemSettings();
+
+    expect(Object.keys(settings).sort()).toEqual(['rememberMeEnabled', 'serviceName']);
+    expect(settings).not.toHaveProperty('analyticsTimeZone');
+    expect(JSON.stringify(settings)).not.toContain('America/Los_Angeles');
+  });
+
+  /**
+   * #153。**許可リストがルートに無くても漏れない。**
+   *
+   * `GET /api/v1/settings` は UseCase の戻り値をそのまま `dataResponse` へ渡してよい。
+   * ルートが組み立て直さなくても漏れないことを、**型（射影）の側**で担保する。
+   * ここではルートと同じ経路——`getSystemSettings` の戻り値をそのまま JSON にする——を
+   * 再現して、それでも出ないことを見る。
+   */
+  it('UseCase の戻り値をそのまま JSON にしても analyticsTimeZone が出ない', async () => {
+    const context = await contextFor('administrator');
+    await storeTimeZone('Europe/Berlin');
+
+    const body = JSON.stringify({ data: await getSystemSettings(context, {}) });
+
+    expect(body).not.toContain('analyticsTimeZone');
+    expect(body).not.toContain('Europe/Berlin');
+    expect(JSON.parse(body)).toEqual({
+      data: { serviceName: DEFAULT_SERVICE_NAME, rememberMeEnabled: true },
+    });
+  });
+
+  /**
+   * #154。**振る舞いを変えていない。**
+   *
+   * 画面の描画（`layout.tsx` / `app-shell.tsx` / `login/page.tsx`）と
+   * ログイン処理（`auth/login.ts`）が読むのは、この 2 項目だけである。
+   */
+  it('保存した 2 項目は従来どおり読める', async () => {
+    const context = await contextFor('administrator');
+    await updateSystemSettings(context, { serviceName: '検証環境', rememberMeEnabled: false });
+    await storeTimeZone('Asia/Tokyo');
+
+    const viaUseCase = await getSystemSettings(context, {});
+    const viaLoader = await loadSystemSettings();
+
+    for (const settings of [viaUseCase, viaLoader]) {
+      expect(settings.serviceName).toBe('検証環境');
+      expect(settings.rememberMeEnabled).toBe(false);
+    }
   });
 });

@@ -59,6 +59,31 @@ describe('起動フック（instrumentation.ts）', () => {
     expect(source).toMatch(/bootScheduler\s*\(\s*\{\s*prepare/);
     expect(source).toMatch(/import\(\s*['"]@\/plugin\/runtime['"]\s*\)/);
   });
+
+  /**
+   * 基準タイムゾーンの暖機（032-timezone-setting 設計 §6.1.2。実装プラン T10 / §8 #D）。
+   *
+   * 起動時に best-effort で 1 回だけ読む。**起動を止めない・失敗させない。**
+   * `scheduler` と同じく、静的 import にすると Edge ランタイムのバンドルへ `pg` が入る。
+   */
+  it('@/application/analytics/timezone を静的 import していない', () => {
+    const source = withoutComments(readFileSync(path, 'utf8'));
+
+    expect(source).not.toMatch(/^\s*import .* from ['"]@\/application\/analytics\/timezone['"]/m);
+  });
+
+  /** 暖機は `NEXT_RUNTIME` の判定より後（Node ランタイムでだけ動く）。 */
+  it('resolveAnalyticsTimeZone の暖機を NEXT_RUNTIME の判定より後で動的 import する', () => {
+    const source = withoutComments(readFileSync(path, 'utf8'));
+
+    expect(source).toMatch(/import\(\s*['"]@\/application\/analytics\/timezone['"]\s*\)/);
+    expect(source).toContain('resolveAnalyticsTimeZone');
+
+    const guard = source.indexOf('NEXT_RUNTIME');
+    const warm = source.indexOf('resolveAnalyticsTimeZone');
+    expect(guard).toBeGreaterThanOrEqual(0);
+    expect(warm).toBeGreaterThan(guard);
+  });
 });
 
 describe('レイヤの境界', () => {

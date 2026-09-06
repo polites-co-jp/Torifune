@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { SESSION_IDLE_TIMEOUT_MS, SESSION_LIFETIME_MS } from '@/domain/session';
-import { REMEMBER_ME_LIFETIME_MS, type SystemSettings } from '@/domain/system-settings';
+import { REMEMBER_ME_LIFETIME_MS, type PublicSystemSettings } from '@/domain/system-settings';
 import { apiRequest } from '@/ui/client/api-client';
 import { Alert, Card, Checkbox, Toast, type ToastMessage } from '@/ui/components';
 
@@ -27,7 +27,7 @@ export function AuthSettings({
   canManage,
   authProviderId,
 }: {
-  readonly settings: SystemSettings;
+  readonly settings: PublicSystemSettings;
   readonly canManage: boolean;
   /** いま有効な認証方式。Plugin が差し替えている場合はその Plugin の ID。 */
   readonly authProviderId: string;

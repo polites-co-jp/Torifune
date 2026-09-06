@@ -91,6 +91,8 @@ test('OpenAPI に登録済みエンドポイントが含まれる', async ({ req
     '/analytics',
     '/analytics/breakdown',
     '/analytics/rollup',
+    // 032-timezone-setting 設計 §6.5。洗い替えのやり直し。
+    '/analytics/timezone-rebuild',
     '/api-tokens',
     '/api-tokens/{id}',
     '/auth/csrf',
@@ -115,6 +117,8 @@ test('OpenAPI に登録済みエンドポイントが含まれる', async ({ req
     '/plugins/{id}/settings',
     '/roles',
     '/settings',
+    // 032-timezone-setting 設計 §6.5。基準タイムゾーンのプレビューと保存。
+    '/settings/timezone',
     '/setup',
     '/sites',
     '/sites/{id}',

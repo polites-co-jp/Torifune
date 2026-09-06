@@ -1,7 +1,7 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { JobStatusCard, type JobStatusCardData } from './job-status';
+import { JobStatusCard, type JobStatusCardData, type JobStatusRow } from './job-status';
 
 /**
  * 設定画面「一般」タブの定期実行の区画（029-scheduled-jobs 設計 §7.2、受け入れ条件 #55）。
@@ -35,6 +35,7 @@ const BASE: JobStatusCardData = {
       lastRunStatus: 'ok',
       lastSuccessAt: '2026-09-04 10:15',
       nextRunAt: '2026-09-04 10:30',
+      canRetry: false,
     },
     {
       name: 'webhook.deliver',
@@ -44,6 +45,7 @@ const BASE: JobStatusCardData = {
       lastRunStatus: 'error',
       lastSuccessAt: '2026-09-04 10:28',
       nextRunAt: '2026-09-04 10:30',
+      canRetry: false,
     },
   ],
   recentErrors: [
@@ -205,5 +207,174 @@ describe('JobStatusCard', () => {
 
     expect(text).toContain('この画面を返したプロセスの予定');
     expect(text).toContain('1 プロセスだけ');
+  });
+});
+
+/**
+ * 洗い替え（`analytics.timezoneRebuild`）の行
+ * （032-timezone-setting 設計 §7.3、受け入れ条件 #78〜#80、#100〜#104）。
+ *
+ * 足す props（実装プラン T17）：
+ *
+ * * `intervalMinutes: number | null` — **周期を持たないジョブは `null`**（表示は `—`）
+ * * `progressNote?: string | null` — 実行中に「〜まで完了」を添える（`summary.completedThrough` 由来）
+ * * `canRetry: boolean` / `retryNote?: string | null` — やり直しの導線と、その理由の文言
+ *
+ * **出す条件は「直近の実行が `ok` でないとき」**（設計 §7.3.1）。
+ *
+ * | 直近の実行 | ボタン |
+ * | --- | --- |
+ * | 記録が無い | 出さない |
+ * | `ok` | 出さない |
+ * | `error` / `skipped` | 出す |
+ * | `running` | **出す**（落ちたプロセスが残した `running` から抜け出せるようにする） |
+ *
+ * 判定そのものは `app/settings/page.tsx` が組み立てて `canRetry` として渡す
+ * （静的検査は `application/analytics/timezone-static-checks.test.ts`）。
+ * ここでは**その表に従って組み立てた行が、どう描かれるか**を固定する。
+ */
+describe('洗い替えの行', () => {
+  const REBUILD_LABEL = 'タイムゾーン変更の洗い替え';
+  const RETRY_LABEL = '洗い替えをやり直す';
+
+  /** 設計 §7.3.1 の表に従って 1 行を組み立てる（`page.tsx` がやることの写し）。 */
+  function rebuildRow(
+    status: JobStatusRow['lastRunStatus'],
+    extra: Partial<JobStatusRow> = {},
+  ): JobStatusRow {
+    return {
+      name: 'analytics.timezoneRebuild',
+      label: REBUILD_LABEL,
+      intervalMinutes: null,
+      lastRunAt: status === null ? null : '2026-09-06 09:00',
+      lastRunStatus: status,
+      lastSuccessAt: status === 'ok' ? '2026-09-06 09:00' : null,
+      nextRunAt: null,
+      canRetry: status !== null && status !== 'ok',
+      ...extra,
+    };
+  }
+
+  function renderRebuild(
+    status: JobStatusRow['lastRunStatus'],
+    extra: Partial<JobStatusRow> = {},
+  ): string {
+    return render({ jobs: [rebuildRow(status, extra)], recentErrors: [] });
+  }
+
+  /** 洗い替えの行の中身（見出し行を除く）。 */
+  function rebuildCells(html: string): string {
+    return rows(html).filter((row) => row.includes(REBUILD_LABEL))[0] ?? '';
+  }
+
+  /** #78。周期を持たないジョブの「間隔」は `—`。 */
+  it('intervalMinutes が null なら「間隔」を — で描く', () => {
+    const cells = rebuildCells(renderRebuild('ok'));
+
+    expect(cells).toContain(REBUILD_LABEL);
+    expect(cells).toContain('—');
+    expect(cells).not.toContain('null 分');
+    expect(cells).not.toContain('0 分');
+  });
+
+  /** #78 の対。周期を持つジョブは今までどおり「N 分」。 */
+  it('周期を持つジョブは今までどおり「N 分」', () => {
+    expect(rows(render())[1]).toContain('15 分');
+  });
+
+  /** #79。実行中は「〜まで完了」を出す（`summary.completedThrough` 由来）。 */
+  it('実行中は completedThrough を使った進捗の注記を出す', () => {
+    const text = textOf(
+      renderRebuild('running', {
+        progressNote: '洗い替えを実行中です（2026-03-31 まで完了）。',
+      }),
+    );
+
+    expect(text).toContain('洗い替えを実行中です');
+    expect(text).toContain('2026-03-31 まで完了');
+  });
+
+  /** #79 の対。進捗が無ければ注記を出さない。 */
+  it('progressNote が無ければ注記を出さない', () => {
+    expect(textOf(renderRebuild('ok'))).not.toContain('まで完了');
+  });
+
+  /** #80 / #102。`error` はやり直せる。 */
+  it('error のとき「洗い替えをやり直す」の導線と理由を出す', () => {
+    const html = renderRebuild('error', {
+      retryNote: '洗い替えが失敗しています。やり直してください。',
+    });
+    const text = textOf(html);
+
+    expect(html).toContain('<button');
+    expect(text).toContain(RETRY_LABEL);
+    expect(text).toContain('洗い替えが失敗しています');
+  });
+
+  /** #80 / #103。`skipped` は「他と重なった」だけなので、やり直せば済む。 */
+  it('skipped のとき「洗い替えをやり直す」の導線と理由を出す', () => {
+    const text = textOf(
+      renderRebuild('skipped', {
+        retryNote: '他の集計と重なって実行されませんでした。やり直してください。',
+      }),
+    );
+
+    expect(text).toContain(RETRY_LABEL);
+    expect(text).toContain('他の集計と重なって');
+  });
+
+  /**
+   * #104。境界値。**`running` でも出す。**
+   *
+   * 実行中にプロセスが落ちると `running` の行が残り続ける（029 未決 #2。回収する仕組みは無い）。
+   * 「`running` なら隠す」にすると、その状態でボタンが永久に出なくなる。
+   */
+  it('running のときも「洗い替えをやり直す」の導線を出す', () => {
+    const text = textOf(
+      renderRebuild('running', {
+        progressNote: '洗い替えを実行中です（2026-03-31 まで完了）。',
+        retryNote: '実行中です。応答が無いまま止まっている場合はやり直せます。',
+      }),
+    );
+
+    expect(text).toContain(RETRY_LABEL);
+    expect(text).toContain('応答が無いまま止まっている場合はやり直せます');
+  });
+
+  /**
+   * #100。**常時は出さない。**
+   *
+   * タイムゾーンを変えていないのに押せると、意味のない重い集計を誰でも起こせる。
+   */
+  it('直近の実行が ok なら再実行の導線を出さない', () => {
+    const text = textOf(renderRebuild('ok'));
+
+    expect(text).not.toContain(RETRY_LABEL);
+  });
+
+  /** #101。一度も走っていないジョブに「やり直す」は意味を持たない。 */
+  it('記録が 1 件も無ければ再実行の導線を出さない', () => {
+    const text = textOf(renderRebuild(null));
+
+    expect(text).not.toContain(RETRY_LABEL);
+    expect(rebuildCells(renderRebuild(null))).toContain('—');
+  });
+
+  /** #100。周期を持つ既存のジョブには、失敗していても再実行の導線を出さない。 */
+  it('canRetry が false のジョブには、error でもボタンを出さない', () => {
+    // BASE の Webhook 配信は `error` だが `canRetry: false`。
+    expect(textOf(render())).not.toContain(RETRY_LABEL);
+  });
+
+  /** §7.3。3 つのジョブが並ぶ（`JOB_NAMES` の順）。 */
+  it('3 つのジョブの行を描ける', () => {
+    const html = render({
+      jobs: [BASE.jobs[0]!, BASE.jobs[1]!, rebuildRow('ok')],
+      recentErrors: [],
+    });
+
+    const body = rows(html).filter((row) => !row.includes('ジョブ'));
+    expect(body).toHaveLength(3);
+    expect(body[2]).toContain(REBUILD_LABEL);
   });
 });

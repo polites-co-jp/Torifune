@@ -125,8 +125,8 @@ test.describe('定期実行の区画', () => {
     return page.getByRole('row', { name: /アクセス解析の集計/ });
   }
 
-  /** #61 */
-  test('管理者で開くと「定期実行」の見出しと 2 つのジョブの行が出る', async ({ page }) => {
+  /** #61（032-timezone-setting で洗い替えが増え、行は 3 つになった）。 */
+  test('管理者で開くと「定期実行」の見出しと 3 つのジョブの行が出る', async ({ page }) => {
     await page.goto('/settings?tab=general');
 
     await expect(page.getByRole('heading', { name: '定期実行' })).toBeVisible();

@@ -31,7 +31,8 @@ export const jobStatusSchema = z.object({
   name: z.string(),
   /** 応答を返したプロセスで定期実行が有効か。 */
   scheduled: z.boolean(),
-  intervalMinutes: z.number().int(),
+  /** 周期（分）。**周期を持たないジョブは `null`**（032-timezone-setting 設計 §6.6）。 */
+  intervalMinutes: z.number().int().nullable(),
   /** 応答を返したプロセスの次回の予定。 */
   nextRunAt: isoDateTimeSchema.nullable(),
   running: z.boolean(),

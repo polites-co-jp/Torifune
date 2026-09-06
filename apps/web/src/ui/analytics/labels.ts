@@ -134,7 +134,31 @@ export const RECEPTION_STATE_LABEL: Record<ReceptionState, string> = {
 export const JOB_LABEL: Record<JobName, string> = {
   'analytics.rollup': 'アクセス解析の集計',
   'webhook.deliver': 'Webhook 配信',
+  'analytics.timezoneRebuild': 'タイムゾーン変更の洗い替え',
 };
+
+/** 洗い替えの再実行の導線（032-timezone-setting 設計 §7.3.1）。 */
+export const REBUILD_RETRY_LABEL = '洗い替えをやり直す';
+
+/**
+ * 再実行ボタンに添える理由。
+ *
+ * **直近の実行が `ok` でないときだけ出す。** タイムゾーンを変えていないのに押せると、
+ * 意味のない重い集計を誰でも起こせる。`running` でも出すのは、実行中に落ちたプロセスが
+ * 残した行から抜け出せなくなるため（設計 §7.3.1）。
+ */
+export const REBUILD_RETRY_NOTE: Record<'error' | 'skipped' | 'running', string> = {
+  error: '洗い替えが失敗しています。やり直してください。',
+  skipped: '他の集計と重なって実行されませんでした。やり直してください。',
+  running: '実行中です。応答が無いまま止まっている場合はやり直せます。',
+};
+
+/** 実行中の進捗の注記（`job_runs.summary.completedThrough` 由来）。 */
+export function rebuildProgressText(completedThrough: string | null): string {
+  return completedThrough === null
+    ? '洗い替えを実行中です。'
+    : `洗い替えを実行中です（${completedThrough} まで完了）。`;
+}
 
 /**
  * 実行結果の表示。

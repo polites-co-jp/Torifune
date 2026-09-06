@@ -1,6 +1,37 @@
 import { runInNewContext } from 'node:vm';
-import { describe, expect, it } from 'vitest';
-import { trackingScript, trackingScriptEtag } from '@/application/analytics/collect';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  collectAccess,
+  resetDailySalts,
+  trackingScript,
+  trackingScriptEtag,
+} from '@/application/analytics/collect';
+import {
+  resetAnalyticsTimeZoneForTests,
+  resetTimeZoneWarning,
+} from '@/application/analytics/timezone';
+import { todayInTimeZone } from '@/domain/analytics/day';
+
+/**
+ * 計測の DB は外部境界として差し替える（ソルトの検証。ファイル末尾の describe）。
+ *
+ * `vi.mock` / `vi.hoisted` は巻き上げの対象なので位置に依らないが、
+ * **このファイルが DB を持たない**ことが読んで分かるよう先頭に置く。
+ */
+const collected = vi.hoisted(() => ({ entries: [] as { visitorHash: string }[] }));
+
+vi.mock('@/application/transaction', () => ({
+  withConnection: async <T>(fn: (connection: unknown) => Promise<T>): Promise<T> => fn({}),
+}));
+
+vi.mock('@/infrastructure/analytics-repository', () => ({
+  analyticsRepository: {
+    findSiteByPublicKey: async () => ({ id: 'site-for-salt', status: 'active' }),
+    recordAccess: async (_connection: unknown, entry: { visitorHash: string }) => {
+      collected.entries.push(entry);
+    },
+  },
+}));
 
 /**
  * 計測スクリプト（018-analytics 設計 §3.4）。
@@ -370,5 +401,114 @@ describe('trackingScript', () => {
       expect(browser.beacons.map((beacon) => beacon.body.path)).toEqual(['/', '/about']);
       expect(browser.pushCalls).toHaveLength(1);
     });
+  });
+});
+
+/**
+ * ソルトの境目（032-timezone-setting 設計 §6.3、受け入れ条件 #26〜#28）。
+ *
+ * `saltDay(now)` が返す日付キーが変わると `salts` が miss し、
+ * **その場で `clear()` して新しいソルトを作る。** 基準タイムゾーンを変えた瞬間に
+ * これが起きるため、変更した当日の訪問者数は実際より多く出る（直せない。§6.3）。
+ *
+ * ソルトは `collect.ts` の外へ出していないので、**`collectAccess` の書き込みから見る。**
+ * DB は外部境界として差し替える（同じ入力・同じサイトで、変わるのはソルトだけになる）。
+ *
+ * **時刻は動かさない。** 代わりに、オフセットが 25 時間離れた 2 つのタイムゾーン
+ * （`Pacific/Kiritimati` = +14 と `Pacific/Midway` = −11）を使う。
+ * どの瞬間でも日付が必ず 1 日ずれるので、実行時刻に依存しない。
+ * 日付が変わらない場合は、オフセットが同じ 2 つ（`UTC` と `Atlantic/Reykjavik`）を使う。
+ */
+
+/** 東（+14）。 */
+const EAST = 'Pacific/Kiritimati';
+/** 西（−11）。EAST とは 25 時間離れているので、日付が必ず 1 日ずれる。 */
+const WEST = 'Pacific/Midway';
+/** UTC と同じオフセットで夏時間を持たない。日付が必ず一致する。 */
+const SAME_AS_UTC = 'Atlantic/Reykjavik';
+
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
+
+/** そのタイムゾーンを効かせて 1 件記録し、`visitor_hash` を返す。 */
+async function hashUnder(timeZone: string): Promise<string> {
+  process.env['TORIFUNE_TIMEZONE'] = timeZone;
+  resetAnalyticsTimeZoneForTests();
+  collected.entries.length = 0;
+
+  const outcome = await collectAccess({
+    publicKey: 'public-key',
+    path: '/',
+    referrer: null,
+    ipAddress: '203.0.113.10',
+    userAgent: UA,
+  });
+
+  expect(outcome.ok, '計測が失敗した').toBe(true);
+  const entry = collected.entries[0];
+  expect(entry, '記録されていない').toBeDefined();
+  return entry?.visitorHash ?? '';
+}
+
+describe('ソルトの境目（基準タイムゾーンの変更）', () => {
+  afterEach(() => {
+    delete process.env['TORIFUNE_TIMEZONE'];
+    resetTimeZoneWarning();
+    resetAnalyticsTimeZoneForTests();
+    resetDailySalts();
+    collected.entries.length = 0;
+  });
+
+  /** #26。日付キーが変わればソルトが回る。 */
+  it('日付キーが未来へ変わると、同じ入力でも visitorHash が変わる', async () => {
+    const now = new Date();
+    expect(todayInTimeZone(EAST, now) > todayInTimeZone(WEST, now), '前提: 東のほうが後の日').toBe(
+      true,
+    );
+
+    const before = await hashUnder(WEST);
+    const after = await hashUnder(EAST);
+
+    expect(after).not.toBe(before);
+  });
+
+  /**
+   * #27。境界値。日付キーが変わらないときは回らない。
+   *
+   * ここで変わってしまうと、タイムゾーンを変えるたびに訪問者数が無意味に増える。
+   */
+  it('日付キーが変わらなければ visitorHash も変わらない', async () => {
+    const now = new Date();
+    expect(todayInTimeZone('UTC', now), '前提: 同じ日付').toBe(todayInTimeZone(SAME_AS_UTC, now));
+
+    const before = await hashUnder('UTC');
+    const after = await hashUnder(SAME_AS_UTC);
+
+    expect(after).toBe(before);
+  });
+
+  /**
+   * #28。境界値。**過去へ**動いたときも新しいソルトが作られる。
+   *
+   * `salts` は「見つからなければ全部捨てて作り直す」ので、
+   * 未来向き（miss）と同じ経路を通る。西向きの変更を取りこぼさない。
+   */
+  it('日付キーが過去へ変わったときも visitorHash が変わる', async () => {
+    const now = new Date();
+    expect(todayInTimeZone(WEST, now) < todayInTimeZone(EAST, now), '前提: 西のほうが前の日').toBe(
+      true,
+    );
+
+    const before = await hashUnder(EAST);
+    const after = await hashUnder(WEST);
+
+    expect(after).not.toBe(before);
+  });
+
+  /** #28 の裏。同じタイムゾーンで 2 回続けて記録すればソルトは回らない（検査が空振りしていない）。 */
+  it('同じタイムゾーンのままなら visitorHash は変わらない', async () => {
+    const first = await hashUnder(EAST);
+    const second = await hashUnder(EAST);
+
+    expect(second).toBe(first);
   });
 });

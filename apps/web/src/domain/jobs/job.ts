@@ -9,7 +9,14 @@ import { shiftDays } from '../analytics/day';
  */
 
 /** Core が回すジョブ。**Plugin からのジョブ登録は無い**（設計 §9 / §11）。 */
-export const JOB_NAMES = ['analytics.rollup', 'webhook.deliver'] as const;
+export const JOB_NAMES = [
+  'analytics.rollup',
+  'webhook.deliver',
+  // 032-timezone-setting：基準タイムゾーンを変えたときの洗い替え。
+  // **周期を持たない**（`bootScheduler` に載せない。要求されたときだけ走る）。
+  // **末尾に足す。** この順がそのまま設定画面「定期実行」の行順になる。
+  'analytics.timezoneRebuild',
+] as const;
 
 export type JobName = (typeof JOB_NAMES)[number];
 

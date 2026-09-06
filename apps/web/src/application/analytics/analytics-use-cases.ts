@@ -16,7 +16,7 @@ import {
   type TrackedSite,
 } from '@/domain/analytics/analytics';
 import { NotFoundError, ValidationError } from '@/domain/repository';
-import { analyticsTimeZone } from '@/application/analytics/timezone';
+import { resolveAnalyticsTimeZone } from '@/application/analytics/timezone';
 import { schedulerConfig } from '@/application/jobs/config';
 import { ROLLUP_JOB } from '@/application/jobs/definitions';
 import { schedulerSnapshot } from '@/application/jobs/scheduler';
@@ -408,7 +408,7 @@ export const getTodayAnalytics = defineUseCase<{ readonly siteId: string }, Toda
   name: 'analytics.today',
   permission: 'analytics.read',
   handler: async (context, input) => {
-    const timeZone = analyticsTimeZone();
+    const timeZone = await resolveAnalyticsTimeZone();
     const date = todayInTimeZone(timeZone);
     const generatedAt = new Date();
 
