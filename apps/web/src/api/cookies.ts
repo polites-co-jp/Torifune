@@ -105,20 +105,33 @@ export function readCookie(request: Request, name: string): string | undefined {
   return undefined;
 }
 
+/**
+ * ヘッダから送信元 IP を取り出す（033-analytics-ip-exclusion 設計 §10.1）。
+ *
+ * Reverse Proxy 越しを想定する。信頼できるプロキシの背後にいることが前提。
+ *
+ * **取り出しを 1 か所にする。** リクエスト（API）と `headers()`（Server Component）で
+ * 別々に書くと、**設定画面に出る IP と、実際に除外判定される IP がずれる。**
+ * `Request` の `headers` も Next.js の `headers()` の戻り値も `get` を持つので、
+ * 両方からこの関数を呼べる。
+ */
+export function clientIpOf(headers: Pick<Headers, 'get'>): string | null {
+  const forwarded = headers.get('x-forwarded-for');
+  const ipAddress =
+    forwarded !== null && forwarded !== ''
+      ? (forwarded.split(',')[0]?.trim() ?? null)
+      : (headers.get('x-real-ip') ?? null);
+
+  return ipAddress === '' ? null : ipAddress;
+}
+
 /** リクエストから IP と User-Agent を取り出す。 */
 export function requestInfoOf(request: Request): {
   ipAddress: string | null;
   userAgent: string | null;
 } {
-  // Reverse Proxy 越しを想定する。信頼できるプロキシの背後にいることが前提。
-  const forwarded = request.headers.get('x-forwarded-for');
-  const ipAddress =
-    forwarded !== null && forwarded !== ''
-      ? (forwarded.split(',')[0]?.trim() ?? null)
-      : (request.headers.get('x-real-ip') ?? null);
-
   return {
-    ipAddress: ipAddress === '' ? null : ipAddress,
+    ipAddress: clientIpOf(request.headers),
     userAgent: request.headers.get('user-agent'),
   };
 }

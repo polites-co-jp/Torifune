@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { IP_EXCLUSION_MAX_RULES } from './analytics/ip-exclusion';
 import {
   DEFAULT_SERVICE_NAME,
   isValidServiceName,
   REMEMBER_ME_LIFETIME_MS,
   sessionLifetimeMs,
   SYSTEM_SETTING_KEYS,
+  toPublicSystemSettings,
   toSystemSettings,
 } from './system-settings';
 import * as systemSettingsModule from './system-settings';
@@ -255,5 +257,105 @@ describe('toPublicSystemSettings（#149）', () => {
     // 公開する 2 項目の値は一致する（読み方を変えたのではなく、載せる範囲を狭めただけ）。
     expect(publicOnly['serviceName']).toBe(full.serviceName);
     expect(publicOnly['rememberMeEnabled']).toBe(full.rememberMeEnabled);
+  });
+});
+
+/**
+ * アクセスログの除外IP（033-analytics-ip-exclusion 設計 §5、受け入れ条件 #37〜#42）。
+ *
+ * **他の項目と壊れ方の扱いが違う。** 表示名は「壊れていたら既定へ落とす」でよいが、
+ * 除外リストを丸ごと捨てると、除外したかった IP が黙って記録される。
+ * 記録された分は後から消せないので（設計 §2）、**行ごとに落とす**。
+ */
+describe('toSystemSettings の accessLogExcludedIps', () => {
+  /** #37 */
+  it('保存されていなければ空', () => {
+    expect(toSystemSettings(new Map()).accessLogExcludedIps).toEqual([]);
+  });
+
+  it('保存された値を読む', () => {
+    const settings = toSystemSettings(
+      new Map<string, unknown>([
+        [SYSTEM_SETTING_KEYS.accessLogExcludedIps, ['203.0.113.10', '198.51.100.0/24']],
+      ]),
+    );
+
+    expect(settings.accessLogExcludedIps).toEqual(['203.0.113.10', '198.51.100.0/24']);
+  });
+
+  /** #38 */
+  it.each([
+    ['文字列', '203.0.113.10'],
+    ['数値', 42],
+    ['null', null],
+    ['オブジェクト', { ip: '203.0.113.10' }],
+  ])('配列でなければ空: %s', (_label, value) => {
+    const settings = toSystemSettings(
+      new Map<string, unknown>([[SYSTEM_SETTING_KEYS.accessLogExcludedIps, value]]),
+    );
+
+    expect(settings.accessLogExcludedIps).toEqual([]);
+  });
+
+  /** #39。**行ごとに落とす。** 1 行の壊れで除外が丸ごと無効にならない。 */
+  it('解釈できない要素だけを落とし、残りは生かす', () => {
+    const settings = toSystemSettings(
+      new Map<string, unknown>([
+        [
+          SYSTEM_SETTING_KEYS.accessLogExcludedIps,
+          ['203.0.113.10', 'not-an-ip', 42, null, '198.51.100.0/24'],
+        ],
+      ]),
+    );
+
+    expect(settings.accessLogExcludedIps).toEqual(['203.0.113.10', '198.51.100.0/24']);
+  });
+
+  /** #40 */
+  it('読み出しでも正規表記へそろえる', () => {
+    const settings = toSystemSettings(
+      new Map<string, unknown>([
+        [
+          SYSTEM_SETTING_KEYS.accessLogExcludedIps,
+          ['203.0.113.10/24', '2001:0DB8:0:0:0:0:0:1/128'],
+        ],
+      ]),
+    );
+
+    expect(settings.accessLogExcludedIps).toEqual(['203.0.113.0/24', '2001:db8::1']);
+  });
+
+  /** #42。上限を超えて保存されていても、返るのは上限まで。 */
+  it('上限を超えた分は切る', () => {
+    const stored = Array.from({ length: 150 }, (_value, index) => `198.51.100.${index % 256}/32`);
+    const settings = toSystemSettings(
+      new Map<string, unknown>([[SYSTEM_SETTING_KEYS.accessLogExcludedIps, stored]]),
+    );
+
+    expect(settings.accessLogExcludedIps).toHaveLength(IP_EXCLUSION_MAX_RULES);
+  });
+
+  it('保存キーは analytics.access_log_excluded_ips', () => {
+    expect(SYSTEM_SETTING_KEYS.accessLogExcludedIps).toBe('analytics.access_log_excluded_ips');
+  });
+});
+
+/**
+ * #41。**未認証で読める射影に載せない**（032 設計 §6.5.1 と同じ理由）。
+ *
+ * `GET /api/v1/settings` は `permission: null` で Cookie 無しでも叩ける。
+ * 載せると社内の IP 帯が 1 リクエストで読める。
+ */
+describe('除外IPは PublicSystemSettings に載らない（#41）', () => {
+  it('キーごと持たない', () => {
+    const settings = toPublicSystemSettings(
+      new Map<string, unknown>([
+        [SYSTEM_SETTING_KEYS.accessLogExcludedIps, ['203.0.113.10', '10.0.0.0/8']],
+      ]),
+    );
+
+    expect(Object.keys(settings).sort()).toEqual(['rememberMeEnabled', 'serviceName']);
+    expect(JSON.stringify(settings)).not.toContain('203.0.113.10');
+    expect(JSON.stringify(settings)).not.toContain('10.0.0.0');
   });
 });

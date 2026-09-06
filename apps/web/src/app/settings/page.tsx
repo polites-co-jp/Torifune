@@ -1,4 +1,7 @@
+import { headers } from 'next/headers';
+import { clientIpOf } from '@/api/cookies';
 import { allowedOrigins } from '@/api/cors';
+import { getAccessLogIpExclusions } from '@/application/analytics/ip-exclusion-use-cases';
 import {
   analyticsTimeZoneSetting,
   resolveAnalyticsTimeZone,
@@ -11,12 +14,14 @@ import { authenticationProviderId } from '@/authentication/registry';
 import { listUsers } from '@/application/user/user-use-cases';
 import { listRoleGrants, listRoles } from '@/application/authorization/role-use-cases';
 import { formatDateTimeInTimeZone } from '@/domain/analytics/day';
+import { normalizeClientIp } from '@/domain/analytics/ip-exclusion';
 import { timeZoneOptions } from '@/domain/analytics/time-zone';
 import { Tabs } from '@/ui/components';
 import { JOB_LABEL, REBUILD_RETRY_NOTE, rebuildProgressText } from '@/ui/analytics/labels';
 import { AppShell } from '@/ui/layout/app-shell';
 import { ExtensionPoint } from '@/ui/plugin/plugin-slot';
 import { requirePageSession } from '@/ui/server/page-session';
+import { AccessLogIpSettings } from '@/ui/settings/access-log-ip-settings';
 import { ApiSettings } from '@/ui/settings/api-settings';
 import { AuthSettings } from '@/ui/settings/auth-settings';
 import { GeneralSettings } from '@/ui/settings/general-settings';
@@ -118,6 +123,13 @@ export default async function SettingsPage({
           */}
           <TimeZoneSection canManage={canManageSystem} />
           {/*
+            アクセスログの除外IP（033 設計 §10）。**表示にも `system.manage` を要求する。**
+            表示名・タイムゾーンと違い、**リストの表示自体が漏洩**である
+            （社内の IP 帯・VPN の出口が書かれる）。出し分けは表示制御で、
+            認可は `getAccessLogIpExclusions`（`system.manage`）が行う。
+          */}
+          {canManageSystem && <AccessLogIpSection context={context} />}
+          {/*
             定期実行の状況（029 設計 §7.2）。**タブは足さない**（06 §16）。
             出し分けは表示制御で、認可は `listJobStatuses`（`system.manage`）が行う。
           */}
@@ -203,6 +215,26 @@ async function UsersTab({
  * 一覧はサーバーで作って props で渡す（設計 §5.3.2）。
  * 保存済みの値が一覧に無い場合でも選択欄から消えないよう、現在値を `extra` に混ぜる。
  */
+/**
+ * アクセスログの除外IPの区画（033 設計 §10）。
+ *
+ * **現在のアクセス元 IP は `headers()` から取る。** 受け口（`requestInfoOf`）と
+ * 同じ `clientIpOf` を通すので、画面に出る IP と実際に除外判定される IP がずれない。
+ */
+async function AccessLogIpSection({ context }: { context: PageContext }) {
+  const [exclusions, headerStore] = await Promise.all([
+    getAccessLogIpExclusions(context, {}),
+    headers(),
+  ]);
+
+  return (
+    <AccessLogIpSettings
+      rules={[...exclusions.rules]}
+      clientIp={normalizeClientIp(clientIpOf(headerStore))}
+    />
+  );
+}
+
 async function TimeZoneSection({ canManage }: { canManage: boolean }) {
   const setting = await analyticsTimeZoneSetting();
 

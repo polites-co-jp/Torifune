@@ -166,3 +166,11 @@ export const timeZoneUpdateSchema = dataEnvelope(
 
 /** 洗い替えのやり直し。起こしたことだけを返す。 */
 export const timeZoneRebuildSchema = dataEnvelope(z.object({ started: z.boolean() }));
+
+/**
+ * アクセスログの除外IP（033-analytics-ip-exclusion 設計 §8）。
+ *
+ * 返すのは**正規化後**のリスト（`203.0.113.10/24` は `203.0.113.0/24` になる）。
+ * 画面はこれをそのまま入力欄へ戻す。
+ */
+export const accessLogIpExclusionSchema = dataEnvelope(z.object({ rules: z.array(z.string()) }));

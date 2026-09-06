@@ -10,6 +10,7 @@
  */
 
 import { isValidTimeZone } from './analytics/day';
+import { IP_EXCLUSION_MAX_RULES, parseIpExclusionRules } from './analytics/ip-exclusion';
 
 export const SERVICE_NAME_MAX_LENGTH = 50;
 
@@ -36,12 +37,21 @@ export interface SystemSettings {
    * 画面で一度も触っていないのに UTC へ落ちる。
    */
   readonly analyticsTimeZone: string | null;
+  /**
+   * アクセスログに記録しない送信元（033-analytics-ip-exclusion 設計 §5）。
+   *
+   * 正規表記のルール（`203.0.113.10` / `198.51.100.0/24` / `2001:db8::/32`）の並び。
+   *
+   * **`PublicSystemSettings` には載せない。** 社内の IP 帯・VPN の出口が書かれる。
+   */
+  readonly accessLogExcludedIps: readonly string[];
 }
 
 export const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
   serviceName: DEFAULT_SERVICE_NAME,
   rememberMeEnabled: true,
   analyticsTimeZone: null,
+  accessLogExcludedIps: [],
 };
 
 /** 保存に使うキー。**値の形を変えるときはキーも変える。** */
@@ -49,7 +59,42 @@ export const SYSTEM_SETTING_KEYS = {
   serviceName: 'general.service_name',
   rememberMeEnabled: 'auth.remember_me_enabled',
   analyticsTimeZone: 'analytics.time_zone',
+  accessLogExcludedIps: 'analytics.access_log_excluded_ips',
 } as const;
+
+/**
+ * 保存された除外IPを読む（033 設計 §5.1）。
+ *
+ * **行ごとに落とす。** 他の項目は「壊れていたら既定へ落とす」でよいが、
+ * このリストを丸ごと捨てると、除外したかった IP が黙って記録される。
+ * `access_logs` に IP は残らないので、記録された分は後から消せない。
+ *
+ * 読み出しでも正規表記へそろえる。保存時に正規化しているが、
+ * 手で直された値・古い形式の値がそのまま効かないようにする。
+ */
+function readAccessLogExcludedIps(stored: unknown): readonly string[] {
+  if (!Array.isArray(stored)) {
+    return DEFAULT_SYSTEM_SETTINGS.accessLogExcludedIps;
+  }
+
+  const texts = stored.filter((entry): entry is string => typeof entry === 'string');
+  return parseIpExclusionRules(texts)
+    .rules.slice(0, IP_EXCLUSION_MAX_RULES)
+    .map((rule) => rule.text);
+}
+
+/**
+ * 除外IPだけを読む射影（033-analytics-ip-exclusion 設計 §5）。
+ *
+ * **`toSystemSettings`（全項目）を呼ばせないための入口である。**
+ * 全項目を取れる場所を増やすと、次に設定が増えたとき、それを要らない経路まで
+ * 一緒に運ぶ（032 設計 §6.5.1 が `PublicSystemSettings` で塞いだのと同じ問題）。
+ * `timezone-static-checks.test.ts` が全項目の import 元を 1 ファイルに固定しており、
+ * **この射影があることでその固定を緩めずに済む。**
+ */
+export function accessLogExcludedIpsOf(stored: ReadonlyMap<string, unknown>): readonly string[] {
+  return readAccessLogExcludedIps(stored.get(SYSTEM_SETTING_KEYS.accessLogExcludedIps));
+}
 
 export function isValidServiceName(value: string): boolean {
   const trimmed = value.trim();
@@ -80,6 +125,7 @@ export function toSystemSettings(stored: ReadonlyMap<string, unknown>): SystemSe
       typeof timeZone === 'string' && isValidTimeZone(timeZone)
         ? timeZone
         : DEFAULT_SYSTEM_SETTINGS.analyticsTimeZone,
+    accessLogExcludedIps: accessLogExcludedIpsOf(stored),
   };
 }
 

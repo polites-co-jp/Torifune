@@ -1,11 +1,15 @@
 import { runInNewContext } from 'node:vm';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   collectAccess,
   resetDailySalts,
   trackingScript,
   trackingScriptEtag,
 } from '@/application/analytics/collect';
+import {
+  primeAccessLogIpExclusions,
+  resetAccessLogIpExclusionsForTests,
+} from '@/application/analytics/ip-exclusion';
 import {
   resetAnalyticsTimeZoneForTests,
   resetTimeZoneWarning,
@@ -18,15 +22,33 @@ import { todayInTimeZone } from '@/domain/analytics/day';
  * `vi.mock` / `vi.hoisted` は巻き上げの対象なので位置に依らないが、
  * **このファイルが DB を持たない**ことが読んで分かるよう先頭に置く。
  */
-const collected = vi.hoisted(() => ({ entries: [] as { visitorHash: string }[] }));
+const collected = vi.hoisted(() => ({
+  entries: [] as { visitorHash: string }[],
+  /** サイトを引きに行った回数。**除外された送信元には引かせない**（033 設計 §7）。 */
+  siteLookups: 0,
+}));
 
 vi.mock('@/application/transaction', () => ({
   withConnection: async <T>(fn: (connection: unknown) => Promise<T>): Promise<T> => fn({}),
 }));
 
+/**
+ * 除外IPの設定も DB から読む（033）。**このファイルは DB を持たない**ので、
+ * 空を返す口として差し替える。除外の検証はファイル末尾の describe で
+ * `primeAccessLogIpExclusions` から与える。
+ */
+vi.mock('@/infrastructure/system-settings-repository', () => ({
+  systemSettingsRepository: {
+    loadAll: async (): Promise<Map<string, unknown>> => new Map(),
+  },
+}));
+
 vi.mock('@/infrastructure/analytics-repository', () => ({
   analyticsRepository: {
-    findSiteByPublicKey: async () => ({ id: 'site-for-salt', status: 'active' }),
+    findSiteByPublicKey: async () => {
+      collected.siteLookups += 1;
+      return { id: 'site-for-salt', status: 'active' };
+    },
     recordAccess: async (_connection: unknown, entry: { visitorHash: string }) => {
       collected.entries.push(entry);
     },
@@ -510,5 +532,112 @@ describe('ソルトの境目（基準タイムゾーンの変更）', () => {
     const second = await hashUnder(EAST);
 
     expect(second).toBe(first);
+  });
+});
+
+/**
+ * 除外IP（033-analytics-ip-exclusion 設計 §7、受け入れ条件 #54〜#59）。
+ *
+ * **記録の手前で落とす。** `access_logs` に IP は残らないので、
+ * 取りこぼした 1 件は後から探して消せない。
+ *
+ * 設定は `primeAccessLogIpExclusions` で直接与える（この describe も DB を持たない）。
+ */
+describe('除外IP', () => {
+  const INPUT = {
+    publicKey: 'key-for-exclusion',
+    path: '/pricing',
+    referrer: null,
+    userAgent: 'Mozilla/5.0',
+  } as const;
+
+  beforeEach(() => {
+    collected.entries.length = 0;
+    collected.siteLookups = 0;
+    resetDailySalts();
+    resetAccessLogIpExclusionsForTests();
+  });
+
+  afterEach(() => {
+    resetAccessLogIpExclusionsForTests();
+    collected.entries.length = 0;
+    collected.siteLookups = 0;
+  });
+
+  /** #54 / #55 */
+  it('除外した送信元は 1 行も記録しない', async () => {
+    primeAccessLogIpExclusions(['203.0.113.10']);
+
+    const outcome = await collectAccess({ ...INPUT, ipAddress: '203.0.113.10' });
+
+    expect(outcome).toEqual({ ok: false });
+    expect(collected.entries).toHaveLength(0);
+  });
+
+  /** #56。**公開キーの当たり判定を与えない。** */
+  it('除外した送信元にはサイトの照会もしない', async () => {
+    primeAccessLogIpExclusions(['203.0.113.10']);
+
+    await collectAccess({ ...INPUT, ipAddress: '203.0.113.10' });
+
+    expect(collected.siteLookups).toBe(0);
+  });
+
+  /** #57 */
+  it('除外していない送信元は従来どおり記録する', async () => {
+    primeAccessLogIpExclusions(['203.0.113.10']);
+
+    const outcome = await collectAccess({ ...INPUT, ipAddress: '203.0.113.11' });
+
+    expect(outcome).toEqual({ ok: true });
+    expect(collected.entries).toHaveLength(1);
+  });
+
+  /** #58。IP が分からないものを落とすと、Proxy の設定ミスで計測が全損する。 */
+  it('IP が取れないときは記録する', async () => {
+    primeAccessLogIpExclusions(['0.0.0.0/0']);
+
+    const outcome = await collectAccess({ ...INPUT, ipAddress: null });
+
+    expect(outcome).toEqual({ ok: true });
+    expect(collected.entries).toHaveLength(1);
+  });
+
+  /** #59 */
+  it('CIDR で指定した帯の中も記録しない', async () => {
+    primeAccessLogIpExclusions(['198.51.100.0/24', '2001:db8::/32']);
+
+    await collectAccess({ ...INPUT, ipAddress: '198.51.100.77' });
+    await collectAccess({ ...INPUT, ipAddress: '2001:db8:abcd::1' });
+    await collectAccess({ ...INPUT, ipAddress: '198.51.101.1' });
+
+    expect(collected.entries).toHaveLength(1);
+  });
+
+  it('ポート付き・IPv4 射影の表記でも除外する', async () => {
+    primeAccessLogIpExclusions(['203.0.113.10']);
+
+    await collectAccess({ ...INPUT, ipAddress: '203.0.113.10:51234' });
+    await collectAccess({ ...INPUT, ipAddress: '::ffff:203.0.113.10' });
+
+    expect(collected.entries).toHaveLength(0);
+  });
+
+  it('設定が空なら何も落とさない', async () => {
+    primeAccessLogIpExclusions([]);
+
+    await collectAccess({ ...INPUT, ipAddress: '203.0.113.10' });
+
+    expect(collected.entries).toHaveLength(1);
+  });
+
+  /** パスの検査が先。除外の判定より前に落ちる経路を変えていない。 */
+  it('パスが不正なら除外の判定に関わらず記録しない', async () => {
+    primeAccessLogIpExclusions([]);
+
+    const outcome = await collectAccess({ ...INPUT, path: 'javascript:alert(1)', ipAddress: null });
+
+    expect(outcome).toEqual({ ok: false });
+    expect(collected.entries).toHaveLength(0);
   });
 });

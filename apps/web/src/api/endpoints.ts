@@ -35,6 +35,7 @@ import '@/app/api/v1/plugins/registry/route';
 import '@/app/api/v1/plugins/package/install/route';
 import '@/app/api/v1/roles/route';
 import '@/app/api/v1/settings/route';
+import '@/app/api/v1/settings/access-log-ips/route';
 import '@/app/api/v1/settings/timezone/route';
 import '@/app/api/v1/setup/route';
 import '@/app/api/v1/sites/route';

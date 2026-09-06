@@ -4,6 +4,7 @@
 import { analyticsTimeZone } from './timezone';
 import { createHash, randomBytes } from 'node:crypto';
 import { uuidv7 } from 'uuidv7';
+import { isAccessLogExcluded } from './ip-exclusion';
 import { declarePublicUseCase } from '@/application/authorization/use-case';
 import { withConnection } from '@/application/transaction';
 import {
@@ -81,6 +82,13 @@ export type CollectOutcome =
 export async function collectAccess(input: CollectInput): Promise<CollectOutcome> {
   const path = normalizePath(input.path);
   if (path === null) {
+    return { ok: false };
+  }
+
+  // **記録の手前で落とす**（033-analytics-ip-exclusion 設計 §7）。
+  // `access_logs` に IP は残らないので、記録してしまえば後から探して消せない。
+  // サイトの照会もしない——除外された送信元に公開キーの当たり判定を与えない。
+  if (await isAccessLogExcluded(input.ipAddress)) {
     return { ok: false };
   }
 
