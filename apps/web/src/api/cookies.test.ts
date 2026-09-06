@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   clearedSessionCookie,
+  clientIpOf,
   csrfCookie,
   isSecureRequest,
   readCookie,
@@ -137,5 +138,46 @@ describe('requestInfoOf', () => {
   it('User-Agent を返す', () => {
     const request = req('http://x/y', { 'user-agent': 'vitest' });
     expect(requestInfoOf(request).userAgent).toBe('vitest');
+  });
+});
+
+/**
+ * 送信元 IP の取り出し（033-analytics-ip-exclusion 設計 §10.1、受け入れ条件 #43〜#46）。
+ *
+ * **`requestInfoOf` から切り出した。** 設定画面（Server Component）も同じ関数を使う。
+ * 2 か所に書くと、画面に出る IP と実際に除外判定される IP がずれる。
+ */
+describe('clientIpOf', () => {
+  /** #43 */
+  it('x-forwarded-for の先頭を返す', () => {
+    const headers = new Headers({ 'x-forwarded-for': '203.0.113.1, 10.0.0.1' });
+    expect(clientIpOf(headers)).toBe('203.0.113.1');
+  });
+
+  /** #44 */
+  it('x-forwarded-for が無ければ x-real-ip を返す', () => {
+    expect(clientIpOf(new Headers({ 'x-real-ip': '203.0.113.2' }))).toBe('203.0.113.2');
+  });
+
+  /** #45 */
+  it('どちらも無ければ null', () => {
+    expect(clientIpOf(new Headers())).toBeNull();
+  });
+
+  it('空の x-forwarded-for なら x-real-ip へ落ちる', () => {
+    const headers = new Headers({ 'x-forwarded-for': '', 'x-real-ip': '203.0.113.3' });
+    expect(clientIpOf(headers)).toBe('203.0.113.3');
+  });
+
+  /** `Request` でなくても、`get` さえ持っていれば渡せる（`headers()` の戻り値のため）。 */
+  it('get だけを持つものからも取り出せる', () => {
+    const store = { get: (name: string) => (name === 'x-real-ip' ? '203.0.113.4' : null) };
+    expect(clientIpOf(store)).toBe('203.0.113.4');
+  });
+
+  /** #46。切り出しで `requestInfoOf` が壊れていないこと。 */
+  it('requestInfoOf は clientIpOf と同じ値を返す', () => {
+    const request = req('http://x/y', { 'x-forwarded-for': '203.0.113.5, 10.0.0.1' });
+    expect(requestInfoOf(request).ipAddress).toBe(clientIpOf(request.headers));
   });
 });

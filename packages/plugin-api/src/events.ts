@@ -24,6 +24,7 @@ export const CORE_EVENTS = [
   'campaign.updated',
   'campaign.deleted',
   'analytics.rolledUp',
+  'analytics.purged',
 ] as const;
 
 export type CoreEventName = (typeof CORE_EVENTS)[number];
@@ -43,6 +44,43 @@ export interface AnalyticsRollupEventPayload {
   readonly to: string;
   /** 書き込んだ集計値の件数。 */
   readonly points: number;
+}
+
+/**
+ * 基準タイムゾーンの変更に伴う洗い替えで、集計値を消したとき（032-timezone-setting）。
+ *
+ * **消えたのは「その日に生ログが 1 行も無い (サイト, 日)」の行**で、出所を問わない。
+ * 自分の Plugin が `data.analytics.record` で入れた値も含まれる。
+ * **本体には取り込み直す手段が無い。** 必要なら Plugin 側で再取得すること。
+ *
+ * **洗い替え 1 回につき 1 度だけ発火する**（サイトごとには発火しない）。
+ * 1 行も消えなければ発火しない。集計値そのものは載せない（量が読めない）——
+ * 現況は Data API（`analytics.list`）で引き直す。`analytics.rolledUp` と同じ作法。
+ */
+export interface AnalyticsPurgedEventPayload {
+  /** 消す根拠になった、新しい基準タイムゾーン（IANA 名）。 */
+  readonly timeZone: string;
+  /** 消した集計値の総行数（出所を問わない）。 */
+  readonly rows: number;
+  /** サイトごとの、消えた範囲。消えなかったサイトは現れない。 */
+  readonly sites: readonly {
+    readonly siteId: string;
+    /**
+     * 消えた `metric_date` の最古・最新（`YYYY-MM-DD`）。
+     *
+     * **この範囲の日がすべて消えたとは限らない**（生ログに欠けがあれば飛び地になる）。
+     */
+    readonly from: string;
+    readonly to: string;
+    readonly rows: number;
+    /**
+     * 消えた行の `source`（Core の分は `core`）。
+     *
+     * **自分の値が消えたのかをここで判定できる。** 消えた後なので
+     * `analytics.list` では確かめようがない（行が無い）。
+     */
+    readonly sources: readonly string[];
+  }[];
 }
 
 /** キャンペーン（017-campaigns）。 */
@@ -101,6 +139,7 @@ export interface CoreEventPayloads {
   readonly 'campaign.updated': CampaignEventPayload;
   readonly 'campaign.deleted': CampaignEventPayload;
   readonly 'analytics.rolledUp': AnalyticsRollupEventPayload;
+  readonly 'analytics.purged': AnalyticsPurgedEventPayload;
 }
 
 export interface PluginEventApi {

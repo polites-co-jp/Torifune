@@ -12,7 +12,13 @@ import {
   recordAnalytics,
 } from '@/application/analytics/analytics-use-cases';
 import { collectAccess, resetDailySalts } from '@/application/analytics/collect';
-import { analyticsTimeZone, resetTimeZoneWarning } from '@/application/analytics/timezone';
+import {
+  analyticsTimeZone,
+  resetAnalyticsTimeZoneForTests,
+  resetTimeZoneWarning,
+  resolveAnalyticsTimeZone,
+} from '@/application/analytics/timezone';
+import { systemSettingsRepository } from '@/infrastructure/system-settings-repository';
 import { pruneAccessLogs, rollupAnalytics } from '@/application/analytics/rollup';
 import {
   ForbiddenError,
@@ -3290,5 +3296,68 @@ describe('当日（getTodayAnalytics）', () => {
   it('UseCase 名が analytics.today で Permission が analytics.read', () => {
     expect(getTodayAnalytics.name).toBe('analytics.today');
     expect(getTodayAnalytics.permission).toBe('analytics.read');
+  });
+});
+
+/**
+ * `collect` のホットパス（032-timezone-setting 設計 §6.1.4、受け入れ条件 #29 / #30）。
+ *
+ * 基準タイムゾーンを DB 由来にしても、**1 リクエストあたりの問い合わせは 2 本のまま**
+ * （公開キーの照合と記録）。`saltDay` が呼ぶのは同期の `analyticsTimeZone()` だけで、
+ * その中に DB を読む経路が無い。
+ *
+ * **計測が落ちる経路を新たに作らない。** 設定を読めなくても記録は続く。
+ */
+describe('collect のホットパス', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    resetAnalyticsTimeZoneForTests();
+    delete process.env['TORIFUNE_TIMEZONE'];
+    resetTimeZoneWarning();
+  });
+
+  /** #29。タイムゾーンのための問い合わせが増えていない。 */
+  it('collectAccess が system_settings を読まず、access_logs に触るのは 2 本のまま', async () => {
+    const site = await makeSite();
+    // キャッシュを新しくしておく（TTL 超過の読み直しは別の非同期処理であって、要求を待たせない）。
+    await resolveAnalyticsTimeZone();
+
+    const settings = vi.spyOn(systemSettingsRepository, 'loadAll');
+    const findSite = vi.spyOn(analyticsRepository, 'findSiteByPublicKey');
+    const record = vi.spyOn(analyticsRepository, 'recordAccess');
+
+    const outcome = await collectAccess({
+      publicKey: site.publicKey,
+      path: '/',
+      referrer: null,
+      ipAddress: '203.0.113.5',
+      userAgent: BROWSER,
+    });
+
+    expect(outcome).toEqual({ ok: true });
+    expect(settings, 'タイムゾーンのために DB を読んでいる').not.toHaveBeenCalled();
+    expect(findSite).toHaveBeenCalledTimes(1);
+    expect(record).toHaveBeenCalledTimes(1);
+  });
+
+  /** #30。異常系。設定を読めない状態でも計測は成功する。 */
+  it('system_settings を読めない状態でも collectAccess が成功する', async () => {
+    const site = await makeSite();
+    resetAnalyticsTimeZoneForTests();
+    vi.spyOn(systemSettingsRepository, 'loadAll').mockRejectedValue(new Error('db is down'));
+
+    const outcome = await collectAccess({
+      publicKey: site.publicKey,
+      path: '/x',
+      referrer: null,
+      ipAddress: '203.0.113.6',
+      userAgent: BROWSER,
+    });
+
+    expect(outcome).toEqual({ ok: true });
+    const rows = await withConnection((connection) =>
+      connection.db.selectFrom('access_logs').select('path').execute(),
+    );
+    expect(rows.map((row) => row.path)).toEqual(['/x']);
   });
 });

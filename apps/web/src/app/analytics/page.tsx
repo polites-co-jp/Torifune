@@ -12,7 +12,7 @@ import { headers } from 'next/headers';
 import { notFound } from 'next/navigation';
 import { originFromHeaders } from '@/api/absolute-url';
 import type { AuthorizationContext } from '@/application/authorization/authorize';
-import { analyticsTimeZone } from '@/application/analytics/timezone';
+import { resolveAnalyticsTimeZone } from '@/application/analytics/timezone';
 import {
   isValidBreakdownKey,
   KEYLESS_CORE_METRICS,
@@ -238,7 +238,7 @@ export default async function AnalyticsPage({
 
   // **集計と同じ境目で「今日」を決める。** サーバーのローカル日付で作ると、
   // 集計が畳んだ日と食い違って常に 0 件になる期間ができる。
-  const timeZone = analyticsTimeZone();
+  const timeZone = await resolveAnalyticsTimeZone();
   const today = todayInTimeZone(timeZone);
   const yesterday = shiftDays(today, -1);
   const resolved = resolvePeriod(params, today);

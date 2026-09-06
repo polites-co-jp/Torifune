@@ -1,6 +1,7 @@
 import { uuidv7 } from 'uuidv7';
 import { runnerName } from '@/application/jobs/config';
-import type { JobDefinition } from '@/application/jobs/scheduler';
+import type { JobTask } from '@/application/jobs/scheduler';
+import { withConnection } from '@/application/transaction';
 import type { Connection } from '@/database/provider';
 import {
   JOB_RUN_RETENTION,
@@ -112,7 +113,7 @@ async function trim(connection: Connection, jobName: JobName): Promise<void> {
 
 export async function runJob<TInput>(
   connection: Connection,
-  job: JobDefinition<TInput>,
+  job: JobTask<TInput>,
   options: RunJobOptions<TInput>,
 ): Promise<RunOutcome> {
   const runner = runnerName();
@@ -125,7 +126,10 @@ export async function runJob<TInput>(
   // `job_runs` に記録が残らず、API も 500 の理由を失う。
   let acquired: LockOutcome;
   try {
-    acquired = await jobLock.acquire(connection, job.name, {
+    // **鍵は `lockName`、記録は `job.name`。** 同じ資源を触る別名のジョブを
+    // 同じ待ち行列に載せるため（032-timezone-setting 設計 §6.2.3）。
+    // 省略されていれば `job.name` に落ち、029 の挙動と変わらない。
+    acquired = await jobLock.acquire(connection, job.lockName ?? job.name, {
       waitMs: options.wait ? MANUAL_LOCK_WAIT_MS : 0,
     });
   } catch (error) {
@@ -188,8 +192,16 @@ export async function runJob<TInput>(
 
     const beganAt = Date.now();
     try {
+      // 途中経過を書く口（設計 §6.2.5）。**失敗は握って続ける。**
+      // 最後に `finishOk` がもう一度 `summary` を書くので、2 系統の書き方をしない。
+      const report = async (progress: Readonly<Record<string, unknown>>): Promise<void> => {
+        await record(job.name, 'report', () =>
+          jobRunRepository.updateSummary(connection, id, progress),
+        );
+      };
+
       // **ロックの接続とは別の（通常の）接続で走らせる。** ジョブの中のトランザクションは従来どおり。
-      const summary = await job.run(connection, options.input);
+      const summary = await job.run(connection, options.input, { runId: id, report });
       const finished = await record(job.name, 'ok', () =>
         jobRunRepository.finishOk(connection, id, summary),
       );
@@ -241,4 +253,28 @@ export async function runJob<TInput>(
     }
     await trim(connection, job.name);
   }
+}
+
+/**
+ * 応答を待たせずにジョブを起こす（032-timezone-setting 設計 §6.4 末尾）。
+ *
+ * **要求の接続を使わない。** 自分で `withConnection` を張るので、
+ * 応答を返したあとに要求のスコープが閉じても影響を受けない。
+ *
+ * **これは fire and forget である。** 戻り値を持たず、待てず、
+ * プロセスが落ちれば止まる。Torifune は `instrumentation.ts` で定期実行を持つ
+ * 常駐サーバーとして動く前提なので採る（029 設計 §6.1.1）。
+ * 止まったときの立て直しは、設定画面の再実行ボタンから人が行う（設計 §7.3）。
+ *
+ * 例外は握ってログに出す（`runJob` 自体も例外を投げないが、接続の取得は投げうる）。
+ */
+export function startJobInBackground<TInput>(job: JobTask<TInput>, input: TInput): void {
+  void withConnection((connection) =>
+    runJob(connection, job, { trigger: 'manual', wait: true, input }),
+  ).catch((error: unknown) => {
+    log.error('background job could not be started', {
+      job: job.name,
+      reason: jobErrorText(error),
+    });
+  });
 }

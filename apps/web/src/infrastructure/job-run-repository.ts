@@ -171,6 +171,24 @@ export const jobRunRepository = {
     return row === undefined ? null : toJobRun(row);
   },
 
+  /**
+   * 走行中の途中経過を書く（032-timezone-setting 設計 §6.2.5）。
+   *
+   * **状態も `finished_at` も動かさない。** 閉じるのは `finishOk` / `finishError` の役目で、
+   * ここは `summary` だけを差し替える。主キー 1 行の更新。
+   */
+  async updateSummary(
+    connection: Connection,
+    id: string,
+    summary: Readonly<Record<string, unknown>>,
+  ): Promise<void> {
+    await connection.db
+      .updateTable('job_runs')
+      .set({ summary: JSON.stringify(summary) })
+      .where('id', '=', id)
+      .execute();
+  },
+
   /** 失敗で閉じる。`message` は呼ぶ側が上限まで切っておく（`truncateError`）。 */
   async finishError(connection: Connection, id: string, message: string): Promise<JobRun | null> {
     const row = await connection.db

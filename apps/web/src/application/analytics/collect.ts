@@ -1,5 +1,10 @@
+// **同期版 `analyticsTimeZone` を import してよい製品ファイルはここだけ**
+// （032-timezone-setting 設計 §6.1.1。`timezone-static-checks.test.ts` が機械的に見ている）。
+// 目に付く場所へ単独で置き、他の import に紛れないようにする。
+import { analyticsTimeZone } from './timezone';
 import { createHash, randomBytes } from 'node:crypto';
 import { uuidv7 } from 'uuidv7';
+import { isAccessLogExcluded } from './ip-exclusion';
 import { declarePublicUseCase } from '@/application/authorization/use-case';
 import { withConnection } from '@/application/transaction';
 import {
@@ -10,7 +15,6 @@ import {
 } from '@/domain/analytics/access-log';
 import { todayInTimeZone } from '@/domain/analytics/day';
 import { analyticsRepository } from '@/infrastructure/analytics-repository';
-import { analyticsTimeZone } from './timezone';
 
 /**
  * アクセスの記録（018-analytics 設計 §3）。
@@ -78,6 +82,13 @@ export type CollectOutcome =
 export async function collectAccess(input: CollectInput): Promise<CollectOutcome> {
   const path = normalizePath(input.path);
   if (path === null) {
+    return { ok: false };
+  }
+
+  // **記録の手前で落とす**（033-analytics-ip-exclusion 設計 §7）。
+  // `access_logs` に IP は残らないので、記録してしまえば後から探して消せない。
+  // サイトの照会もしない——除外された送信元に公開キーの当たり判定を与えない。
+  if (await isAccessLogExcluded(input.ipAddress)) {
     return { ok: false };
   }
 

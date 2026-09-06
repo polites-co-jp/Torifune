@@ -97,11 +97,12 @@ afterEach(async () => {
 });
 
 describe('listJobStatuses', () => {
-  /** #38 */
-  it('JOB_NAMES の順に 2 件返し、実行が無ければ lastRun / lastSuccess は null、recentErrors は空', async () => {
+  /** #38。032-timezone-setting 受け入れ条件 #50（2 件 → 3 件）。 */
+  it('JOB_NAMES の順に 3 件返し、実行が無ければ lastRun / lastSuccess は null、recentErrors は空', async () => {
     const statuses = await listJobStatuses(admin, {});
 
     expect(statuses.map((status) => status.name)).toEqual([...JOB_NAMES]);
+    expect(statuses).toHaveLength(3);
     for (const status of statuses) {
       expect(status.lastRun).toBeNull();
       expect(status.lastSuccess).toBeNull();
@@ -112,7 +113,41 @@ describe('listJobStatuses', () => {
       expect(status.running).toBe(false);
     }
     // 未起動でも間隔は env の解釈後の値（実装プラン §8 #1）。
-    expect(statuses.map((status) => status.intervalMinutes)).toEqual([15, 1]);
+    // 032 受け入れ条件 #51：洗い替えは**周期を持たない**ので `null`。
+    expect(statuses.map((status) => status.intervalMinutes)).toEqual([15, 1, null]);
+  });
+
+  /**
+   * #51。周期を持たないジョブ（032-timezone-setting 設計 §6.2 / §6.6）。
+   *
+   * `bootScheduler` の `jobs` に載せないので、定期実行の予定を持たない。
+   * `GET /api/v1/jobs` の応答では `intervalMinutes` が `null` になりうる。
+   */
+  it('analytics.timezoneRebuild は intervalMinutes が null で、定期実行の予定を持たない', async () => {
+    const statuses = await listJobStatuses(admin, {});
+    const rebuild = statuses.find((status) => status.name === 'analytics.timezoneRebuild');
+
+    expect(rebuild, 'analytics.timezoneRebuild が無い').toBeDefined();
+    expect(rebuild?.intervalMinutes).toBeNull();
+    expect(rebuild?.scheduled).toBe(false);
+    expect(rebuild?.nextRunAt).toBeNull();
+  });
+
+  /** #50。洗い替えの記録も他のジョブと同じ形で読める。 */
+  it('analytics.timezoneRebuild の実行も lastRun として返る', async () => {
+    await insertJobRun({
+      name: 'analytics.timezoneRebuild',
+      status: 'error',
+      startedAt: '2026-09-06T01:00:00Z',
+      error: '洗い替えが失敗した',
+    });
+
+    const statuses = await listJobStatuses(admin, {});
+    const rebuild = statuses.find((status) => status.name === 'analytics.timezoneRebuild');
+
+    expect(rebuild?.lastRun?.status).toBe('error');
+    expect(rebuild?.lastSuccess).toBeNull();
+    expect(rebuild?.recentErrors).toHaveLength(1);
   });
 
   /** #38。権限。 */
@@ -124,7 +159,7 @@ describe('listJobStatuses', () => {
 
   /** #38 の対。管理者は読める。 */
   it('system.manage を持てば読める', async () => {
-    await expect(listJobStatuses(admin, {})).resolves.toHaveLength(2);
+    await expect(listJobStatuses(admin, {})).resolves.toHaveLength(3);
   });
 
   /** #39 */

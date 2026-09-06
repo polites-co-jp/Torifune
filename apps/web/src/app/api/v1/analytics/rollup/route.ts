@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { analyticsTimeZone } from '@/application/analytics/timezone';
+import { resolveAnalyticsTimeZone } from '@/application/analytics/timezone';
 import { daysAgoInTimeZone } from '@/domain/analytics/day';
 import { pruneAccessLogs } from '@/application/analytics/rollup';
 import { ROLLUP_JOB } from '@/application/jobs/definitions';
@@ -28,8 +28,8 @@ import { defineRoute } from '@/api/route';
 const dateOnly = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD の形式で入力してください。');
 
 /** 集計と同じ境目で日付を戻す。 */
-function daysAgo(days: number): string {
-  return daysAgoInTimeZone(days, analyticsTimeZone());
+async function daysAgo(days: number): Promise<string> {
+  return daysAgoInTimeZone(days, await resolveAnalyticsTimeZone());
 }
 
 /**
@@ -72,8 +72,8 @@ export const POST = defineRoute({
   handler: async ({ context, body }) => {
     // 既定は「昨日と今日」。**API の互換をそのまま保つ。**
     // 「最後の成功から最大 7 日」は定期実行（`input` 無し）だけの規則で、ここは常に `input` を渡す。
-    const from = body?.from ?? daysAgo(1);
-    const to = body?.to ?? daysAgo(0);
+    const from = body?.from ?? (await daysAgo(1));
+    const to = body?.to ?? (await daysAgo(0));
 
     assertRollupRange(from, to);
 

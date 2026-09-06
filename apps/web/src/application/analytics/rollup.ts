@@ -1,7 +1,7 @@
 import { emit } from '@/application/events';
 import type { Connection } from '@/database/provider';
 import { analyticsRepository, type DailyBreakdownRow } from '@/infrastructure/analytics-repository';
-import { analyticsTimeZone } from './timezone';
+import { resolveAnalyticsTimeZone } from './timezone';
 import { log } from '@/infrastructure/logging';
 
 /**
@@ -67,9 +67,19 @@ function groupBySiteDay(
 export async function rollupAnalytics(
   connection: Connection,
   range: { readonly from: string; readonly to: string },
+  options?: {
+    /**
+     * 境目に使うタイムゾーン。**省略時は従来どおり解決する**（既存の呼び出しは変わらない）。
+     *
+     * 洗い替え（032-timezone-setting 設計 §6.2.2）はここへ明示的に渡す。
+     * チャンクごとに解決し直すと、走行中にもう一度変えられた場合に
+     * チャンクごとに違う境目で畳んでしまう。
+     */
+    readonly timeZone?: string;
+  },
 ): Promise<RollupResult> {
   // 1日の境目は運用側のタイムゾーンで決める（`timezone.ts`）。
-  const window = { ...range, timeZone: analyticsTimeZone() };
+  const window = { ...range, timeZone: options?.timeZone ?? (await resolveAnalyticsTimeZone()) };
 
   const rows = await analyticsRepository.aggregateDailyBreakdown(connection, window);
   const groups = groupBySiteDay(rows);

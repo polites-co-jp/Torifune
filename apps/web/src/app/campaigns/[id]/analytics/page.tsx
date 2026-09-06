@@ -1,4 +1,4 @@
-import { analyticsTimeZone } from '@/application/analytics/timezone';
+import { resolveAnalyticsTimeZone } from '@/application/analytics/timezone';
 import { todayInTimeZone } from '@/domain/analytics/day';
 import { listAnalytics } from '@/application/analytics/analytics-use-cases';
 import { getCampaign } from '@/application/campaign/campaign-use-cases';
@@ -19,8 +19,8 @@ import { AsyncState } from '@/ui/states/async-state';
 export const dynamic = 'force-dynamic';
 
 /** 集計と同じ境目で「今日」を返す（`application/analytics/timezone.ts`）。 */
-function today(): string {
-  return todayInTimeZone(analyticsTimeZone());
+async function today(): Promise<string> {
+  return todayInTimeZone(await resolveAnalyticsTimeZone());
 }
 
 /**
@@ -49,7 +49,7 @@ export default async function CampaignAnalyticsPage({
   }
 
   const campaign = await getCampaign(context, { id });
-  const range = analysisRange(campaign.startsOn, campaign.endsOn, today());
+  const range = analysisRange(campaign.startsOn, campaign.endsOn, await today());
 
   const canReadAnalytics = permissions.has('analytics.read');
   const canReadSocial = permissions.has('social.read');

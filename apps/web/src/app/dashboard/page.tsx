@@ -1,4 +1,4 @@
-import { analyticsTimeZone } from '@/application/analytics/timezone';
+import { resolveAnalyticsTimeZone } from '@/application/analytics/timezone';
 import { listAnalytics, listTrackedSites } from '@/application/analytics/analytics-use-cases';
 import { listRecentActivities } from '@/application/audit-use-cases';
 import { listCampaigns } from '@/application/campaign/campaign-use-cases';
@@ -72,7 +72,7 @@ export default async function DashboardPage() {
   const canReadAudit = permissions.has('system.manage');
 
   // 集計と同じ境目で「今日」を決める（`application/analytics/timezone.ts`）。
-  const timeZone = analyticsTimeZone();
+  const timeZone = await resolveAnalyticsTimeZone();
   const today = todayInTimeZone(timeZone);
   const from = shiftDays(today, -(PERIOD_DAYS - 1));
   // 前期間は「その前の 7 日」。当期と合わせて 1 回で読み、日付で分ける。

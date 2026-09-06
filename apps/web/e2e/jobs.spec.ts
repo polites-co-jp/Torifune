@@ -176,7 +176,8 @@ interface JobRunBody {
 interface JobStatusBody {
   readonly name: string;
   readonly scheduled: boolean;
-  readonly intervalMinutes: number;
+  /** 032-timezone-setting 設計 §6.6。周期を持たないジョブは null。 */
+  readonly intervalMinutes: number | null;
   readonly nextRunAt: string | null;
   readonly running: boolean;
   readonly lastRun: JobRunBody | null;
@@ -215,7 +216,12 @@ test.describe('GET /api/v1/jobs', () => {
 
     const body = (await response.json()) as { data: JobStatusBody[] };
     expect(Object.keys(body)).toEqual(['data']);
-    expect(body.data.map((job) => job.name)).toEqual(['analytics.rollup', 'webhook.deliver']);
+    // 032-timezone-setting 設計 §6.2 で洗い替えが増えた。順序は JOB_NAMES の定義順。
+    expect(body.data.map((job) => job.name)).toEqual([
+      'analytics.rollup',
+      'webhook.deliver',
+      'analytics.timezoneRebuild',
+    ]);
     for (const job of body.data) {
       expect(Object.keys(job).sort()).toEqual(
         [
@@ -230,7 +236,12 @@ test.describe('GET /api/v1/jobs', () => {
         ].sort(),
       );
       expect(typeof job.scheduled).toBe('boolean');
-      expect(typeof job.intervalMinutes).toBe('number');
+      // 周期を持つジョブは数、周期を持たない洗い替えは null（032 設計 §6.6）。
+      if (job.name === 'analytics.timezoneRebuild') {
+        expect(job.intervalMinutes).toBeNull();
+      } else {
+        expect(typeof job.intervalMinutes).toBe('number');
+      }
       expect(typeof job.running).toBe('boolean');
       expect(Array.isArray(job.recentErrors)).toBe(true);
     }

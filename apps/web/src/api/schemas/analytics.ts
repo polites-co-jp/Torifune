@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { BREAKDOWN_KEY_MAX_LENGTH, METRIC_NAME_MAX_LENGTH } from '@/domain/analytics/analytics';
-import { pageEnvelope } from './envelope';
+import { dataEnvelope, pageEnvelope } from './envelope';
 
 /**
  * Analytics API の Zod スキーマ（05_API設計.md §20）。
@@ -120,3 +120,57 @@ export const breakdownItemSchema = z.object({
 });
 
 export const analyticsBreakdownPageSchema = pageEnvelope(breakdownItemSchema);
+
+/**
+ * 基準タイムゾーンの変更（032-timezone-setting 設計 §6.5）。
+ *
+ * **消える行数を出所ごとに分けて返す**（`要件.md` §7-1）。
+ * 合計だけを返すと、Plugin が取り込んだ値も消えることが読み取れない。
+ */
+export const timeZonePreviewSchema = dataEnvelope(
+  z.object({
+    /** 正規化した候補。 */
+    timeZone: z.string(),
+    /** いま効いている値と、その出所。 */
+    currentTimeZone: z.string(),
+    currentSource: z.enum(['database', 'environment', 'default']),
+    /** 候補が現在値と同じか（同じなら洗い替えは走らない）。 */
+    unchanged: z.boolean(),
+    /** 洗い替える期間。生ログが 1 行も無ければ null。 */
+    rebuildFrom: z.string().nullable(),
+    rebuildTo: z.string().nullable(),
+    rebuildDays: z.number().int(),
+    /** 消える (サイト, 日) の数。 */
+    lostDays: z.number().int(),
+    /** 消える `source = 'core'` の行数。 */
+    lostCoreRows: z.number().int(),
+    /** 消える `source <> 'core'`（Plugin が入れた値）の行数。 */
+    lostPluginRows: z.number().int(),
+    /** 消える値を入れた Plugin の ID。 */
+    lostSources: z.array(z.string()),
+    lostSites: z.number().int(),
+    lostFrom: z.string().nullable(),
+    lostTo: z.string().nullable(),
+  }),
+);
+
+/** 保存の結果。**ジョブの完了は待たない。** */
+export const timeZoneUpdateSchema = dataEnvelope(
+  z.object({
+    timeZone: z.string(),
+    previousTimeZone: z.string(),
+    /** 洗い替えを起こしたか。値が変わったときだけ true。 */
+    rebuildStarted: z.boolean(),
+  }),
+);
+
+/** 洗い替えのやり直し。起こしたことだけを返す。 */
+export const timeZoneRebuildSchema = dataEnvelope(z.object({ started: z.boolean() }));
+
+/**
+ * アクセスログの除外IP（033-analytics-ip-exclusion 設計 §8）。
+ *
+ * 返すのは**正規化後**のリスト（`203.0.113.10/24` は `203.0.113.0/24` になる）。
+ * 画面はこれをそのまま入力欄へ戻す。
+ */
+export const accessLogIpExclusionSchema = dataEnvelope(z.object({ rules: z.array(z.string()) }));

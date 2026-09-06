@@ -26,13 +26,57 @@ const DEFAULT_INITIAL_DELAY_MS = 15_000;
 
 const MINUTE_MS = 60_000;
 
-export interface JobDefinition<TInput = undefined> {
+/**
+ * 実行中のジョブへ渡す文脈（032-timezone-setting 設計 §6.2.5）。
+ *
+ * 長く走るジョブは「開始した」と「終わった」の 2 点だけでは、
+ * 動いているのか止まっているのかが分からない。
+ */
+export interface JobContext {
+  /** `job_runs.id`。 */
+  readonly runId: string;
+  /**
+   * 途中経過を `job_runs.summary` へ書く。
+   *
+   * **失敗は握って続ける。** 記録できないことと処理できないことは別。
+   */
+  report(summary: Readonly<Record<string, unknown>>): Promise<void>;
+}
+
+/**
+ * 1 回だけ実行できるジョブ（032-timezone-setting 設計 §6.2.3）。
+ *
+ * `JobDefinition` から周期を外したもの。**要求されたときだけ走るジョブ**
+ * （`analytics.timezoneRebuild`）はこの形で定義し、`bootScheduler` には載せない。
+ */
+export interface JobTask<TInput = undefined> {
   readonly name: JobName;
+  /**
+   * 排他に使う鍵。省略すると `name`。
+   *
+   * **記録するジョブ名と、取る鍵の名前を分けるためにある。**
+   * 洗い替えと定期ロールアップは同じ資源（`analytics` の Core 行）を
+   * (site, day) 単位で差し替えるので、同じ鍵に載せる必要がある。
+   * **既存のジョブは省略する**（省略すれば挙動が 1 ビットも変わらない）。
+   */
+  readonly lockName?: JobName;
+  /**
+   * 実行本体。戻り値が `job_runs.summary` になる。
+   *
+   * **第 3 引数なので、既存のジョブは受け取らずにそのまま動く。**
+   * 引数を 2 つしか取らない関数もそのまま代入できる。
+   */
+  run(
+    connection: Connection,
+    input: TInput,
+    job: JobContext,
+  ): Promise<Readonly<Record<string, unknown>>>;
+}
+
+export interface JobDefinition<TInput = undefined> extends JobTask<TInput> {
   readonly intervalMs: number;
   /** 起動からの初回遅延。既定 15 秒。 */
   readonly initialDelayMs?: number;
-  /** 実行本体。戻り値が `job_runs.summary` になる。 */
-  run(connection: Connection, input: TInput): Promise<Readonly<Record<string, unknown>>>;
 }
 
 export interface SchedulerOptions {
