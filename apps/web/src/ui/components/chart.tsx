@@ -1,8 +1,10 @@
 import type { CSSProperties, ReactNode } from 'react';
+import { ChartHoverLayer } from './chart-hover';
 import {
   CHART_VIEW_HEIGHT,
   CHART_VIEW_PADDING,
   CHART_VIEW_WIDTH,
+  chartHoverPoints,
   chartLayout,
   chartPolyline,
   type ChartPoint,
@@ -180,29 +182,38 @@ export function Chart({
           </div>
         )}
 
-        <svg
-          role="img"
-          aria-label={title}
-          viewBox={`0 0 ${CHART_VIEW_WIDTH} ${CHART_VIEW_HEIGHT}`}
-          preserveAspectRatio="none"
-          style={{ width: '100%', height: heightOf(height), display: 'block' }}
-        >
-          {gridLine(CHART_VIEW_PADDING, 'var(--tf-color-border-weak)')}
-          {gridLine(CHART_VIEW_HEIGHT / 2, 'var(--tf-color-border-weak)')}
-          {gridLine(CHART_VIEW_HEIGHT - CHART_VIEW_PADDING, 'var(--tf-color-border)')}
-          {layout.series.map((item) => (
-            <polyline
-              key={item.key}
-              points={item.points}
-              fill="none"
-              stroke={TONE_COLORS[item.tone]}
-              strokeWidth="2"
-              strokeLinejoin="round"
-              strokeLinecap="round"
-              vectorEffect="non-scaling-stroke"
-            />
-          ))}
-        </svg>
+        {/*
+          ホバーの膜を重ねるための入れ物（031 設計 §7.1）。
+          膜は `<svg role="img">` の**兄弟**であって子ではない。読み上げの木は変わらない。
+        */}
+        {/* `minWidth: 0` は grid の子が min-content で広がらないため（狭い画面で横に伸びない）。 */}
+        <div style={{ position: 'relative', minWidth: 0 }}>
+          <svg
+            role="img"
+            aria-label={title}
+            viewBox={`0 0 ${CHART_VIEW_WIDTH} ${CHART_VIEW_HEIGHT}`}
+            preserveAspectRatio="none"
+            style={{ width: '100%', height: heightOf(height), display: 'block' }}
+          >
+            {gridLine(CHART_VIEW_PADDING, 'var(--tf-color-border-weak)')}
+            {gridLine(CHART_VIEW_HEIGHT / 2, 'var(--tf-color-border-weak)')}
+            {gridLine(CHART_VIEW_HEIGHT - CHART_VIEW_PADDING, 'var(--tf-color-border)')}
+            {layout.series.map((item) => (
+              <polyline
+                key={item.key}
+                points={item.points}
+                fill="none"
+                stroke={TONE_COLORS[item.tone]}
+                strokeWidth="2"
+                strokeLinejoin="round"
+                strokeLinecap="round"
+                vectorEffect="non-scaling-stroke"
+              />
+            ))}
+          </svg>
+
+          <ChartHoverLayer points={layout.hover} />
+        </div>
       </div>
 
       {xTicks && layout.ticks.length > 0 && (
@@ -267,21 +278,27 @@ function SingleSeriesChart({
 
   return (
     <figure style={{ margin: 0 }}>
-      <svg
-        role="img"
-        aria-label={title}
-        viewBox={`0 0 ${CHART_VIEW_WIDTH} ${CHART_VIEW_HEIGHT}`}
-        preserveAspectRatio="none"
-        style={{ width: '100%', height: heightOf(height), display: 'block' }}
-      >
-        <polyline
-          points={chartPolyline(points)}
-          fill="none"
-          stroke="var(--tf-color-primary)"
-          strokeWidth="2"
-          vectorEffect="non-scaling-stroke"
-        />
-      </svg>
+      {/* 1 系列でも同じ形で膜を重ねる（031 設計 §12-1。Plugin の画面でも値が読める）。 */}
+      <div style={{ position: 'relative' }}>
+        <svg
+          role="img"
+          aria-label={title}
+          viewBox={`0 0 ${CHART_VIEW_WIDTH} ${CHART_VIEW_HEIGHT}`}
+          preserveAspectRatio="none"
+          style={{ width: '100%', height: heightOf(height), display: 'block' }}
+        >
+          <polyline
+            points={chartPolyline(points)}
+            fill="none"
+            stroke="var(--tf-color-primary)"
+            strokeWidth="2"
+            vectorEffect="non-scaling-stroke"
+          />
+        </svg>
+
+        {/* 座標は `chartPolyline` と同じ式で作る。`chartLayout` を流用しない（設計 §5.5）。 */}
+        <ChartHoverLayer points={chartHoverPoints(points)} />
+      </div>
 
       <figcaption>{fallback}</figcaption>
     </figure>

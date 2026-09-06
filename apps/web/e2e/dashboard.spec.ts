@@ -423,3 +423,62 @@ test.describe('権限による出し分け', () => {
     }
   });
 });
+
+/* ============================================================================
+ * 031-chart-tooltip：ダッシュボードのチャートにもポップアップが出る（設計 §10-E5）
+ *
+ * `Chart` は共通部品なので、アナリティクスの概要タブと**同じ部品**が出る
+ * （設計 §2 / 06_画面設計.md §2-8）。ここでは「同じように出る」ことだけを見る。
+ * 表と一致すること・消える契機は `analytics.spec.ts` 側で見ている。
+ *
+ * **サイトは遅延生成 ＋ モジュール変数で 1 件だけ作る。**
+ * `GET /api/v1/auth/csrf` の Rate Limit（300 回/60 秒・`operationId:IP`）を
+ * `e2e/` の全ファイルが共有しており、テストごとに作ると後続が 429 で落ちる。
+ * ========================================================================== */
+
+let hoverChartSiteId: string | null = null;
+
+/** ポップアップの検査に使うサイト（直近 7 日に記録がある）。1 回だけ作る。 */
+async function chartHoverSite(page: Page, request: APIRequestContext): Promise<string> {
+  if (hoverChartSiteId === null) {
+    hoverChartSiteId = (await makeRolledUpSite(page, request, ['/'])).id;
+  }
+  return hoverChartSiteId;
+}
+
+test.describe('チャートのポップアップ', () => {
+  /**
+   * E5。`/dashboard` の「直近7日のアクセス」でも、ホバーで値が読める。
+   *
+   * ポップアップは `aria-hidden="true"`（設計 §7.7）なので role では引けない。
+   * CSS セレクタ（`data-chart-*`）で引く。
+   */
+  test('直近7日のアクセスでホバーするとポップアップが出る', async ({ page, request }) => {
+    await chartHoverSite(page, request);
+
+    await page.goto('/dashboard');
+    await expect(page.getByRole('img', { name: CHART_TITLE })).toBeVisible();
+
+    const area = page.locator('[data-chart-hover-area]');
+    const tooltip = page.locator('[data-chart-tooltip]');
+    const marker = page.locator('[data-chart-marker]');
+
+    await expect(area).toHaveCount(1);
+    // 操作前は何も出ていない（裁定 §3.3。常時のマーカーを描かない）。
+    await expect(tooltip).toHaveCount(0);
+    await expect(marker).toHaveCount(0);
+
+    const box = await area.boundingBox();
+    expect(box, '膜の位置が取れない').not.toBeNull();
+    await area.hover({ position: { x: (box?.width ?? 0) * 0.5, y: (box?.height ?? 0) * 0.5 } });
+
+    await expect(tooltip).toBeVisible();
+    await expect(marker).toHaveCount(1);
+
+    // 系列名・X 軸のラベル・数値の 3 つが読める（アナリティクスと同じ中身）。
+    const text = await tooltip.innerText();
+    expect(text, '系列名が無い').toMatch(/ページビュー|訪問者/);
+    expect(text, 'X 軸のラベルが無い').toMatch(/\d{1,2}\/\d{1,2}/);
+    expect(text.replace(/\d{1,2}\/\d{1,2}/, ' '), '数値が無い').toMatch(/[\d,]+/);
+  });
+});

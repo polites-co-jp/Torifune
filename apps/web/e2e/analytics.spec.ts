@@ -2377,3 +2377,409 @@ test.describe('当日', () => {
     await expect(staleRangeNotice(page)).toHaveCount(0);
   });
 });
+
+/* ============================================================================
+ * 031-chart-tooltip：折れ線グラフのプロット点のポップアップ（設計 §10-E）
+ *
+ * **新しいサイトを 1 件も作らない。** `GET /api/v1/auth/csrf` の Rate Limit は
+ * 300 回/60 秒・キーは `operationId:IP` で、`e2e/` の全ファイルがこの 1 つの
+ * バケツを共有する（上の「当日」の doc を参照）。ここでは 030 で入った
+ * `rolledUpTodaySite` / `pristineSite` を**読むだけ**で使い回す。
+ *
+ * 関連する条件は 1 本のテストにまとめる（E1〜E4＋E11 で 1 本、E8＋E9 で 1 本）。
+ * まとめた中でも `expect` は条件ごとに分けて書き、どれが落ちたか分かるようにする。
+ *
+ * ポップアップは `aria-hidden="true"` なので role では引けない（設計 §7.7）。
+ * CSS セレクタ（`data-chart-*`）で引く。
+ * ========================================================================== */
+
+const DAILY_CHART_TITLE = 'ページビューと訪問者の日次推移';
+
+/** 当たり判定の膜（設計 §7.1）。SVG の箱ちょうどに重なる。 */
+function hoverArea(page: Page): Locator {
+  return page.locator('[data-chart-hover-area]');
+}
+
+/** ポップアップ本体（設計 §7.3）。 */
+function chartTooltip(page: Page): Locator {
+  return page.locator('[data-chart-tooltip]');
+}
+
+/** ホバー中の 1 点に出るマーカー（設計 §7.1）。 */
+function chartMarker(page: Page): Locator {
+  return page.locator('[data-chart-marker]');
+}
+
+function dailyChartFigure(page: Page): Locator {
+  return page
+    .getByRole('figure')
+    .filter({ has: page.getByRole('img', { name: DAILY_CHART_TITLE }) });
+}
+
+/** 直近 7 日（今日を含む）を確定期間として開く URL。点が 7 つ並ぶ（実装プラン §8 #12）。 */
+function weekUrl(siteId: string): string {
+  return `/analytics?siteId=${siteId}&period=custom&from=${shiftDate(today(), -6)}&to=${today()}`;
+}
+
+/** 期間内の日付（`YYYY-MM-DD`）。ポップアップの `M/D` と突き合わせるのに使う。 */
+function weekDates(): string[] {
+  return Array.from({ length: 7 }, (_, index) => shiftDate(today(), index - 6));
+}
+
+/** `YYYY-MM-DD` → `M/D`（`ui/analytics/labels.ts` の `shortDate` と同じ形）。 */
+function shortDate(date: string): string {
+  const [, month, day] = date.split('-');
+  return `${Number(month)}/${Number(day)}`;
+}
+
+/**
+ * 膜の中の割合位置へポインタを合わせる。
+ *
+ * `position` は要素の左上が原点。`chartHitTest` は X で列を決めるので、
+ * 横位置がどの日を指すかを決める（設計 §7.2）。
+ */
+async function hoverChartAt(page: Page, xRatio: number, yRatio: number): Promise<void> {
+  const area = hoverArea(page);
+  const box = await area.boundingBox();
+  expect(box, '膜の位置が取れない').not.toBeNull();
+  await area.hover({
+    position: { x: (box?.width ?? 0) * xRatio, y: (box?.height ?? 0) * yRatio },
+  });
+}
+
+/** ポップアップの中身（系列名 / X 軸のラベル / 数値）。 */
+interface TooltipText {
+  readonly seriesLabel: string;
+  readonly xLabel: string;
+  readonly value: string;
+}
+
+/**
+ * ポップアップの表示内容を読む。
+ *
+ * 要素の分け方（行の組み方）に依存させたくないので、**文字列から取り出す**。
+ * 系列名（「ページビュー」「訪問者」）に数字は含まれないので、
+ * 日付ラベル（`M/D`）を除いた残りの数字が値になる。
+ */
+async function readTooltip(page: Page): Promise<TooltipText> {
+  const text = await chartTooltip(page).innerText();
+  const xLabel = /(\d{1,2}\/\d{1,2})/.exec(text)?.[1] ?? '';
+  const rest = text.replace(xLabel, ' ');
+  return {
+    seriesLabel: rest.includes('ページビュー')
+      ? 'ページビュー'
+      : rest.includes('訪問者')
+        ? '訪問者'
+        : '',
+    xLabel,
+    value: /([\d,]+)/.exec(rest)?.[1] ?? '',
+  };
+}
+
+/**
+ * ポップアップの X 軸のラベルが `expected` と違う値になるまで待ってから読む。
+ *
+ * **`hover` の直後にそのまま `innerText()` を読まない**（検証レポート §3.2-2）。
+ * ポップアップの要素は既に存在するので、React の再描画が済む前に読むと
+ * **前のホバーの値**が取れてしまう。要素の出現待ちでは塞げないので、
+ * `expect.poll`（再試行つき）で「変わったこと」を待ち合わせる。
+ *
+ * `expected` に `''` を渡せば「何か読めるまで待つ」になる。
+ */
+async function tooltipXLabelChangedFrom(page: Page, expected: string): Promise<string> {
+  await expect
+    .poll(async () => (await readTooltip(page)).xLabel, {
+      message: `ポップアップの X 軸のラベルが変わるのを待った（前の値: "${expected}"）`,
+    })
+    .not.toBe(expected);
+  return (await readTooltip(page)).xLabel;
+}
+
+/**
+ * ページ全体が横に伸びているか（`responsive.spec.ts` の `hasHorizontalOverflow` と同じ式）。
+ *
+ * **`responsive.spec.ts` へ E7 を置かない。** あちらにはサイトを作る道具が 1 つも無く、
+ * 丸ごと写すと `csrf` を余分に消費する（実装プラン §8 #9）。
+ */
+async function hasHorizontalOverflow(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const doc = document.documentElement;
+    // 1px の丸め誤差は許す。
+    return doc.scrollWidth > doc.clientWidth + 1;
+  });
+}
+
+/** E12 のための「権限を 1 つも持たない利用者」。**1 回だけ作って使い回す。** */
+let noPermissionStorage: Awaited<ReturnType<APIRequestContext['storageState']>> | null = null;
+
+async function storageWithoutPermissions(
+  request: APIRequestContext,
+  playwright: PlaywrightWorkerArgs['playwright'],
+): Promise<Awaited<ReturnType<APIRequestContext['storageState']>>> {
+  if (noPermissionStorage === null) {
+    const api = await contextWithoutPermissions(request, playwright);
+    try {
+      noPermissionStorage = await api.storageState();
+    } finally {
+      await api.dispose();
+    }
+  }
+  return noPermissionStorage;
+}
+
+test.describe('チャートのポップアップ', () => {
+  /**
+   * E1 / E2 / E3 / E11 / E4 を 1 本で通す。
+   *
+   * 同じページを 5 回開かないための措置（実装プラン §8 #11）。
+   * 落ちた箇所が分かるように、条件ごとに `expect` を分けている。
+   */
+  test('ホバーで値が読め、表と一致し、動かすと変わり、Escape と枠外で消える', async ({
+    page,
+    request,
+  }) => {
+    const siteId = await rolledUpTodaySite(page, request);
+
+    await page.goto(weekUrl(siteId));
+    await expect(page.getByRole('img', { name: DAILY_CHART_TITLE })).toBeVisible();
+
+    // 操作前は何も出ていない（裁定 §3.3。常時のマーカーを描かない）。
+    await expect(chartTooltip(page)).toHaveCount(0);
+    await expect(chartMarker(page)).toHaveCount(0);
+
+    // --- E1。系列名・X 軸のラベル・数値の 3 つが読める。
+    await hoverChartAt(page, 0.5, 0.5);
+    await expect(chartTooltip(page)).toBeVisible();
+    await expect(chartMarker(page)).toHaveCount(1);
+
+    // 再描画が済むまで待ってから読む（要素は既にあるので出現待ちでは足りない）。
+    await tooltipXLabelChangedFrom(page, '');
+    const shown = await readTooltip(page);
+    expect(['ページビュー', '訪問者'], 'ポップアップに系列名が無い').toContain(shown.seriesLabel);
+    expect(shown.xLabel, 'ポップアップに X 軸のラベルが無い').toMatch(/^\d{1,2}\/\d{1,2}$/);
+    expect(shown.value, 'ポップアップに数値が無い').toMatch(/^[\d,]+$/);
+
+    // --- E2。同じ日・同じ系列について、`<figcaption>` の表の値と一致する。
+    const figure = dailyChartFigure(page);
+    const summary = figure.locator('summary', { hasText: '日ごとの値を表で見る' });
+    await expect(summary).toBeVisible();
+    await summary.click();
+
+    const fullDate = weekDates().find((date) => shortDate(date) === shown.xLabel);
+    expect(fullDate, `${shown.xLabel} に対応する日付が期間内に無い`).toBeDefined();
+
+    const row = figure.getByRole('row').filter({ hasText: fullDate ?? '' });
+    // 列は 日付 / ページビュー / 訪問者（`overview-tab.tsx` の `dailyColumns`）。
+    const cellIndex = shown.seriesLabel === 'ページビュー' ? 1 : 2;
+    await expect(row.getByRole('cell').nth(cellIndex)).toHaveText(shown.value);
+
+    // --- E3。左右へ動かすと X 軸のラベルが変わる。
+    // **読み取りは再試行つき**（検証レポート §3.2-2）。ポップアップの要素は既に
+    // 存在するので、`hover` の直後にそのまま読むと前のホバーの値が取れうる。
+    await hoverChartAt(page, 0.02, 0.5);
+    const left = await tooltipXLabelChangedFrom(page, '');
+
+    await hoverChartAt(page, 0.98, 0.5);
+    const right = await tooltipXLabelChangedFrom(page, left);
+
+    expect(left, '左端で日付ラベルが読めない').toMatch(/^\d{1,2}\/\d{1,2}$/);
+    expect(right, '右端で日付ラベルが読めない').toMatch(/^\d{1,2}\/\d{1,2}$/);
+    expect(right, '左右で同じ日が出ている').not.toBe(left);
+
+    // --- E11。Escape で消える（`Modal` と同じ作法。設計 §7.4）。
+    await page.keyboard.press('Escape');
+    await expect(chartTooltip(page)).toHaveCount(0);
+    await expect(chartMarker(page)).toHaveCount(0);
+
+    // --- E4。カーソルをチャートの外へ出すと消える。
+    await hoverChartAt(page, 0.5, 0.5);
+    await expect(chartTooltip(page)).toBeVisible();
+
+    await page.getByRole('heading', { name: 'アナリティクス' }).hover();
+    await expect(chartTooltip(page)).toHaveCount(0);
+    await expect(chartMarker(page)).toHaveCount(0);
+  });
+
+  /**
+   * E12。`analytics.read` を持たない利用者には、チャートも膜も描かれない。
+   *
+   * ポップアップは**新しい取得経路を作らない**（設計 §8）ので、
+   * 権限なしの経路で値が露出することはない。それを画面の側からも押さえる。
+   */
+  test('analytics.read を持たない利用者の /analytics にチャートも膜も無い', async ({
+    browser,
+    request,
+    playwright,
+  }) => {
+    const storage = await storageWithoutPermissions(request, playwright);
+
+    const context = await browser.newContext({ baseURL: origin, storageState: storage });
+    try {
+      const page = await context.newPage();
+      const response = await page.goto('/analytics');
+
+      expect(response?.status()).toBe(200);
+      await expect(page.getByText('この操作を行う権限がありません')).toBeVisible();
+      await expect(page.getByRole('img', { name: DAILY_CHART_TITLE })).toHaveCount(0);
+      await expect(hoverArea(page)).toHaveCount(0);
+      await expect(chartTooltip(page)).toHaveCount(0);
+    } finally {
+      await context.close();
+    }
+  });
+
+  /**
+   * E13。未認証はログイン画面へ飛び、チャートに到達しない。
+   *
+   * **`browser.newContext()` では未認証にならない**（`playwright.config.ts` の
+   * `use.storageState` が効く）。`page` の Cookie を消してから開く。
+   */
+  test('未認証で /analytics を開くとログイン画面へ飛び、チャートに到達しない', async ({ page }) => {
+    await page.context().clearCookies();
+    expect(await page.context().cookies()).toEqual([]);
+
+    await page.goto('/analytics');
+
+    await expect(page).toHaveURL(/\/login/);
+    await expect(page.getByLabel('ログインID')).toBeVisible();
+    await expect(page.getByRole('img', { name: DAILY_CHART_TITLE })).toHaveCount(0);
+    await expect(hoverArea(page)).toHaveCount(0);
+  });
+
+  /**
+   * E14。アクセスの記録が無い期間では、空状態が出てチャートも膜も出ない。
+   *
+   * 2 つの経路を見る。
+   * 1. 集計値が 1 件も無い確定期間（`daily` が `[]` ＝ `chartLayout([])` の経路）。
+   *    `rolledUpTodaySite` は**今日しか**記録が無いので、末尾が昨日の `period=7d` が
+   *    ちょうどこれに当たる
+   * 2. 一度も受信していないサイト（`not-tracked` の導線。チャートの木ごと出ない）
+   */
+  test('記録の無い期間では空状態が出て、チャートも膜も出ない', async ({ page, request }) => {
+    const emptyPeriodSite = await rolledUpTodaySite(page, request);
+
+    await page.goto(`/analytics?siteId=${emptyPeriodSite}&period=7d`);
+
+    await expect(page.getByText('この期間のアクセスの記録はありません')).toBeVisible();
+    await expect(page.getByRole('img', { name: DAILY_CHART_TITLE })).toHaveCount(0);
+    await expect(hoverArea(page)).toHaveCount(0);
+    await expect(chartTooltip(page)).toHaveCount(0);
+
+    const neverReceivedSite = await pristineSite(request);
+
+    await page.goto(`/analytics?siteId=${neverReceivedSite}&period=7d`);
+
+    await expect(page.getByText('計測タグ未設置')).toBeVisible();
+    await expect(page.getByRole('img', { name: DAILY_CHART_TITLE })).toHaveCount(0);
+    await expect(hoverArea(page)).toHaveCount(0);
+  });
+});
+
+/**
+ * 狭い画面とタッチ（設計 §7.4 / §7.5 / §7.6、E7 / E8 / E9 / E10）。
+ *
+ * **既定のプロジェクト構成は変えない**（設計 §15-2）。この `describe` に限って
+ * `hasTouch` を有効にする。ここでも新しいサイトは作らない。
+ */
+test.describe('チャートのポップアップ（狭い画面・タッチ）', () => {
+  test.use({ hasTouch: true, viewport: { width: 375, height: 720 } });
+
+  /**
+   * E7。ポップアップを出した状態でも、ページ全体が横スクロールしない。
+   *
+   * 設計 §7.5 の左右・上下の振り分けと `max-width: calc(50% - var(--tf-space-2))` が効いていれば、
+   * ポップアップは SVG の箱の内側に収まり、`Card` の外へ出ない。
+   */
+  test('幅 375px でポップアップを出してもページ全体が横スクロールしない', async ({
+    page,
+    request,
+  }) => {
+    const siteId = await rolledUpTodaySite(page, request);
+
+    await page.goto(weekUrl(siteId));
+    await expect(page.getByRole('img', { name: DAILY_CHART_TITLE })).toBeVisible();
+    expect(await hasHorizontalOverflow(page), 'ポップアップを出す前から溢れている').toBe(false);
+
+    // 端（左端・右端）ほど枠を破りやすいので、両端でも見る。
+    for (const xRatio of [0.02, 0.5, 0.98]) {
+      const area = hoverArea(page);
+      const box = await area.boundingBox();
+      expect(box, '膜の位置が取れない').not.toBeNull();
+      await area.tap({
+        position: { x: (box?.width ?? 0) * xRatio, y: (box?.height ?? 0) * 0.5 },
+      });
+
+      await expect(chartTooltip(page)).toBeVisible();
+      expect(await hasHorizontalOverflow(page), `xRatio=${xRatio} で溢れた`).toBe(false);
+    }
+  });
+
+  /**
+   * E8 ＋ E9 を 1 本で通す。
+   *
+   * **指を離しても消さない**（設計 §7.4）。タッチでは指を離した直後に
+   * `pointerleave` が飛ぶので、そこで消すと**指の下に隠れていた値を読む前に消える**。
+   * 閉じる手段は膜の外のタップ（`document` の `pointerdown`）である。
+   */
+  test('タップでポップアップが出て指を離しても残り、外をタップすると消える', async ({
+    page,
+    request,
+  }) => {
+    const siteId = await rolledUpTodaySite(page, request);
+
+    await page.goto(weekUrl(siteId));
+    await expect(page.getByRole('img', { name: DAILY_CHART_TITLE })).toBeVisible();
+
+    const area = hoverArea(page);
+    const box = await area.boundingBox();
+    expect(box, '膜の位置が取れない').not.toBeNull();
+
+    // --- E8。タップ（＝指を接地して離す）で出て、離したあとも出たまま。
+    await area.tap({ position: { x: (box?.width ?? 0) * 0.5, y: (box?.height ?? 0) * 0.5 } });
+
+    await expect(chartTooltip(page)).toBeVisible();
+    await expect(chartMarker(page)).toHaveCount(1);
+
+    await tooltipXLabelChangedFrom(page, '');
+    const shown = await readTooltip(page);
+    expect(shown.xLabel).toMatch(/^\d{1,2}\/\d{1,2}$/);
+    expect(shown.value).toMatch(/^[\d,]+$/);
+
+    // --- E9。チャートの外をタップすると消える。
+    await page.getByRole('heading', { name: 'アナリティクス' }).tap();
+
+    await expect(chartTooltip(page)).toHaveCount(0);
+    await expect(chartMarker(page)).toHaveCount(0);
+  });
+
+  /**
+   * E10。膜に `touch-action: pan-y pinch-zoom` が付いている。
+   *
+   * **`pan-y` が無いとチャートの上で縦スクロールできなくなる。**
+   * **`pinch-zoom` が無いと二本指の拡大が効かなくなる**（WCAG 1.4.4。設計 §7.4、
+   * 検証レポート §3.3）。横方向は当たり判定に使うので渡さない。
+   *
+   * Playwright には本物のスワイプ・ピンチを合成する API が無い（`touchscreen` はタップだけ）。
+   * 計算済みスタイルで見る（実装プラン §8 #8）。
+   */
+  test('膜の touch-action が pan-y pinch-zoom（縦スクロールも拡大も妨げない）', async ({
+    page,
+    request,
+  }) => {
+    const siteId = await rolledUpTodaySite(page, request);
+
+    await page.goto(weekUrl(siteId));
+    await expect(hoverArea(page)).toHaveCount(1);
+
+    const touchAction = await hoverArea(page).evaluate(
+      (element) => getComputedStyle(element).touchAction,
+    );
+
+    expect(touchAction, '縦スクロールを奪っている').toContain('pan-y');
+    // 二本指の拡大を奪わない（WCAG 1.4.4。検証レポート §3.3）。
+    expect(touchAction, 'ピンチズームを奪っている').toContain('pinch-zoom');
+    // 横は渡さない（`pan-x` / `auto` にすると当たり判定が奪われる）。
+    expect(touchAction).not.toContain('pan-x');
+    expect(touchAction).not.toBe('auto');
+  });
+});
