@@ -117,6 +117,8 @@ test('OpenAPI に登録済みエンドポイントが含まれる', async ({ req
     '/plugins/{id}/settings',
     '/roles',
     '/settings',
+    // 033-analytics-ip-exclusion 設計 §8。ログに記録しない送信元IPの保存。
+    '/settings/access-log-ips',
     // 032-timezone-setting 設計 §6.5。基準タイムゾーンのプレビューと保存。
     '/settings/timezone',
     '/setup',

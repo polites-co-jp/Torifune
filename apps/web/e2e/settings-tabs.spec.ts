@@ -36,7 +36,13 @@ test('一般タブでサービス表示名を変えるとヘッダに反映さ�
   await page.goto('/settings?tab=general');
 
   await page.getByLabel('サービス表示名').fill('検証環境');
-  await page.getByRole('button', { name: '保存する' }).click();
+  // 「一般」タブには「保存する」が2つある（033 が「アクセスログの除外IP」を足した）。
+  // 押す先をフォームで絞る。カード内の他のボタンを巻き込まない。
+  await page
+    .locator('form')
+    .filter({ has: page.getByLabel('サービス表示名') })
+    .getByRole('button', { name: '保存する' })
+    .click();
 
   // ヘッダはサーバー側で描画しているため、保存後に読み込み直している。
   await expect(page.getByRole('banner').getByRole('link', { name: '検証環境' })).toBeVisible();
