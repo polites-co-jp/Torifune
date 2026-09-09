@@ -410,3 +410,180 @@ describe('月の 1 日の空状態（#61）', () => {
     expect((view.match(/<EmptyPeriodNotice/g) ?? []).length).toBe(1);
   });
 });
+
+/**
+ * 034-analytics-period-scope の静的検査（実装プラン §2「テストの方法」の (a)〜(e)）。
+ *
+ * ここへ寄せるのは、**描画からは見分けられない構造**だけ。
+ *
+ * - (a) `PeriodBar` を描く箇所が 1 つだけ（#39。タブごとに書いていないこと）
+ * - (b) 出し分けが `shouldShowPeriodBar` に閉じている（#40〜#42。条件が画面に散っていない）
+ * - (c) 1 日の出し分けの根拠が `days` である（#33 / #35。当日という値ではない）
+ * - (d) `overview-tab.tsx` が `rangeText` を import しなくなっている（#52）
+ * - (e) `settings-tab.tsx` に `caption=` が無い（#53）
+ * - #22。`analyticsHeaderText` が `rangeText` を使い続けている
+ *
+ * **値や文言の検査をここへ逃がさない**（実装プラン §7 #11）。
+ */
+describe('034: 適用中の期間の表示（#39〜#42 / #52 / #53）', () => {
+  const view = read('ui', 'analytics', 'analytics-view.tsx');
+  const overview = withoutComments(read('ui', 'analytics', 'overview-tab.tsx'));
+  const settings = withoutComments(read('ui', 'analytics', 'settings-tab.tsx'));
+  const labels = withoutComments(read('ui', 'analytics', 'labels.ts'));
+
+  /** (a) #39。単体で描けるように named export する（`StaleRangeNotice` と同じ理由）。 */
+  it('(a) PeriodBar が analytics-view.tsx から export されている', () => {
+    expect(view).toMatch(/export function PeriodBar\s*\(/);
+  });
+
+  /**
+   * (a) #39。**`AnalyticsView` に 1 つだけ置く。** タブごとに書かない。
+   *
+   * タブごとに書くと、タブによって出たり出なかったりする状態を実行時にしか見つけられない。
+   */
+  it('(a) PeriodBar を描く箇所が 1 つだけ', () => {
+    expect((view.match(/<PeriodBar/g) ?? []).length).toBe(1);
+  });
+
+  /** (b) #40〜#42。出し分けの述語を named export する（実装プラン §8 #2）。 */
+  it('(b) shouldShowPeriodBar が analytics-view.tsx から export されている', () => {
+    expect(view).toMatch(/export function shouldShowPeriodBar\s*\(/);
+  });
+
+  /**
+   * (b) #40〜#42。`AnalyticsView` はその述語で分岐する。
+   *
+   * 条件を画面に直書きすると、`empty-period`（実行日が月の 1 日でないと E2E で作れない）を
+   * 決定的に確かめられなくなる。
+   */
+  it('(b) AnalyticsView が shouldShowPeriodBar で分岐している', () => {
+    expect(withoutComments(view)).toContain('shouldShowPeriodBar(');
+  });
+
+  /** §7.3.4。期間の文字列は `AnalyticsView` が **1 回だけ**組み立てる。 */
+  it('analytics-view.tsx が appliedPeriodText を 1 回だけ呼ぶ', () => {
+    expect((withoutComments(view).match(/appliedPeriodText\(/g) ?? []).length).toBe(1);
+  });
+
+  /** §7.3.4。**タブは文字列を組み立てない**（渡された文字列を並べるだけ）。 */
+  it.each(['overview-tab.tsx', 'pages-tab.tsx', 'referrers-tab.tsx', 'visitors-tab.tsx'])(
+    '%s が appliedPeriodText を呼ばない',
+    (file) => {
+      expect(withoutComments(read('ui', 'analytics', file))).not.toContain('appliedPeriodText');
+    },
+  );
+
+  /** (d) #52。「日次の推移」の `aside` から期間を外したので、import ごと消える。 */
+  it('(d) overview-tab.tsx が rangeText を import しない', () => {
+    expect(overview).not.toContain('rangeText');
+  });
+
+  /** (d) #52。代わりに `caption` へ渡している（検査が空振りしていない）。 */
+  it('(d) overview-tab.tsx が caption を渡している', () => {
+    expect(overview).toContain('caption=');
+  });
+
+  /** (e) #53。設定タブは期間に依存しない。 */
+  it('(e) settings-tab.tsx に caption= が無い', () => {
+    expect(settings).not.toContain('caption=');
+  });
+
+  /** (e) #53。`periodCaption` も受け取らない。 */
+  it('(e) settings-tab.tsx が periodCaption を受け取らない', () => {
+    expect(settings).not.toContain('periodCaption');
+  });
+
+  /**
+   * #22。**`rangeText` は変えない。** ヘッダ行の「前期間（… 〜 …）」は 030 §7.4.1 の契約で、
+   * E2E が文言を固定している。当期の表示のために既存の契約を動かさない。
+   */
+  it('#22 analyticsHeaderText が rangeText を使い続けている', () => {
+    const header = labels.slice(labels.indexOf('export function analyticsHeaderText'));
+
+    expect(header).toContain('rangeText(');
+  });
+
+  /** #23。案内の「この期間（…）」は `dateRangeText` を使う。 */
+  it('#23 staleRangeNoticeText が dateRangeText を使う', () => {
+    const notice = labels.slice(labels.indexOf('export function staleRangeNoticeText'));
+    const body = notice.slice(0, notice.indexOf('export ', 1));
+
+    expect(body).toContain('dateRangeText(');
+    expect(body).not.toContain('rangeText(');
+  });
+
+  /** 実装プラン §8 #4。日数は `rangeDays`（両端を含む）を使う。独自に数えない。 */
+  it('labels.ts が rangeDays を Domain から取る', () => {
+    expect(labels).toMatch(/import\s*\{[^}]*rangeDays[^}]*\}\s*from\s*['"]@\/domain\/analytics/);
+  });
+});
+
+/**
+ * 034: 期間が 1 日のときの出し分け（設計 §7.2、受け入れ条件 #33 / #35 の静的側）。
+ *
+ * 「当日だから出さない」を**「期間が 1 日だから出さない」**へ一般化する。
+ * 根拠が期間の長さなのだから、条件も期間の長さで書く。
+ *
+ * **直帰率・平均滞在の注記は `isToday` のまま**（確定値に当日の注記を出さない）。
+ */
+describe('034: 1 日の期間の出し分け（#33 / #35）', () => {
+  const page = withoutComments(read('app', 'analytics', 'page.tsx'));
+
+  /** `key:` から次の `key2:` までを取り出す。無ければ空文字。 */
+  function fieldBody(source: string, key: string, until: string): string {
+    const start = source.indexOf(`${key}:`);
+    if (start < 0) {
+      return '';
+    }
+    const rest = source.slice(start);
+    const end = rest.indexOf(`${until}:`);
+    return end === -1 ? rest : rest.slice(0, end);
+  }
+
+  const dailyBranch = fieldBody(page, 'daily', 'topPages');
+  const perDayBranch = fieldBody(page, 'perDay', 'hours');
+
+  it('page.tsx に daily の分岐がある（検査が空振りしていない）', () => {
+    expect(dailyBranch, 'daily: の分岐が見つからない').not.toBe('');
+  });
+
+  it('page.tsx に perDay の分岐がある（検査が空振りしていない）', () => {
+    expect(perDayBranch, 'perDay: の分岐が見つからない').not.toBe('');
+  });
+
+  /** (c) #33。`daily` の分岐の根拠は期間の長さ。 */
+  it('(c) daily の分岐が days === 1 を根拠にしている', () => {
+    expect(dailyBranch.replace(/\s+/g, '')).toContain('days===1');
+  });
+
+  /** (c) #33 / #35。当日という値を根拠にしない（`period=custom` の 1 日にも効かせる）。 */
+  it('(c) daily の分岐に isToday が現れない', () => {
+    expect(dailyBranch).not.toContain('isToday');
+  });
+
+  /** (c) #33。`perDay` も同じ根拠。 */
+  it('(c) perDay の分岐が days === 1 を根拠にしている', () => {
+    expect(perDayBranch.replace(/\s+/g, '')).toContain('days===1');
+  });
+
+  /** (c) #33 / #35 */
+  it('(c) perDay の分岐に isToday が現れない', () => {
+    expect(perDayBranch).not.toContain('isToday');
+  });
+
+  /**
+   * 設計 §7.2。**直帰率・平均滞在の注記は当日だけ。**
+   *
+   * 「進行中のセッションを含む」ことの説明であり、確定値である「昨日」には当てはまらない。
+   * 一般化すると、確定値に対して嘘の注記が出る。
+   */
+  it('bounceRateNote / dwellAvgNote は isToday のまま', () => {
+    expect(page).toMatch(/bounceRateNote:\s*isToday\s*\?/);
+    expect(page).toMatch(/dwellAvgNote:\s*isToday\s*\?/);
+  });
+
+  /** 実装プラン §8 #7。既存の `days` を使う（新しい変数も新しい計算も足さない）。 */
+  it('days は既存の rangeDays(period.from, period.to) のまま', () => {
+    expect(page.replace(/\s+/g, '')).toContain('constdays=rangeDays(period.from,period.to)');
+  });
+});

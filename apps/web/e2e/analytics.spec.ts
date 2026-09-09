@@ -199,18 +199,45 @@ async function withDatabase<T>(fn: (client: pg.Client) => Promise<T>): Promise<T
   }
 }
 
-/** 前期間の集計値を `source = 'e2e'`・`key = ''` で入れる。 */
+/**
+ * 集計値の 1 行（034-analytics-period-scope 設計 §11 #5）。
+ *
+ * `key` 付きの指標（`path_pageviews` / `referrer` / `pageviews_hour` / `pageviews_device` など）も
+ * 入れられるようにする。034 の「全カード・全タブが選択期間で絞られること」（設計 §10 G）は、
+ * key 付きの区画（上位ページ・参照元・時間帯別・デバイス・各タブの表）まで見る必要がある。
+ */
+interface SeedPoint {
+  readonly metric: string;
+  /** 内訳キー（パス・ホスト・時間帯・デバイス）。省略は `''`（キーを持たない指標）。 */
+  readonly key?: string;
+  readonly value: number;
+}
+
+/**
+ * 集計値を `source = 'e2e'` で入れる。
+ *
+ * key 無しは `Record<metric, value>` で（現行の呼び方）、key 付きは `SeedPoint[]` で渡す。
+ * **主キーは `(site_id, metric_date, source, metric, key)`。** 同じ (metric, key) を 2 回入れると
+ * INSERT が落ちるので、下ごしらえの取り違えはそこで気づける。
+ */
 async function seedAnalytics(
   siteId: string,
   metricDate: string,
-  values: Readonly<Record<string, number>>,
+  values: Readonly<Record<string, number>> | readonly SeedPoint[],
 ): Promise<void> {
+  const points: readonly SeedPoint[] = Array.isArray(values)
+    ? values
+    : Object.entries(values as Readonly<Record<string, number>>).map(([metric, value]) => ({
+        metric,
+        value,
+      }));
+
   await withDatabase(async (client) => {
-    for (const [metric, value] of Object.entries(values)) {
+    for (const point of points) {
       await client.query(
         `INSERT INTO analytics (site_id, metric_date, source, metric, key, value)
-         VALUES ($1, $2, 'e2e', $3, '', $4)`,
-        [siteId, metricDate, metric, value],
+         VALUES ($1, $2, 'e2e', $3, $4, $5)`,
+        [siteId, metricDate, point.metric, point.key ?? '', point.value],
       );
     }
   });
@@ -1834,8 +1861,13 @@ test.describe('当日', () => {
     expect(todayIndex).toBeLessThan(presetIndex);
   });
 
-  /** #49。`period === 'today'` のとき期間セグメントは**どれも選択状態にならない**。 */
-  test('?period=today で「当日」が選択状態になり、期間の 6 項目はどれも選択されない', async ({
+  /**
+   * #49。`period === 'today'` のとき期間セグメントは**どれも選択状態にならない**。
+   *
+   * 034 #73。期間セグメントは「昨日」が増えて **7 項目**になった（034 設計 §7.1.2）。
+   * 期待の意味は変えない（どれも選択されない）。
+   */
+  test('?period=today で「当日」が選択状態になり、期間の 7 項目はどれも選択されない', async ({
     page,
     request,
   }) => {
@@ -1847,7 +1879,7 @@ test.describe('当日', () => {
       'aria-current',
       'page',
     );
-    for (const label of ['7日', '30日', '90日', '今月', '前月', 'カスタム']) {
+    for (const label of ['昨日', '7日', '30日', '90日', '今月', '前月', 'カスタム']) {
       await expect(
         presetNav(page).getByRole('link', { name: label, exact: true }),
         label,
@@ -2213,6 +2245,19 @@ test.describe('当日', () => {
       await expect(page.getByText('この操作を行う権限がありません')).toBeVisible();
       await expect(todayNav(page)).toHaveCount(0);
       await expect(siteSelect(page)).toHaveCount(0);
+
+      /*
+       * 034 #65。**期間を変えても読める範囲は変わらない**（034 設計 §8）。
+       * 期間は URL パラメータであって権限の境界ではない。
+       * **期間の表示も数値も出ない**（`PeriodBar` は認可の結果を出さない）。
+       */
+      const yesterdayResponse = await page.goto('/analytics?period=yesterday');
+
+      expect(yesterdayResponse?.status()).toBe(200);
+      await expect(page.getByText('この操作を行う権限がありません')).toBeVisible();
+      await expect(page.locator('[data-analytics-period]')).toHaveCount(0);
+      await expect(presetNav(page)).toHaveCount(0);
+      await expect(siteSelect(page)).toHaveCount(0);
     } finally {
       await context.close();
     }
@@ -2239,13 +2284,26 @@ test.describe('当日', () => {
 
     await expect(page).toHaveURL(/\/login/);
     await expect(page.getByLabel('ログインID')).toBeVisible();
+
+    // 034 #66。「昨日」でも同じ（期間で認証の扱いが変わらない）。
+    await page.goto('/analytics?period=yesterday');
+
+    await expect(page).toHaveURL(/\/login/);
+    await expect(page.getByLabel('ログインID')).toBeVisible();
+    await expect(page.locator('[data-analytics-period]')).toHaveCount(0);
   });
 
   /** #69。存在しない siteId は現行どおり 404（当日でも変わらない）。 */
   test('存在しない siteId の ?period=today は 404', async ({ page }) => {
-    const response = await page.goto(`/analytics?siteId=${crypto.randomUUID()}&period=today`);
+    const siteId = crypto.randomUUID();
+    const response = await page.goto(`/analytics?siteId=${siteId}&period=today`);
 
     expect(response?.status()).toBe(404);
+
+    // 034 #67。期間で挙動が変わらない。
+    const yesterdayResponse = await page.goto(`/analytics?siteId=${siteId}&period=yesterday`);
+
+    expect(yesterdayResponse?.status()).toBe(404);
   });
 
   /** #69。UUID でない siteId も 404（キャストエラーで 500 にしない）。 */
@@ -2253,6 +2311,11 @@ test.describe('当日', () => {
     const response = await page.goto('/analytics?siteId=not-a-uuid&period=today');
 
     expect(response?.status()).toBe(404);
+
+    // 034 #67。
+    const yesterdayResponse = await page.goto('/analytics?siteId=not-a-uuid&period=yesterday');
+
+    expect(yesterdayResponse?.status()).toBe(404);
   });
 
   /**
@@ -2274,6 +2337,15 @@ test.describe('当日', () => {
     expect(plain.status()).toBe(200);
     expect(withPeriod.status()).toBe(200);
     expect(await withPeriod.json()).toEqual(await plain.json());
+
+    /*
+     * 034 #71。**API には期間プリセットの概念が無い**（034 設計 §6）。
+     * `period=yesterday` を足しても、未知のクエリで 400 にならず応答も変わらない。
+     */
+    const withYesterday = await request.get(`${base}&period=yesterday`);
+
+    expect(withYesterday.status()).toBe(200);
+    expect(await withYesterday.json()).toEqual(await plain.json());
   });
 
   /**
@@ -2781,5 +2853,519 @@ test.describe('チャートのポップアップ（狭い画面・タッチ）',
     // 横は渡さない（`pan-x` / `auto` にすると当たり判定が奪われる）。
     expect(touchAction).not.toContain('pan-x');
     expect(touchAction).not.toBe('auto');
+  });
+});
+
+/* ============================================================================
+ * 034-analytics-period-scope：期間プリセット「昨日」と期間の適用範囲（設計 §10）
+ *
+ * 2 つを見る。
+ *
+ * 1. 期間プリセット「昨日」（期間セグメントの先頭）と、1 日の期間での出し分け（E #31〜#37）
+ * 2. **選んだ期間がどの区画にも効いていることが画面から読み取れる**（F #38〜#53）と、
+ *    実際にどの区画も選択期間で絞られていること（G #54〜#63。裁定 3.2 の固定）
+ *
+ * **新しく作るサイトは `periodScopeSite` の 1 つだけ。** `GET /api/v1/auth/csrf` の
+ * Rate Limit（300 回/60 秒・キーは `operationId:IP`）を `e2e/` の全ファイルが共有しており
+ * 余裕が少ない（上の「当日」の doc を参照）。030 が作った `pristineSite` /
+ * `rolledUpTodaySite` は**読むだけ**で使い回し、下ごしらえは `withDatabase` 経由の
+ * 直挿し（CSRF を消費しない）に寄せる。
+ *
+ * **同じ URL を見る条件は 1 本のテストにまとめる**（031 の先例）。
+ * まとめた中でも `expect` は区画ごとに分けて書き、どれが落ちたか分かるようにする。
+ * ========================================================================== */
+
+/** タブの直下に 1 つだけ出る「適用中の期間」（設計 §7.3.2）。 */
+function periodBar(page: Page): Locator {
+  return page.locator('[data-analytics-period]');
+}
+
+/** `Card`（`<section>`）を見出しで引く。区画ごとに値を確かめるために使う。 */
+function card(page: Page, heading: string): Locator {
+  return page
+    .locator('section')
+    .filter({ has: page.getByRole('heading', { name: heading, exact: true }) })
+    .last();
+}
+
+/** `?period=yesterday` で開く URL。 */
+function yesterdayUrl(siteId: string, extra = ''): string {
+  return `/analytics?siteId=${siteId}&period=yesterday${extra}`;
+}
+
+/** 一昨日（期間外の日）。 */
+function twoDaysAgo(): string {
+  return shiftDate(today(), -2);
+}
+
+/** 期間内（昨日）にだけ現れるパスとホスト。 */
+const IN_PATH = '/yesterday-only';
+const IN_HOST = 'yesterday.example.com';
+/** 期間外（一昨日）にだけ現れるパスとホスト。 */
+const OUT_PATH = '/only-two-days-ago';
+const OUT_HOST = 'two-days-ago.example.com';
+
+/**
+ * 期間内（昨日）の集計値。
+ *
+ * `?period=yesterday` ではこれだけが出る。
+ * ページビュー 111 / 訪問者 41 / セッション 30 / 直帰率 9 ÷ 30 = 30.0% /
+ * 平均滞在 60000 ÷ 30 = 2000ms = `0:02`。
+ */
+const IN_PERIOD_POINTS: readonly SeedPoint[] = [
+  { metric: 'pageviews', value: 111 },
+  { metric: 'visitors', value: 41 },
+  { metric: 'sessions', value: 30 },
+  { metric: 'bounces', value: 9 },
+  { metric: 'dwell_ms', value: 60_000 },
+  { metric: 'dwell_samples', value: 30 },
+  { metric: 'bot_pageviews', value: 5 },
+  { metric: 'bot_visitors', value: 2 },
+  { metric: 'path_pageviews', key: IN_PATH, value: 111 },
+  { metric: 'path_visitors', key: IN_PATH, value: 41 },
+  { metric: 'landing', key: IN_PATH, value: 30 },
+  { metric: 'path_bounces', key: IN_PATH, value: 9 },
+  { metric: 'path_dwell_ms', key: IN_PATH, value: 60_000 },
+  { metric: 'path_dwell_samples', key: IN_PATH, value: 30 },
+  { metric: 'referrer', key: IN_HOST, value: 30 },
+  { metric: 'referrer_visitors', key: IN_HOST, value: 41 },
+  { metric: 'referrer_bounces', key: IN_HOST, value: 9 },
+  { metric: 'pageviews_hour', key: '5', value: 111 },
+  { metric: 'pageviews_device', key: 'desktop', value: 111 },
+];
+
+/**
+ * 期間外（一昨日）の集計値。
+ *
+ * `?period=yesterday` では**1 つも出てはならない**。`?period=7d` では合算されて出る。
+ * 合算：ページビュー 333 / 訪問者 121 / セッション 90 / 直帰率 57 ÷ 90 = 63.3% /
+ * 平均滞在 660000 ÷ 90 = 7333ms = `0:07`。
+ */
+const OUT_PERIOD_POINTS: readonly SeedPoint[] = [
+  { metric: 'pageviews', value: 222 },
+  { metric: 'visitors', value: 80 },
+  { metric: 'sessions', value: 60 },
+  { metric: 'bounces', value: 48 },
+  { metric: 'dwell_ms', value: 600_000 },
+  { metric: 'dwell_samples', value: 60 },
+  { metric: 'bot_pageviews', value: 60 },
+  { metric: 'bot_visitors', value: 20 },
+  { metric: 'path_pageviews', key: OUT_PATH, value: 222 },
+  { metric: 'path_visitors', key: OUT_PATH, value: 80 },
+  { metric: 'landing', key: OUT_PATH, value: 60 },
+  { metric: 'path_bounces', key: OUT_PATH, value: 48 },
+  { metric: 'path_dwell_ms', key: OUT_PATH, value: 600_000 },
+  { metric: 'path_dwell_samples', key: OUT_PATH, value: 60 },
+  { metric: 'referrer', key: OUT_HOST, value: 60 },
+  { metric: 'referrer_visitors', key: OUT_HOST, value: 80 },
+  { metric: 'referrer_bounces', key: OUT_HOST, value: 48 },
+  { metric: 'pageviews_hour', key: '19', value: 222 },
+  { metric: 'pageviews_device', key: 'mobile', value: 222 },
+];
+
+/**
+ * 034 が使う唯一の新しいサイト。
+ *
+ * 今日の生ログを 1 件受けて集計済み（`lastReceivedAt` が今日・未集計 0 件 ＝ `receiving`）にし、
+ * そのうえで**昨日**（期間内）と**一昨日**（期間外）へ集計値を直挿しする。
+ * 今日の `core` の行も残るので、期間外の日は 2 つ（一昨日・今日）になる。
+ */
+let periodScopeSiteId: string | null = null;
+
+async function periodScopeSite(page: Page, request: APIRequestContext): Promise<string> {
+  if (periodScopeSiteId === null) {
+    const siteId = await makeTrackedSite(request);
+    const publicKey = await publicKeyOf(page, siteId);
+    await collectHits(request, publicKey, ['/']);
+    await rollupToday(request);
+    await seedAnalytics(siteId, yesterday(), IN_PERIOD_POINTS);
+    await seedAnalytics(siteId, twoDaysAgo(), OUT_PERIOD_POINTS);
+    periodScopeSiteId = siteId;
+  }
+  return periodScopeSiteId;
+}
+
+test.describe('期間の適用範囲', () => {
+  /**
+   * `?period=yesterday` の概要タブ。
+   *
+   * #74（選択状態）/ #39（`PeriodBar` が 1 つ）/ #44（`data-analytics-period`）/
+   * #31（「日次の推移」が出ない）/ #36（当日の注記が出ない）/
+   * #54〜#58（5 タイル・上位ページ・参照元・時間帯別・デバイスに期間外が入らない）。
+   */
+  test('?period=yesterday の概要は昨日だけを見せ、期間外の日が混ざらない', async ({
+    page,
+    request,
+  }) => {
+    const siteId = await periodScopeSite(page, request);
+
+    await page.goto(yesterdayUrl(siteId));
+
+    // --- #74。「昨日」が選択状態で、「当日」は非選択。
+    await expect(presetNav(page).getByRole('link', { name: '昨日', exact: true })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+    await expect(
+      todayNav(page).getByRole('link', { name: '当日', exact: true }),
+    ).not.toHaveAttribute('aria-current', 'page');
+
+    // --- #39 / #44。適用中の期間はタブの直下に 1 つだけ。日付は昨日 1 日。
+    await expect(periodBar(page)).toHaveCount(1);
+    await expect(periodBar(page)).toHaveAttribute(
+      'data-analytics-period',
+      `${yesterday()}/${yesterday()}`,
+    );
+    await expect(periodBar(page)).toContainText(yesterday());
+    // 1 日なので日付を 1 つだけ出す（区切りを挟まない。設計 §7.3.1）。
+    await expect(periodBar(page)).not.toContainText('〜');
+    // 確定値なので「当日」とは書かない。
+    await expect(periodBar(page)).not.toContainText('当日');
+
+    // --- #31。1 日の期間では折れ線に意味が無い。カードごと出さない。
+    await expect(page.getByText('日次の推移', { exact: true })).toHaveCount(0);
+    // 1 日の中の推移は時間帯別が担う。
+    await expect(page.getByText('時間帯別のページビュー', { exact: true })).toBeVisible();
+
+    // --- #36。確定値である「昨日」に、当日の偏りの注記を出さない。
+    await expect(statTile(page, '直帰率')).not.toContainText('確定後より高めに出ます');
+    await expect(statTile(page, '平均滞在時間')).not.toContainText(
+      '進行中のセッションを含む当日はその差が大きく出ます',
+    );
+
+    // --- #54。5 タイルに期間外の日の値が入らない（括弧内は昨日 + 一昨日の合算）。
+    await expect(statTile(page, 'ページビュー')).toContainText('111');
+    await expect(statTile(page, 'ページビュー')).not.toContainText('333');
+    await expect(statTile(page, '訪問者')).toContainText('41');
+    await expect(statTile(page, '訪問者')).not.toContainText('121');
+    await expect(statTile(page, 'セッション')).toContainText('30');
+    await expect(statTile(page, 'セッション')).not.toContainText('90');
+    await expect(statTile(page, '直帰率')).toContainText('30.0%');
+    await expect(statTile(page, '直帰率')).not.toContainText('63.3%');
+    await expect(statTile(page, '平均滞在時間')).toContainText('0:02');
+    await expect(statTile(page, '平均滞在時間')).not.toContainText('0:07');
+
+    // --- #55。上位ページに、期間外の日だけに現れるパスが出ない。
+    await expect(card(page, '上位ページ')).toContainText(IN_PATH);
+    await expect(card(page, '上位ページ')).not.toContainText(OUT_PATH);
+
+    // --- #56。参照元に、期間外の日だけに現れるホストが出ない。
+    await expect(card(page, '参照元')).toContainText(IN_HOST);
+    await expect(card(page, '参照元')).not.toContainText(OUT_HOST);
+
+    // --- #57。時間帯別に期間外の日の値が入らない（一昨日は 19 時台に 222）。
+    await expect(card(page, '時間帯別のページビュー')).toContainText('最も多い時間帯は 5 時台');
+    await expect(card(page, '時間帯別のページビュー')).not.toContainText(
+      '最も多い時間帯は 19 時台',
+    );
+    // 代替表（`<details>`）の値も昨日のぶんだけ。
+    await expect(card(page, '時間帯別のページビュー')).not.toContainText('222');
+
+    // --- #58。デバイスに期間外の日の値が入らない（一昨日はモバイルに 222）。
+    await expect(card(page, 'デバイス')).toContainText('111');
+    await expect(card(page, 'デバイス')).not.toContainText('222');
+    // Bot の件数も昨日の 5 件だけ（一昨日の 60 件を足さない）。
+    await expect(card(page, 'デバイス')).toContainText('Bot と判定したアクセス 5 件');
+  });
+
+  /**
+   * #39 / #48 / #59。ページタブ。
+   *
+   * 表の行と「N ページ」（`total`）の両方に期間外の行が入らない。
+   */
+  test('?period=yesterday のページタブに期間外の行が入らない', async ({ page, request }) => {
+    const siteId = await periodScopeSite(page, request);
+
+    await page.goto(yesterdayUrl(siteId, '&tab=pages'));
+
+    // --- #39。タブを変えても期間の表示は 1 つ。
+    await expect(periodBar(page)).toHaveCount(1);
+    await expect(periodBar(page)).toContainText(yesterday());
+
+    // --- #59。表の行。
+    await expect(page.getByRole('row', { name: new RegExp(IN_PATH) })).toBeVisible();
+    await expect(page.getByRole('row', { name: new RegExp(OUT_PATH) })).toHaveCount(0);
+
+    // --- #59。件数（`total`）。期間外の key を数えていない。
+    await expect(card(page, 'ページ')).toContainText('1 ページ · ページビュー順');
+
+    // --- #48。`aside` は残ったまま、期間が別の行に出る。
+    await expect(card(page, 'ページ')).toContainText(yesterday());
+  });
+
+  /** #39 / #49 / #60。参照元タブ。表と `total` に期間外の行が入らない。 */
+  test('?period=yesterday の参照元タブに期間外の行が入らない', async ({ page, request }) => {
+    const siteId = await periodScopeSite(page, request);
+
+    await page.goto(yesterdayUrl(siteId, '&tab=referrers'));
+
+    await expect(periodBar(page)).toHaveCount(1);
+
+    // --- #60。行は昨日のホストだけ（ヘッダ行 + 1 行）。
+    await expect(page.getByRole('row', { name: new RegExp(IN_HOST) })).toBeVisible();
+    await expect(page.getByRole('row', { name: new RegExp(OUT_HOST) })).toHaveCount(0);
+    await expect(card(page, '参照元').getByRole('row')).toHaveCount(2);
+
+    // --- #49。`aside`（説明文）が残ったまま期間が出る。
+    await expect(card(page, '参照元')).toContainText(
+      'セッションの最初のページビューの参照元ホスト',
+    );
+    await expect(card(page, '参照元')).toContainText(yesterday());
+  });
+
+  /**
+   * #32 / #39 / #50 / #61 / #62。訪問者タブ。
+   *
+   * 1 日の期間なので「1日あたり訪問者」は出ない（出るタイルは 3 つ）。
+   */
+  test('?period=yesterday の訪問者タブに期間外の値が入らず、1日あたり訪問者も出ない', async ({
+    page,
+    request,
+  }) => {
+    const siteId = await periodScopeSite(page, request);
+
+    await page.goto(yesterdayUrl(siteId, '&tab=visitors'));
+
+    await expect(periodBar(page)).toHaveCount(1);
+
+    // --- #32。1 日しかないので「訪問者」と同じ数になる。同じ数を 2 枚並べない。
+    await expect(page.getByText('1日あたり訪問者', { exact: true })).toHaveCount(0);
+
+    // --- #61。残る 3 タイルに期間外の日の値が入らない。
+    await expect(statTile(page, '訪問者')).toContainText('41');
+    await expect(statTile(page, '訪問者')).not.toContainText('121');
+    await expect(statTile(page, 'セッション')).toContainText('30');
+    await expect(statTile(page, 'セッション')).not.toContainText('90');
+    await expect(statTile(page, '訪問者あたりページビュー')).toContainText('2.71');
+    await expect(statTile(page, '訪問者あたりページビュー')).not.toContainText('2.75');
+
+    // --- #62。「Bot のアクセス」の 4 つの値。
+    await expect(statTile(page, 'Bot のページビュー')).toContainText('5');
+    await expect(statTile(page, 'Bot のページビュー')).not.toContainText('65');
+    await expect(statTile(page, '人のページビュー')).toContainText('111');
+    await expect(statTile(page, '人のページビュー')).not.toContainText('333');
+    await expect(statTile(page, 'Bot の割合（人 + Bot に対して）')).toContainText('4.3%');
+    await expect(statTile(page, 'Bot が最も多かった日')).toContainText(yesterday());
+    await expect(statTile(page, 'Bot が最も多かった日')).not.toContainText(twoDaysAgo());
+
+    // --- #50。「Bot のアクセス」の `aside`（スイッチの状態）が残ったまま期間が出る。
+    await expect(card(page, 'Bot のアクセス')).toContainText(
+      '現在、他の指標から Bot を除いています',
+    );
+    await expect(card(page, 'Bot のアクセス')).toContainText(yesterday());
+  });
+
+  /** #40。設定タブは期間に依存しない。`PeriodBar` を出さない。 */
+  test('?tab=settings では期間の表示が出ない', async ({ page, request }) => {
+    const siteId = await periodScopeSite(page, request);
+
+    await page.goto(yesterdayUrl(siteId, '&tab=settings'));
+
+    await expect(snippetOf(page, siteId)).toBeVisible();
+    await expect(periodBar(page)).toHaveCount(0);
+  });
+
+  /**
+   * #42。`not-tracked`（未受信のサイト）でも期間を出す。
+   *
+   * 「どの期間に記録が無いのか」が分かる。
+   */
+  test('未受信のサイトの ?period=yesterday でも期間の表示が出る', async ({ page, request }) => {
+    const siteId = await pristineSite(request);
+
+    await page.goto(yesterdayUrl(siteId));
+
+    await expect(page.getByText('計測タグ未設置')).toBeVisible();
+    await expect(periodBar(page)).toHaveCount(1);
+    await expect(periodBar(page)).toHaveAttribute(
+      'data-analytics-period',
+      `${yesterday()}/${yesterday()}`,
+    );
+  });
+
+  /**
+   * #63。**期間を広げると、期間外だった行・値が現れる。**
+   *
+   * #54〜#62 が空振りしていないことの担保。`?period=7d` は末尾が昨日なので
+   * 一昨日を含み、今日は含まない。
+   */
+  test('?period=7d に広げると一昨日の行と値が現れる', async ({ page, request }) => {
+    const siteId = await periodScopeSite(page, request);
+
+    await page.goto(`/analytics?siteId=${siteId}&period=7d`);
+
+    // --- 概要。5 タイルは合算になる。
+    await expect(statTile(page, 'ページビュー')).toContainText('333');
+    await expect(statTile(page, '訪問者')).toContainText('121');
+    await expect(statTile(page, 'セッション')).toContainText('90');
+    await expect(statTile(page, '直帰率')).toContainText('63.3%');
+    await expect(statTile(page, '平均滞在時間')).toContainText('0:07');
+
+    // --- 上位ページ・参照元・時間帯別・デバイス。
+    await expect(card(page, '上位ページ')).toContainText(OUT_PATH);
+    await expect(card(page, '参照元')).toContainText(OUT_HOST);
+    await expect(card(page, '時間帯別のページビュー')).toContainText('最も多い時間帯は 19 時台');
+    await expect(card(page, 'デバイス')).toContainText('222');
+
+    // --- 複数日なので「日次の推移」が戻る。期間の表示にも日数が添う。
+    await expect(page.getByText('日次の推移', { exact: true })).toBeVisible();
+    await expect(periodBar(page)).toContainText('7 日間');
+    await expect(periodBar(page)).toHaveAttribute(
+      'data-analytics-period',
+      `${shiftDate(today(), -7)}/${yesterday()}`,
+    );
+
+    // --- ページタブ。行と件数の両方に現れる。
+    await page.goto(`/analytics?siteId=${siteId}&period=7d&tab=pages`);
+    await expect(page.getByRole('row', { name: new RegExp(OUT_PATH) })).toBeVisible();
+    await expect(card(page, 'ページ')).toContainText('2 ページ · ページビュー順');
+
+    // --- 参照元タブ。
+    await page.goto(`/analytics?siteId=${siteId}&period=7d&tab=referrers`);
+    await expect(page.getByRole('row', { name: new RegExp(OUT_HOST) })).toBeVisible();
+
+    // --- 訪問者タブ。複数日なので「1日あたり訪問者」が戻る。
+    await page.goto(`/analytics?siteId=${siteId}&period=7d&tab=visitors`);
+    await expect(page.getByText('1日あたり訪問者', { exact: true })).toBeVisible();
+    await expect(statTile(page, 'Bot のページビュー')).toContainText('65');
+    await expect(statTile(page, 'Bot が最も多かった日')).toContainText(twoDaysAgo());
+  });
+
+  /**
+   * #33。**1 日のカスタム期間でも同じ**（030 §7.3 の一般化）。
+   *
+   * 「当日だから出さない」ではなく「期間が 1 日だから出さない」。
+   */
+  test('?period=custom の 1 日でも「日次の推移」と「1日あたり訪問者」が出ない', async ({
+    page,
+    request,
+  }) => {
+    const siteId = await periodScopeSite(page, request);
+    const oneDay = `&period=custom&from=${yesterday()}&to=${yesterday()}`;
+
+    await page.goto(`/analytics?siteId=${siteId}${oneDay}`);
+
+    await expect(page.getByText('日次の推移', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('時間帯別のページビュー', { exact: true })).toBeVisible();
+    // 1 日なので期間の表示も日付 1 つ。**当日ではないので「当日」と書かない**（#20）。
+    await expect(periodBar(page)).toContainText(yesterday());
+    await expect(periodBar(page)).not.toContainText('当日');
+
+    await page.goto(`/analytics?siteId=${siteId}${oneDay}&tab=visitors`);
+
+    await expect(page.getByText('1日あたり訪問者', { exact: true })).toHaveCount(0);
+    await expect(statTile(page, '訪問者')).toBeVisible();
+  });
+
+  /**
+   * #34。**境界値**。2 日の期間では両方とも出る。
+   *
+   * 検査（#33）が空振りしていないことの担保。
+   */
+  test('?period=custom の 2 日では「日次の推移」と「1日あたり訪問者」が出る', async ({
+    page,
+    request,
+  }) => {
+    const siteId = await periodScopeSite(page, request);
+    const twoDays = `&period=custom&from=${twoDaysAgo()}&to=${yesterday()}`;
+
+    await page.goto(`/analytics?siteId=${siteId}${twoDays}`);
+
+    await expect(page.getByText('日次の推移', { exact: true })).toBeVisible();
+    // 複数日なので日数が添う。
+    await expect(periodBar(page)).toContainText('2 日間');
+    await expect(periodBar(page)).toHaveAttribute(
+      'data-analytics-period',
+      `${twoDaysAgo()}/${yesterday()}`,
+    );
+
+    await page.goto(`/analytics?siteId=${siteId}${twoDays}&tab=visitors`);
+
+    await expect(page.getByText('1日あたり訪問者', { exact: true })).toBeVisible();
+  });
+
+  /**
+   * #35 / #37 / #43。当日は現行どおり。
+   *
+   * 「日次の推移」と「1日あたり訪問者」は引き続き出ず、偏りの注記は引き続き出る。
+   * 期間の表示は**ラベル付き**（`当日（YYYY-MM-DD）`）。当日（生ログの速報値）と
+   * 1 日のカスタム（集計値）は同じ日付を指すのに値が違いうるため（設計 §7.3.1）。
+   */
+  test('?period=today は当日のまま。期間の表示は「当日（日付）」', async ({ page, request }) => {
+    const siteId = await periodScopeSite(page, request);
+
+    await page.goto(todayPeriodUrl(siteId));
+
+    // --- #43
+    await expect(periodBar(page)).toHaveCount(1);
+    await expect(periodBar(page)).toContainText(`当日（${today()}）`);
+    await expect(periodBar(page)).toHaveAttribute('data-analytics-period', `${today()}/${today()}`);
+
+    // --- #35。030 の結論を保つ。
+    await expect(page.getByText('日次の推移', { exact: true })).toHaveCount(0);
+
+    // --- #37。当日には偏りの注記が出る（030 #57 の回帰）。
+    await expect(statTile(page, '直帰率')).toContainText('確定後より高めに出ます');
+    await expect(statTile(page, '平均滞在時間')).toContainText('実際より短めに出ます');
+
+    await page.goto(todayPeriodUrl(siteId, '&tab=visitors'));
+
+    // --- #35
+    await expect(page.getByText('1日あたり訪問者', { exact: true })).toHaveCount(0);
+  });
+
+  /**
+   * #68 / #69。昨日の確定値が 1 行も無いサイト。
+   *
+   * `rolledUpTodaySite`（030 の共有フィクスチャ）は今日しか記録が無い。
+   * 画面が落ちず、0 が並ぶか §7.5.1 の案内が出る。
+   *
+   * 定期ロールアップ（1 分間隔）との競合で `receiving`（0 が並ぶ）にも
+   * `pending-rollup`（導線）にもなりうるので `.or()` で許容する（030 #63 と同じ扱い）。
+   * 決定的な担保はユニット側で取る。
+   */
+  test('昨日の確定値が無い ?period=yesterday でも画面が落ちない', async ({ page, request }) => {
+    const siteId = await rolledUpTodaySite(page, request);
+
+    const response = await page.goto(yesterdayUrl(siteId));
+
+    expect(response?.status()).toBe(200);
+    await expect(page.getByRole('heading', { name: 'アナリティクス' })).toBeVisible();
+    await expect(periodBar(page)).toHaveCount(1);
+
+    // 0 が並ぶ通常タブか、§7.5.1 の案内か、集計待ちの導線のいずれか。
+    await expect(
+      statTile(page, 'ページビュー')
+        .or(staleRangeNotice(page))
+        .or(page.getByRole('heading', { name: /アクセスは届いています/ }))
+        .first(),
+    ).toBeVisible();
+
+    // --- #69。案内が出たなら、その期間は 1 日表記（区切りを挟まない）。
+    if ((await staleRangeNotice(page).count()) > 0) {
+      await expect(staleRangeNotice(page)).toContainText(`この期間（${yesterday()}）`);
+      await expect(staleRangeNotice(page)).not.toContainText(`${yesterday()} 〜 ${yesterday()}`);
+    }
+  });
+
+  /**
+   * #75。ヘッダ行の文面は変えない（設計 §7.4）。
+   *
+   * `yesterday` は今日を含まないので、既存の 2 行目にそのまま当てはまる。
+   * **当期の日付はヘッダ行ではなく `PeriodBar` が持つ**（同じ情報を 2 か所に置かない）。
+   */
+  test('?period=yesterday のヘッダ行は既存の形のまま', async ({ page, request }) => {
+    const siteId = await periodScopeSite(page, request);
+
+    await page.goto(yesterdayUrl(siteId));
+
+    // 前期間は一昨日 1 日（`previousRange` を変えない。設計 §7.1.4）。
+    await expect(
+      page.getByText(`前期間（${twoDaysAgo()} 〜 ${twoDaysAgo()}）と比較`, { exact: false }),
+    ).toBeVisible();
+    await expect(page.getByText('集計は前日まで', { exact: false })).toBeVisible();
+    await expect(page.locator('[data-analytics-timezone]')).toHaveCount(1);
+    // 当日ではないので速報値の文言は出ない。
+    await expect(page.getByText('時点の速報値', { exact: false })).toHaveCount(0);
   });
 });

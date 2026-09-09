@@ -92,9 +92,16 @@ export function shiftDays(date: string, days: number): string {
  *
  * `custom` は from / to を直接受けるので、ここには含めない。
  */
-export type PeriodPreset = '7d' | '30d' | '90d' | 'month' | 'prev-month';
+export type PeriodPreset = 'yesterday' | '7d' | '30d' | '90d' | 'month' | 'prev-month';
 
-export const PERIOD_PRESETS: readonly PeriodPreset[] = ['7d', '30d', '90d', 'month', 'prev-month'];
+export const PERIOD_PRESETS: readonly PeriodPreset[] = [
+  'yesterday',
+  '7d',
+  '30d',
+  '90d',
+  'month',
+  'prev-month',
+];
 
 export function isPeriodPreset(value: string): value is PeriodPreset {
   return (PERIOD_PRESETS as readonly string[]).includes(value);
@@ -120,6 +127,7 @@ export interface DateRange {
  *
  * | preset | from | to |
  * | --- | --- | --- |
+ * | `yesterday` | 昨日 | 昨日 |
  * | `7d` / `30d` / `90d` | `today − 7 / 30 / 90` 日 | 昨日 |
  * | `month` | 今月 1 日 | 昨日 |
  * | `prev-month` | 前月 1 日 | 前月末日 |
@@ -132,6 +140,10 @@ export function presetRange(preset: PeriodPreset, today: string): DateRange | nu
   const yesterday = shiftDays(today, -1);
 
   switch (preset) {
+    // 既存プリセットの `to` はすべて昨日。その末尾の 1 日だけを見る（034 設計 §7.1.1）。
+    // **`null` にならない。** 月の 1 日でも前月末日という確定した 1 日が出る。
+    case 'yesterday':
+      return { from: yesterday, to: yesterday };
     case '7d':
       return { from: shiftDays(today, -7), to: yesterday };
     case '30d':

@@ -28,6 +28,7 @@ import {
   TODAY_UNAVAILABLE_TEXT,
   VIEW_TODAY_LABEL,
   analyticsHeaderText,
+  appliedPeriodText,
   customIncludesTodayText,
   noAccessTodayText,
   previousDayTotalsText,
@@ -223,6 +224,58 @@ export function EmptyPeriodNotice({
   );
 }
 
+/**
+ * 適用中の期間（034-analytics-period-scope 設計 §7.3.2）。
+ *
+ * **タブの直下に 1 行だけ置く。** タブの下はすべてのタブの中身の直前であり、
+ * 「ここから下は全部この期間」と位置で読める。上部 5 タイルと訪問者タブの 4 タイルには
+ * 見出しが無いので、タイル群のために見出しを新設せずに期間を示せる。
+ *
+ * 文字列は `AnalyticsView` が `appliedPeriodText` で 1 回だけ組み立てて渡す（§7.3.4）。
+ * ここは描くだけで、組み立て直さない。
+ *
+ * `data-analytics-period` を置くのは、ヘッダ行の `data-analytics-timezone`（既存）と同じ理由。
+ * E2E が文言の言い回しに依存せずに期間を読める。
+ *
+ * **囲みを作らない**（カードが増えたように見せない）。
+ */
+export function PeriodBar({
+  text,
+  from,
+  to,
+}: {
+  /** `appliedPeriodText` の結果。 */
+  readonly text: string;
+  readonly from: string;
+  readonly to: string;
+}) {
+  return (
+    <p
+      style={{ margin: 0, fontWeight: 600, color: 'var(--tf-color-text)' }}
+      data-analytics-period={`${from}/${to}`}
+    >
+      {text}
+    </p>
+  );
+}
+
+/**
+ * `PeriodBar` を出すか（034 設計 §7.3.2 の表）。
+ *
+ * | 状態 | 出すか | 理由 |
+ * | --- | --- | --- |
+ * | 概要 / ページ / 参照元 / 訪問者 | 出す | 中身が期間に依存する |
+ * | `not-tracked` | 出す | 「どの期間に記録が無いのか」が分かる |
+ * | 設定タブ | 出さない | 期間に依存しない |
+ * | `empty-period` | 出さない | 確定期間が存在しない。`page.tsx` の代替値は問い合わせに 1 度も使っておらず、画面に出すと嘘になる |
+ *
+ * **条件を画面の中に散らさない。** `empty-period` は実行日が月の 1 日でないと
+ * E2E で作れないので、述語として単体で確かめられるようにする。
+ */
+export function shouldShowPeriodBar(kind: TabData['kind']): boolean {
+  return kind !== 'settings' && kind !== 'empty-period';
+}
+
 export function AnalyticsView({
   query,
   sites,
@@ -267,6 +320,14 @@ export function AnalyticsView({
 
   // 今日を含むカスタム期間は集計値（最大 15 分遅れ）。当日（生ログ）とは値が違いうる（§7.4.3）。
   const showCustomIncludesToday = query.period === 'custom' && rangeIncludesToday;
+
+  // **期間の文字列は 1 回だけ組み立てて配る**（034 §7.3.4）。
+  // タブは受け取った文字列を並べるだけで、期間の表し方を知らない。
+  const periodCaption = appliedPeriodText({
+    period: query.period,
+    from: query.from,
+    to: query.to,
+  });
 
   return (
     <div style={{ display: 'grid', gap: 'var(--tf-space-6)' }}>
@@ -438,6 +499,14 @@ export function AnalyticsView({
         label="アナリティクスのタブ"
       />
 
+      {/*
+        適用中の期間（034 §7.3.2）。**タブごとに書かない。** ここに 1 つだけ置く。
+        「いま何を見ているか」の説明なので、状態を説明する `Alert` より先に置く。
+      */}
+      {shouldShowPeriodBar(tab.kind) && (
+        <PeriodBar text={periodCaption} from={query.from} to={query.to} />
+      )}
+
       {/* 当日のバナー（§7.4.2）。**タブごとに書かない。** ここに 1 つだけ置く。 */}
       {today !== null && (
         <Alert tone={today.unavailable ? 'warning' : 'info'}>
@@ -498,8 +567,7 @@ export function AnalyticsView({
       {tab.kind === 'overview' && (
         <OverviewTab
           data={tab.data}
-          from={query.from}
-          to={query.to}
+          periodCaption={periodCaption}
           includeBots={query.includeBots}
           pagesHref={analyticsHref({ ...query, tab: 'pages', page: 1 })}
           referrersHref={analyticsHref({ ...query, tab: 'referrers', page: 1 })}
@@ -508,6 +576,7 @@ export function AnalyticsView({
       {tab.kind === 'pages' && (
         <PagesTab
           data={tab.data}
+          periodCaption={periodCaption}
           includeBots={query.includeBots}
           onPageChange={(page) => go({ page })}
         />
@@ -515,11 +584,18 @@ export function AnalyticsView({
       {tab.kind === 'referrers' && (
         <ReferrersTab
           data={tab.data}
+          periodCaption={periodCaption}
           includeBots={query.includeBots}
           onPageChange={(page) => go({ page })}
         />
       )}
-      {tab.kind === 'visitors' && <VisitorsTab data={tab.data} includeBots={query.includeBots} />}
+      {tab.kind === 'visitors' && (
+        <VisitorsTab
+          data={tab.data}
+          periodCaption={periodCaption}
+          includeBots={query.includeBots}
+        />
+      )}
       {tab.kind === 'settings' && <SettingsTab data={tab.data} />}
     </div>
   );

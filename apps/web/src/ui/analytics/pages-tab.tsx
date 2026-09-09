@@ -31,10 +31,13 @@ export interface PagesData {
 
 export function PagesTab({
   data,
+  periodCaption,
   includeBots,
   onPageChange,
 }: {
   readonly data: PagesData;
+  /** 適用中の期間（034-analytics-period-scope 設計 §7.3.3）。組み立て済みの文字列を並べるだけ。 */
+  readonly periodCaption: string;
   readonly includeBots: boolean;
   readonly onPageChange: (page: number) => void;
 }) {
@@ -85,6 +88,7 @@ export function PagesTab({
     <Card>
       <SectionHeader
         title="ページ"
+        caption={periodCaption}
         aside={`${formatCount(data.total)} ページ ${MIDDLE_DOT} ページビュー順`}
       />
       {data.rows.length === 0 ? (

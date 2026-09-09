@@ -15,7 +15,7 @@ import {
   type Column,
   type StatDelta,
 } from '@/ui/components';
-import { formatCount, formatDuration, formatRate, rangeText, shortDate } from './labels';
+import { formatCount, formatDuration, formatRate, shortDate } from './labels';
 import {
   BOTS_EXCLUDED_NOTE,
   DeviceBreakdown,
@@ -94,15 +94,14 @@ const LINK_STYLE = {
 
 export function OverviewTab({
   data,
-  from,
-  to,
+  periodCaption,
   includeBots,
   pagesHref,
   referrersHref,
 }: {
   readonly data: OverviewData;
-  readonly from: string;
-  readonly to: string;
+  /** 適用中の期間（034-analytics-period-scope 設計 §7.3.3）。組み立て済みの文字列を並べるだけ。 */
+  readonly periodCaption: string;
   readonly includeBots: boolean;
   /** 「すべて →」の行き先（ページタブ / 参照元タブ）。 */
   readonly pagesHref: string;
@@ -205,7 +204,8 @@ export function OverviewTab({
 
       {daily !== null && (
         <Card>
-          <SectionHeader title="日次の推移" aside={rangeText(from, to)} />
+          {/* 期間は `caption` 側に出す。同じ期間を同じカードに 2 か所出さない（034 §7.3.3）。 */}
+          <SectionHeader title="日次の推移" caption={periodCaption} />
           <Chart
             title="ページビューと訪問者の日次推移"
             series={series}
@@ -245,6 +245,7 @@ export function OverviewTab({
         <Card>
           <SectionHeader
             title="上位ページ"
+            caption={periodCaption}
             aside={
               <Link href={pagesHref} style={LINK_STYLE}>
                 すべて →
@@ -262,6 +263,7 @@ export function OverviewTab({
         <Card>
           <SectionHeader
             title="参照元"
+            caption={periodCaption}
             aside={
               <Link href={referrersHref} style={LINK_STYLE}>
                 すべて →
@@ -288,11 +290,16 @@ export function OverviewTab({
           alignItems: 'start',
         }}
       >
-        <HourlyPageviews hours={data.hours} includeBots={includeBots} />
+        <HourlyPageviews
+          hours={data.hours}
+          includeBots={includeBots}
+          periodCaption={periodCaption}
+        />
         <DeviceBreakdown
           rows={data.devices}
           botPageviews={data.botPageviews}
           includeBots={includeBots}
+          periodCaption={periodCaption}
         />
       </div>
     </div>

@@ -41,8 +41,18 @@ const TODAY_DATA: VisitorsData = {
   bot: { botPageviews: 1, humanPageviews: 10, share: 1 / 11, peakDay: '2026-09-05' },
 };
 
+/**
+ * 適用中の期間（034-analytics-period-scope 設計 §7.3.3 / §7.3.4）。
+ *
+ * `VisitorsTab` は `periodCaption: string` を受け、「Bot のアクセス」・時間帯別・デバイスへ
+ * 渡すだけ。**タブは文字列を組み立てない。**
+ */
+const PERIOD_CAPTION = '期間 2026-09-08';
+
 function render(data: VisitorsData, includeBots = false): string {
-  return renderToStaticMarkup(createElement(VisitorsTab, { data, includeBots }));
+  return renderToStaticMarkup(
+    createElement(VisitorsTab, { data, periodCaption: PERIOD_CAPTION, includeBots }),
+  );
 }
 
 function textOf(html: string): string {
@@ -106,5 +116,74 @@ describe('「Bot のアクセス」は当日でも出す', () => {
     expect(text).toContain('人のページビュー');
     expect(text).toContain('Bot が最も多かった日');
     expect(text).toContain('2026-09-05');
+  });
+});
+
+/**
+ * 訪問者タブの期間表示（034-analytics-period-scope 設計 §7.3.3、受け入れ条件 F #50 / #51）。
+ *
+ * `caption` に期間を出すのは 3 枚：「デバイス」「時間帯別のページビュー」「Bot のアクセス」。
+ * 上部の 4 タイル（`StatGrid`）には見出しが無く、**タイル群のために見出しを新設しない**
+ * （028 §7.3.6 の並びを変えることになる）。直上の `PeriodBar` が期間を示す（§7.3.2）。
+ *
+ * **`aside` を上書きしない。**「Bot のアクセス」のスイッチの状態はいまのまま右に残る。
+ */
+describe('訪問者タブの期間（#50 / #51）', () => {
+  function countPeriod(html: string): number {
+    return textOf(html).split(PERIOD_CAPTION).length - 1;
+  }
+
+  /**
+   * #50。「Bot のアクセス」の `aside`（スイッチの状態）が残ったまま期間が出る。
+   *
+   * この欄は「Bot を集計に含める」スイッチに左右されないことを示す表示であり、消せない。
+   */
+  it('「Bot のアクセス」の aside が残ったまま期間が出る', () => {
+    const text = textOf(render(WITH_DELTA));
+
+    expect(text).toContain('Bot のアクセス');
+    expect(text).toContain('現在、他の指標から Bot を除いています');
+    expect(text).toContain(PERIOD_CAPTION);
+  });
+
+  /** #50。スイッチがオンのときの `aside` も残る。 */
+  it('bots=1 のときの aside も残ったまま期間が出る', () => {
+    const text = textOf(render(WITH_DELTA, true));
+
+    expect(text).toContain('現在、他の指標にも Bot を含めています');
+    expect(text).toContain(PERIOD_CAPTION);
+  });
+
+  /** #51。時間帯別・デバイスのカードにも期間が出る（部品へ `periodCaption` を渡している）。 */
+  it('デバイスと時間帯別のカードにも期間が出る', () => {
+    const text = textOf(render(WITH_DELTA));
+
+    expect(text).toContain('デバイス');
+    expect(text).toContain('時間帯別のページビュー');
+    // 3 枚（デバイス / 時間帯別 / Bot のアクセス）。
+    expect(countPeriod(render(WITH_DELTA))).toBe(3);
+  });
+
+  /** #51。「1日あたり訪問者」が無い（1 日の期間）ときも 3 枚のまま（タイル群には出さない）。 */
+  it('perDay が null でも期間は 3 枚に出る', () => {
+    expect(countPeriod(render(TODAY_DATA))).toBe(3);
+  });
+
+  /** #51。上部のタイルには見出しを作らない（`h2` は 3 枚のカードのぶんだけ）。 */
+  it('タイル群のために見出しを新設しない', () => {
+    expect((render(WITH_DELTA).match(/<h2/g) ?? []).length).toBe(3);
+  });
+
+  /** #50。渡された文字列をそのまま出す（タブの中で組み立て直さない）。 */
+  it('渡された文字列をそのまま出す', () => {
+    const html = renderToStaticMarkup(
+      createElement(VisitorsTab, {
+        data: WITH_DELTA,
+        periodCaption: '期間 当日（2026-09-09）',
+        includeBots: false,
+      }),
+    );
+
+    expect(textOf(html)).toContain('期間 当日（2026-09-09）');
   });
 });

@@ -31,10 +31,13 @@ export interface ReferrersData {
 
 export function ReferrersTab({
   data,
+  periodCaption,
   includeBots,
   onPageChange,
 }: {
   readonly data: ReferrersData;
+  /** 適用中の期間（034-analytics-period-scope 設計 §7.3.3）。組み立て済みの文字列を並べるだけ。 */
+  readonly periodCaption: string;
   readonly includeBots: boolean;
   readonly onPageChange: (page: number) => void;
 }) {
@@ -89,7 +92,11 @@ export function ReferrersTab({
 
   return (
     <Card>
-      <SectionHeader title="参照元" aside="セッションの最初のページビューの参照元ホスト" />
+      <SectionHeader
+        title="参照元"
+        caption={periodCaption}
+        aside="セッションの最初のページビューの参照元ホスト"
+      />
       {data.rows.length === 0 ? (
         <EmptyState message="この期間のセッションはありません。" />
       ) : (

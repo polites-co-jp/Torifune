@@ -116,9 +116,84 @@ describe('resolvePeriod（プリセット）', () => {
     expect(resolved.range).toEqual(range);
   });
 
+  /**
+   * 034 #24。`?period=yesterday` が**自動的に**通る（034 設計 §7.1.3）。
+   *
+   * `isPeriodPreset('yesterday')` が真になるので `presetRange` へ落ちる。
+   * **`resolvePeriod` の実装は 1 文字も変えない。** ここはそれを固定するためのテストである。
+   */
+  it('034 #24: ?period=yesterday は昨日 1 日', () => {
+    const resolved = resolvePeriod(paramsOf('period=yesterday'), TODAY);
+
+    expect(resolved.period).toBe('yesterday');
+    expect(resolved.range).toEqual({ from: YESTERDAY, to: YESTERDAY });
+    expect(resolved.warning).toBe(false);
+  });
+
+  /** 034 #24。`custom` に落ちない（プリセットとして解決される）。 */
+  it('034 #24: ?period=yesterday は custom に落ちない', () => {
+    expect(resolvePeriod(paramsOf('period=yesterday'), TODAY).period).toBe('yesterday');
+  });
+
+  /**
+   * 034 #25。**プリセットは `from` / `to` を読まない。**
+   *
+   * URL に古い `from` / `to` が残っていても、範囲は昨日のまま。
+   */
+  it('034 #25: ?period=yesterday は from / to を無視して昨日を指す', () => {
+    const resolved = resolvePeriod(
+      paramsOf('period=yesterday&from=2020-01-01&to=2020-01-02'),
+      TODAY,
+    );
+
+    expect(resolved.period).toBe('yesterday');
+    expect(resolved.range).toEqual({ from: YESTERDAY, to: YESTERDAY });
+    expect(resolved.warning).toBe(false);
+  });
+
+  /**
+   * 034 #70。**今日が月の 1 日でも `yesterday` は空状態にならない**（034 設計 §7.1.1）。
+   *
+   * `month` の空状態（`null`）とは無関係で、前月末日という確定した 1 日が出る。
+   * E2E では実行日が月の 1 日でないと作れないので、ここで決定的に担保する。
+   */
+  it('034 #70: 今日が月の 1 日でも ?period=yesterday は前月末日の 1 日', () => {
+    const resolved = resolvePeriod(paramsOf('period=yesterday'), '2026-09-01');
+
+    expect(resolved.period).toBe('yesterday');
+    expect(resolved.range).toEqual({ from: '2026-08-31', to: '2026-08-31' });
+    expect(resolved.warning).toBe(false);
+  });
+
+  /** 034 #70。`month` と違い `null` にならない。 */
+  it('034 #70: 今日が月の 1 日でも ?period=yesterday の range は null でない', () => {
+    expect(resolvePeriod(paramsOf('period=yesterday'), '2026-09-01').range).not.toBeNull();
+  });
+
+  /** 034 #24。年をまたぐ日でも昨日 1 日。 */
+  it('034 #24: 年をまたいでも ?period=yesterday は前年末日', () => {
+    expect(resolvePeriod(paramsOf('period=yesterday'), '2026-01-01').range).toEqual({
+      from: '2025-12-31',
+      to: '2025-12-31',
+    });
+  });
+
   /** #41。現行どおり。共有された URL を開いた人が何も見られないのは困る。 */
   it('未知の period は 30d に落ちる（警告は出さない）', () => {
     const resolved = resolvePeriod(paramsOf('period=tommorow'), TODAY);
+
+    expect(resolved.period).toBe('30d');
+    expect(resolved.range).toEqual({ from: '2026-08-06', to: YESTERDAY });
+    expect(resolved.warning).toBe(false);
+  });
+
+  /**
+   * 034 #28。綴り違いは現行どおり `30d` へ落ちる（警告は出さない）。
+   *
+   * `yesterday` を足したせいで似た綴りが通るようになっていないことを見る。
+   */
+  it('034 #28: ?period=yesteday（綴り違い）は 30d に落ちる', () => {
+    const resolved = resolvePeriod(paramsOf('period=yesteday'), TODAY);
 
     expect(resolved.period).toBe('30d');
     expect(resolved.range).toEqual({ from: '2026-08-06', to: YESTERDAY });
@@ -262,7 +337,72 @@ describe('analyticsHref', () => {
     expect(params.get('to')).toBeNull();
   });
 
-  /** #46。既定の短い URL を保つ（現行どおり）。 */
+  /**
+   * 034 #26。`yesterday` は既定（`30d`）ではないので `period=yesterday` が書かれる。
+   *
+   * **`analyticsHref` は変えない**（034 設計 §7.1.3）。ここはそれを固定するテストである。
+   */
+  it('034 #26: period: yesterday は period=yesterday を書く', () => {
+    const href = analyticsHref({
+      ...BASE_QUERY,
+      period: 'yesterday',
+      from: YESTERDAY,
+      to: YESTERDAY,
+    });
+
+    expect(new URL(href, 'http://x').searchParams.get('period')).toBe('yesterday');
+    expect(href).toContain('period=yesterday');
+  });
+
+  /** 034 #26。プリセットなので `from` / `to` は書かない（`custom` だけが書く）。 */
+  it('034 #26: period: yesterday では from / to を書かない', () => {
+    const params = new URL(
+      analyticsHref({ ...BASE_QUERY, period: 'yesterday', from: YESTERDAY, to: YESTERDAY }),
+      'http://x',
+    ).searchParams;
+
+    expect(params.get('from')).toBeNull();
+    expect(params.get('to')).toBeNull();
+  });
+
+  /**
+   * 034 #76。期間セグメントを押しても `siteId` / `tab` / `bots` が保たれ、`page` は 1 に戻る。
+   */
+  it('034 #76: 「昨日」を押した URL で siteId / tab / bots が保たれ page が 1 に戻る', () => {
+    const current: AnalyticsQuery = {
+      ...BASE_QUERY,
+      tab: 'pages',
+      includeBots: true,
+      page: 3,
+    };
+
+    const params = new URL(analyticsHref({ ...current, period: 'yesterday', page: 1 }), 'http://x')
+      .searchParams;
+
+    expect(params.get('siteId')).toBe(BASE_QUERY.siteId);
+    expect(params.get('tab')).toBe('pages');
+    expect(params.get('bots')).toBe('1');
+    expect(params.get('page')).toBeNull();
+    expect(params.get('period')).toBe('yesterday');
+  });
+
+  /** 034 #76。「昨日」から他の期間へ移ると `period=yesterday` が残らない。 */
+  it('034 #76: 「昨日」から他の期間を押した URL に period=yesterday が残らない', () => {
+    const current: AnalyticsQuery = {
+      ...BASE_QUERY,
+      period: 'yesterday',
+      from: YESTERDAY,
+      to: YESTERDAY,
+    };
+
+    for (const period of ['today', '7d', '30d', '90d', 'month', 'prev-month'] as const) {
+      expect(analyticsHref({ ...current, period, page: 1 }), period).not.toContain(
+        'period=yesterday',
+      );
+    }
+  });
+
+  /** #46。既定の短い URL を保つ（現行どおり）。034 #27 の回帰でもある。 */
   it('period: 30d では period を書かない', () => {
     expect(new URL(analyticsHref(BASE_QUERY), 'http://x').searchParams.get('period')).toBeNull();
   });

@@ -3,6 +3,7 @@ import { rangeDays } from './analytics';
 import {
   formatDateTimeInTimeZone,
   isPeriodPreset,
+  PERIOD_PRESETS,
   presetRange,
   previousRange,
   type DateRange,
@@ -133,6 +134,126 @@ describe('presetRange（末尾は昨日）', () => {
   });
 });
 
+/**
+ * 期間プリセット `yesterday`（034-analytics-period-scope 設計 §7.1.1、受け入れ条件 A #1〜#5 / #9）。
+ *
+ * ```ts
+ * type PeriodPreset = 'yesterday' | '7d' | '30d' | '90d' | 'month' | 'prev-month';
+ * ```
+ *
+ * `PeriodPreset` の契約は「`presetRange(preset, today)` で**確定値のある** `DateRange` が
+ * 求まるもの」（030 §7.1.2）。`yesterday` はこれをそのまま満たす。
+ * 既存プリセットの `to` はすべて昨日なので、`yesterday` は「その末尾の 1 日だけを見る」ものであり、
+ * 規則が 1 つ増えない。
+ *
+ * **`null` を返す分岐を増やさない**（設計 §7.1.1）。`today` が何日であっても必ず範囲が求まる。
+ */
+describe('presetRange（yesterday）', () => {
+  /** #1 */
+  it('yesterday は昨日 1 日', () => {
+    expect(presetRange('yesterday', '2026-09-05')).toEqual({
+      from: '2026-09-04',
+      to: '2026-09-04',
+    });
+  });
+
+  /** #2。月をまたぐ。前月末日という確定した 1 日が出る。 */
+  it('yesterday が月をまたぐ', () => {
+    expect(presetRange('yesterday', '2026-09-01')).toEqual({
+      from: '2026-08-31',
+      to: '2026-08-31',
+    });
+  });
+
+  /** #3。年をまたぐ。 */
+  it('yesterday が年をまたぐ', () => {
+    expect(presetRange('yesterday', '2026-01-01')).toEqual({
+      from: '2025-12-31',
+      to: '2025-12-31',
+    });
+  });
+
+  /** #4。閏日。2024-03-01 の前日は 2024-02-29。 */
+  it('yesterday が閏日を指す', () => {
+    expect(presetRange('yesterday', '2024-03-01')).toEqual({
+      from: '2024-02-29',
+      to: '2024-02-29',
+    });
+  });
+
+  /** #1。範囲は 1 日（両端を含む）。 */
+  it('yesterday の日数は 1', () => {
+    const range = rangeOf('yesterday', '2026-09-05');
+
+    expect(rangeDays(range.from, range.to)).toBe(1);
+  });
+
+  /**
+   * #5。**どの日付でも `null` を返さない**（月の 1 日を含む）。
+   *
+   * `month` の空状態（今日が月の 1 日）とは無関係。月の 1 日でも前月末日という
+   * 確定した 1 日が出る。ここが `null` を返すようになると 030 の空状態の意味が壊れる。
+   */
+  it.each([
+    '2026-09-01', // 月初
+    '2026-09-30', // 月末
+    '2026-01-01', // 年初
+    '2026-12-31', // 年末
+    '2024-03-01', // 閏日の翌日
+    '2024-02-29', // 閏日
+  ])('yesterday は %s でも null にならない', (today) => {
+    expect(presetRange('yesterday', today)).not.toBeNull();
+  });
+
+  /** #5。`from` と `to` が同じ日（1 日の期間）であること。 */
+  it.each(['2026-09-01', '2026-09-30', '2026-01-01', '2024-03-01'])(
+    'yesterday は %s でも from と to が同じ日',
+    (today) => {
+      const range = rangeOf('yesterday', today);
+
+      expect(range.from).toBe(range.to);
+    },
+  );
+
+  /** #1。既存プリセットの `to`（昨日）と同じ日を指す。規則が 1 つ増えていない。 */
+  it.each(['7d', '30d', '90d'] as const)('yesterday の 1 日は %s の to と同じ日', (preset) => {
+    expect(rangeOf('yesterday', '2026-09-05').to).toBe(rangeOf(preset, '2026-09-05').to);
+  });
+});
+
+/**
+ * #9。`PERIOD_PRESETS` の並び（設計 §7.1.1）。
+ *
+ * 「昨日」は期間セグメントの**先頭**（＝「7日」の左）に入る（裁定 3.1）。
+ */
+describe('PERIOD_PRESETS', () => {
+  /** #9 */
+  it('先頭が yesterday', () => {
+    expect(PERIOD_PRESETS[0]).toBe('yesterday');
+  });
+
+  /** #9 */
+  it('要素数は 6', () => {
+    expect(PERIOD_PRESETS).toHaveLength(6);
+  });
+
+  /** #9。並びそのもの。既存の 5 つは順番を変えない。 */
+  it('並びは yesterday / 7d / 30d / 90d / month / prev-month', () => {
+    expect([...PERIOD_PRESETS]).toEqual(['yesterday', '7d', '30d', '90d', 'month', 'prev-month']);
+  });
+
+  /** #9 / #7。`today` はプリセットに入れない（030 の判断を変えない）。 */
+  it('today を含まない', () => {
+    expect(PERIOD_PRESETS as readonly string[]).not.toContain('today');
+  });
+
+  /** #5。すべてのプリセットについて `presetRange` が呼べる（`yesterday` を含む）。 */
+  it.each([...PERIOD_PRESETS])('%s は presetRange で扱える', (preset) => {
+    // `month` は月の 1 日だけ null になるので、1 日でない日で見る。
+    expect(presetRange(preset, '2026-09-05')).not.toBeNull();
+  });
+});
+
 describe('previousRange（変更しない）', () => {
   /** #10。`7d` の前期間が 7 日で、当期の直前に連続する。 */
   it('7d の前期間は [from − 7, from − 1]', () => {
@@ -174,6 +295,26 @@ describe('previousRange（変更しない）', () => {
     });
   });
 
+  /**
+   * 034 #11。1 日の期間の前期間は**一昨日の 1 日**（034 設計 §7.1.4）。
+   *
+   * 「昨日 vs 一昨日」は前期間比として素直に読める（日数が前後で揃っている）。
+   * **`previousRange` は変えない。**
+   */
+  it('yesterday（1 日）の前期間は一昨日の 1 日', () => {
+    expect(previousRange('2026-09-04', '2026-09-04')).toEqual({
+      from: '2026-09-03',
+      to: '2026-09-03',
+    });
+  });
+
+  /** 034 #11。前後で日数が揃う（どちらも 1 日）。 */
+  it('1 日の期間の前期間も 1 日', () => {
+    const previous = previousRange('2026-09-04', '2026-09-04');
+
+    expect(rangeDays(previous.from, previous.to)).toBe(1);
+  });
+
   /** #10。すべてのプリセットで同じ規則（月単位にはしない）。 */
   it('月の期間でも日数で戻す（前月そのものにはしない）', () => {
     // 31 日間の直前は、2024-02-29 で終わる 31 日間。
@@ -200,6 +341,31 @@ describe('isPeriodPreset', () => {
   /** #11 の対。既存の 5 つは変わらない。 */
   it.each(['7d', '30d', '90d', 'month', 'prev-month'])('%s はプリセット', (value) => {
     expect(isPeriodPreset(value)).toBe(true);
+  });
+
+  /**
+   * 034 #6。`yesterday` はプリセット。
+   *
+   * これが真になることで `?period=yesterday` が `resolvePeriod` を**自動的に**通る
+   * （034 設計 §7.1.3。`analytics-query.ts` に変更は要らない）。
+   */
+  it("034 #6: 'yesterday' はプリセット", () => {
+    expect(isPeriodPreset('yesterday')).toBe(true);
+  });
+
+  /** 034 #7。`today` は引き続きプリセットではない（030 #11 を保つ）。 */
+  it("034 #7: 'today' は yesterday を足しても依然プリセットではない", () => {
+    expect(isPeriodPreset('today')).toBe(false);
+  });
+
+  /** 034 #8。`custom` も現行どおりプリセットではない。 */
+  it("034 #8: 'custom' はプリセットではない", () => {
+    expect(isPeriodPreset('custom')).toBe(false);
+  });
+
+  /** 034 #6。綴り違い（`yesteday`）は通さない。 */
+  it("綴り違いの 'yesteday' はプリセットではない", () => {
+    expect(isPeriodPreset('yesteday')).toBe(false);
   });
 
   /** #11。`custom` も `PeriodPreset` ではない（現行どおり）。 */
