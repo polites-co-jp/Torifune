@@ -53,14 +53,29 @@ export function Tile({ children }: { readonly children: ReactNode }) {
   );
 }
 
-/** カードの見出し行。右に補足や導線を置く。 */
+/**
+ * カードの見出し行。右に補足や導線を置く。
+ *
+ * `caption` は見出しの**下**に出す小さな補足で、適用中の期間を出す
+ * （034-analytics-period-scope 設計 §7.3.3）。
+ * **`aside` を上書きしない。**「すべて →」「N ページ · ページビュー順」等は右に残る。
+ * `caption` を渡さなければ行を作らない（現行の見た目を保つ）。
+ */
 export function SectionHeader({
   title,
+  caption,
   aside,
 }: {
   readonly title: string;
+  /** 見出しの下の補足。期間を出す（034 §7.3.3）。 */
+  readonly caption?: ReactNode;
+  /** 見出しの右。導線・件数など。 */
   readonly aside?: ReactNode;
 }) {
+  const heading = (
+    <h2 style={{ fontSize: 'var(--tf-text-h2)', fontWeight: 600, margin: 0 }}>{title}</h2>
+  );
+
   return (
     <div
       style={{
@@ -72,7 +87,14 @@ export function SectionHeader({
         marginBottom: 'var(--tf-space-5)',
       }}
     >
-      <h2 style={{ fontSize: 'var(--tf-text-h2)', fontWeight: 600, margin: 0 }}>{title}</h2>
+      {caption === undefined ? (
+        heading
+      ) : (
+        <div style={{ display: 'grid', gap: 'var(--tf-space-2)', minWidth: 0 }}>
+          {heading}
+          <div style={CAPTION}>{caption}</div>
+        </div>
+      )}
       {aside !== undefined && <div style={CAPTION}>{aside}</div>}
     </div>
   );
@@ -146,16 +168,19 @@ export function DeviceBreakdown({
   rows,
   botPageviews,
   includeBots,
+  periodCaption,
 }: {
   readonly rows: readonly DeviceRow[];
   readonly botPageviews: number;
   readonly includeBots: boolean;
+  /** 適用中の期間（034 §7.3.3）。渡さなければ出さない。 */
+  readonly periodCaption?: ReactNode;
 }) {
   const max = Math.max(0, ...rows.map((row) => row.value));
 
   return (
     <Card>
-      <SectionHeader title="デバイス" />
+      <SectionHeader title="デバイス" caption={periodCaption} />
       <div style={{ display: 'grid', gap: 'var(--tf-space-4)' }}>
         {rows.map((row) => (
           <div key={row.key} style={{ display: 'grid', gap: 'var(--tf-space-2)' }}>
@@ -198,10 +223,13 @@ const HOUR_AXIS_LABELS = ['0時', '6時', '12時', '18時'];
 export function HourlyPageviews({
   hours,
   includeBots,
+  periodCaption,
 }: {
   readonly hours: readonly number[];
   /** スイッチがオンのときだけ「Bot は含めていません」を添える（設計 §7.3.4）。 */
   readonly includeBots: boolean;
+  /** 適用中の期間（034 §7.3.3）。渡さなければ出さない。 */
+  readonly periodCaption?: ReactNode;
 }) {
   const rows: readonly HourRow[] = hours.map((pageviews, hour) => ({ hour, pageviews }));
   const max = Math.max(0, ...hours);
@@ -220,7 +248,7 @@ export function HourlyPageviews({
 
   return (
     <Card>
-      <SectionHeader title="時間帯別のページビュー" />
+      <SectionHeader title="時間帯別のページビュー" caption={periodCaption} />
       <BarChart
         title="時間帯別のページビュー"
         bars={rows.map((row) => ({ label: `${row.hour}時台`, value: row.pageviews }))}

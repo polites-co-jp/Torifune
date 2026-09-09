@@ -63,12 +63,23 @@ const TODAY_DATA: OverviewData = {
   dwellAvgNote: TODAY_DWELL_AVG_NOTE,
 };
 
+/**
+ * 適用中の期間（034-analytics-period-scope 設計 §7.3.3 / §7.3.4）。
+ *
+ * `OverviewTab` の `from` / `to` は **`periodCaption: string` に置き換わる**。
+ * **タブは文字列を組み立てない。** `AnalyticsView` が `appliedPeriodText` を 1 回呼び、
+ * 出来上がった文字列を配る（028 §7.3.6「数を計算しない・並べるだけ」を保つ）。
+ */
+const PERIOD_CAPTION = '期間 2026-09-02 〜 2026-09-08（7 日間）';
+
+/** 034 §7.3.1。旧「日次の推移」の `aside`（`rangeText`）の形。**もう出てはならない。** */
+const OLD_ASIDE_RANGE = '2026-09-05 〜 2026-09-05';
+
 function render(data: OverviewData): string {
   return renderToStaticMarkup(
     createElement(OverviewTab, {
       data,
-      from: '2026-09-05',
-      to: '2026-09-05',
+      periodCaption: PERIOD_CAPTION,
       includeBots: false,
       pagesHref: '/analytics?siteId=s1&tab=pages',
       referrersHref: '/analytics?siteId=s1&tab=referrers',
@@ -175,5 +186,99 @@ describe('当日の偏りの注記（#57）', () => {
 
     expect(text).not.toContain('確定後より高めに出ます');
     expect(text).not.toContain('進行中のセッションを含む当日は');
+  });
+});
+
+/**
+ * 期間に依存する各カードに期間を出す（034-analytics-period-scope 設計 §7.3.3、
+ * 受け入れ条件 F #47 / #51 / #52）。
+ *
+ * 概要タブで `caption` に期間を出すのは 5 枚：
+ * 「日次の推移」「上位ページ」「参照元」「時間帯別のページビュー」「デバイス」。
+ *
+ * **`aside` を上書きしない。** 上位ページ・参照元の「すべて →」はいまのまま右に残る。
+ * 例外は「日次の推移」の `aside`（期間）だけで、これは `caption` へ**移す**（#52）。
+ */
+describe('カードの期間（#47 / #51 / #52）', () => {
+  /** 期間の文字列が HTML に現れた回数。 */
+  function countPeriod(html: string): number {
+    return textOf(html).split(PERIOD_CAPTION).length - 1;
+  }
+
+  /**
+   * #47。「上位ページ」「参照元」で `aside`（「すべて →」）が残ったまま期間が出る。
+   *
+   * 消えると概要タブから各タブへの導線が失われる。
+   */
+  it('上位ページ・参照元で「すべて →」が残ったまま期間が出る', () => {
+    const text = textOf(render(WITH_DELTA));
+
+    expect(text).toContain('上位ページ');
+    expect(text).toContain('参照元');
+    // 「すべて →」は 2 つ（上位ページ・参照元）。
+    expect(text.split('すべて →').length - 1).toBe(2);
+    expect(text).toContain(PERIOD_CAPTION);
+  });
+
+  /** #47。導線の行き先も変わらない。 */
+  it('「すべて →」の行き先が変わらない', () => {
+    const html = render(WITH_DELTA);
+
+    expect(html).toContain('tab=pages');
+    expect(html).toContain('tab=referrers');
+  });
+
+  /** #51。時間帯別・デバイスのカードにも期間が出る（部品へ `periodCaption` を渡している）。 */
+  it('時間帯別とデバイスのカードにも期間が出る', () => {
+    const text = textOf(render(WITH_DELTA));
+
+    expect(text).toContain('時間帯別のページビュー');
+    expect(text).toContain('デバイス');
+    // 5 枚（日次の推移 / 上位ページ / 参照元 / 時間帯別 / デバイス）。
+    expect(countPeriod(render(WITH_DELTA))).toBe(5);
+    expect(text).toContain(PERIOD_CAPTION);
+  });
+
+  /** #51。「日次の推移」が無い（1 日の期間）ときは 4 枚。 */
+  it('「日次の推移」が無いときは 4 枚に期間が出る', () => {
+    expect(countPeriod(render(TODAY_DATA))).toBe(4);
+  });
+
+  /** #52。「日次の推移」カードにも期間が出る（`caption` 側）。 */
+  it('「日次の推移」カードに期間が出る', () => {
+    const text = textOf(render(WITH_DELTA));
+
+    expect(text).toContain('日次の推移');
+    expect(text.indexOf(PERIOD_CAPTION)).toBeGreaterThanOrEqual(0);
+  });
+
+  /**
+   * #52。**`aside` に期間が出ない。** 同じ期間が同じカードに 2 か所出るのを避ける。
+   *
+   * 旧実装は `SectionHeader aside={rangeText(from, to)}` で期間を右に出していた。
+   */
+  it('「日次の推移」の aside に rangeText の期間が出ない', () => {
+    const text = textOf(render(WITH_DELTA));
+
+    expect(text).not.toContain(OLD_ASIDE_RANGE);
+    // `〜` を挟んだ日付だけの並びが、期間の 1 行以外に現れない。
+    expect(text.split('〜').length - 1).toBe(countPeriod(render(WITH_DELTA)));
+  });
+
+  /** #52。タブは文字列を組み立てない（渡された文字列だけが出る）。 */
+  it('渡された文字列以外の期間表記を作らない', () => {
+    const text = textOf(render({ ...WITH_DELTA, daily: [ROW] }));
+
+    // 日付そのもの（`2026-09-04`）は表（`<details>` の中）に出るが、
+    // 見出しの期間としては渡された文字列だけ。
+    expect(text).toContain(PERIOD_CAPTION);
+    expect(text).not.toContain('期間 2026-09-05');
+  });
+
+  /** #51。`periodCaption` は `CAPTION` 様式（小さく淡い）で出す。 */
+  it('期間は CAPTION 様式で出す', () => {
+    const html = render(WITH_DELTA);
+
+    expect(html).toContain('--tf-color-text-subtle');
   });
 });

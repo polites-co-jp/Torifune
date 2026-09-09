@@ -1,3 +1,4 @@
+import { rangeDays } from '@/domain/analytics/analytics';
 import type { PeriodPreset } from '@/domain/analytics/day';
 import type { ReceptionState } from '@/domain/analytics/reception';
 import type { JobName, JobRunStatus } from '@/domain/jobs/job';
@@ -46,7 +47,14 @@ export const TODAY_PERIOD = 'today' as const;
  */
 export type AnalyticsPeriod = PeriodPreset | typeof TODAY_PERIOD | 'custom';
 
+/**
+ * 画面に並ぶ順（034-analytics-period-scope 設計 §7.1.2）。
+ *
+ * **先頭は `yesterday`**（＝「7日」の左。裁定 3.1）。
+ * `today` はここに入れない。左の `SegmentedControl`（速報値の群）が別に持つ。
+ */
 export const ANALYTICS_PERIODS: readonly AnalyticsPeriod[] = [
+  'yesterday',
   '7d',
   '30d',
   '90d',
@@ -57,6 +65,7 @@ export const ANALYTICS_PERIODS: readonly AnalyticsPeriod[] = [
 
 export const PERIOD_LABEL: Record<AnalyticsPeriod, string> = {
   today: '当日',
+  yesterday: '昨日',
   '7d': '7日',
   '30d': '30日',
   '90d': '90日',
@@ -113,9 +122,55 @@ export function shortDate(date: string): string {
   return `${Number(month)}/${Number(day)}`;
 }
 
-/** 期間の表示 `YYYY-MM-DD 〜 YYYY-MM-DD`。 */
+/**
+ * 期間の表示 `YYYY-MM-DD 〜 YYYY-MM-DD`。
+ *
+ * **1 日でも `from 〜 to` のまま**にする（034-analytics-period-scope 設計 §7.3.1）。
+ * ヘッダ行の「前期間（… 〜 …）」は 030 §7.4.1 が定めた形で、当期の表示のために
+ * 既存の契約を動かさない。1 日を日付 1 つで出したいときは `dateRangeText` を使う。
+ */
 export function rangeText(from: string, to: string): string {
   return `${from} ${RANGE_SEPARATOR} ${to}`;
+}
+
+/**
+ * 期間の表示。**1 日なら日付 1 つ、複数日なら `from 〜 to`**（034 設計 §7.3.1）。
+ *
+ * `2026-09-08 〜 2026-09-08` は同じ日付が 2 回並ぶだけで、読み手に何も足さない。
+ */
+export function dateRangeText(from: string, to: string): string {
+  return from === to ? from : rangeText(from, to);
+}
+
+/**
+ * 適用中の期間の 1 行（034 設計 §7.3.1）。
+ *
+ * | 期間 | 出力 |
+ * | --- | --- |
+ * | `7d`（`2026-09-02` 〜 `2026-09-08`） | `期間 2026-09-02 〜 2026-09-08（7 日間）` |
+ * | `yesterday`（`2026-09-08`） | `期間 2026-09-08` |
+ * | `custom` で 1 日（`2026-09-08`） | `期間 2026-09-08` |
+ * | `today`（`2026-09-09`） | `期間 当日（2026-09-09）` |
+ *
+ * * **1 日のときは日付を 1 つだけ出し、日数を添えない**（日付 1 つで自明）
+ * * **当日だけはラベル付き**にする。当日（生ログの速報値）と 1 日のカスタム（集計値）は
+ *   同じ日付を指すのに値が違いうる（030 §7.1.4）。日付だけだと画面で見分けられない
+ * * **複数日には日数を添える。**「7日」というラベルの範囲が `[today−7, yesterday]` である
+ *   ことを、画面で照合できるようにする
+ *
+ * 日数は Domain の `rangeDays`（両端を含む）で数える。**独自に数えない。**
+ */
+export function appliedPeriodText(input: {
+  readonly period: AnalyticsPeriod;
+  readonly from: string;
+  readonly to: string;
+}): string {
+  const dates = dateRangeText(input.from, input.to);
+  if (input.period === TODAY_PERIOD) {
+    return `期間 当日（${dates}）`;
+  }
+  const days = rangeDays(input.from, input.to);
+  return days <= 1 ? `期間 ${dates}` : `期間 ${dates}（${days} 日間）`;
 }
 
 /**
@@ -263,7 +318,7 @@ export const VIEW_TODAY_LABEL = '当日を見る';
  * 末尾が昨日の期間には入らないので、「次回の集計のあとに数字が出ます」は嘘になる。
  */
 export function staleRangeNoticeText(from: string, to: string): string {
-  return `この期間（${rangeText(from, to)}）の確定値はまだありません。アクセスは今日届いています。今日の分は「当日」で見られます。集計は前日までが対象です。`;
+  return `この期間（${dateRangeText(from, to)}）の確定値はまだありません。アクセスは今日届いています。今日の分は「当日」で見られます。集計は前日までが対象です。`;
 }
 
 /** 今日が月の 1 日で「今月」に確定値のある日が 1 日も無いとき（§7.2）。 */

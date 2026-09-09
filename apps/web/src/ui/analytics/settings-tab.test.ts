@@ -211,3 +211,39 @@ describe('既存の項目', () => {
     expect(rowValue(html, '日付の区切り')).toBe('UTC');
   });
 });
+
+/**
+ * 設定タブには期間を出さない（034-analytics-period-scope 設計 §7.3.3、受け入れ条件 F #53）。
+ *
+ * 設定タブは期間に依存しない（計測タグ・受信状況・定期実行）。
+ * `SettingsTab` は `periodCaption` を受け取らず、`SectionHeader` に `caption` を渡さない。
+ * タブの直下の `PeriodBar` も出ない（`shouldShowPeriodBar('settings') === false`。#40）。
+ */
+describe('期間を出さない（#53）', () => {
+  /** #53。「期間 」で始まる 1 行が出ない。 */
+  it('「期間」の表示が出ない', () => {
+    const text = textOf(render());
+
+    expect(text).not.toContain('期間 ');
+    expect(text).not.toMatch(/期間 \d{4}-\d{2}-\d{2}/);
+  });
+
+  /** #53。日付の範囲表記（`YYYY-MM-DD 〜 YYYY-MM-DD`）も出ない。 */
+  it('日付の範囲表記が出ない', () => {
+    expect(textOf(render())).not.toMatch(/\d{4}-\d{2}-\d{2} 〜 \d{4}-\d{2}-\d{2}/);
+  });
+
+  /** #53。カードの見出しは 2 枚（計測タグ / 受信状況）で、`caption` の行を作らない。 */
+  it('見出しは 2 枚で、caption の行を作らない', () => {
+    const html = render();
+
+    expect((html.match(/<h2/g) ?? []).length).toBe(2);
+    expect(textOf(html)).toContain('計測タグ');
+    expect(textOf(html)).toContain('受信状況');
+  });
+
+  /** #53。既存の行（最終受信・最終集計など）はそのまま出る。 */
+  it('受信状況の行はそのまま出る', () => {
+    expect(rowValue(render(), '最終受信')).toBe('2026-09-04 10:12');
+  });
+});

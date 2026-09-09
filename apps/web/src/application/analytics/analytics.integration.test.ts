@@ -3361,3 +3361,221 @@ describe('collect のホットパス', () => {
     expect(rows.map((row) => row.path)).toEqual(['/x']);
   });
 });
+
+/**
+ * 期間の境界値（034-analytics-period-scope 設計 §10 G #64）。
+ *
+ * 裁定 3.2 は「**データの取得範囲を変えない**」である。変えないことを示すために、
+ * Repository の共通条件（`metric_date >= from` / `metric_date <= to`）が
+ * **両端を含み、その外側を含まない**ことを、一覧・内訳・件数の**すべて**で固定する。
+ *
+ * 「昨日」プリセットは 1 日の期間（`from === to`）なので、この境界がそのまま
+ * 「昨日の値だけが出る／一昨日と今日は出ない」になる。
+ *
+ * **Repository のコードは変えない。** ここはその証明である。
+ */
+describe('期間の境界値（034 #64）', () => {
+  /** 期間は `[FROM, TO]` の 2 日。その外側に 1 日ずつ置く。 */
+  const BEFORE = '2026-06-09';
+  const FROM = '2026-06-10';
+  const TO = '2026-06-11';
+  const AFTER = '2026-06-12';
+
+  const SOURCE = 'test.boundary';
+
+  /** 4 日それぞれに、key 無し（`pageviews`）と key 付き（`path_pageviews`）を 1 つずつ入れる。 */
+  async function seedFourDays(siteId: string): Promise<void> {
+    const rows = [
+      { metricDate: BEFORE, path: '/before', value: 1 },
+      { metricDate: FROM, path: '/from', value: 2 },
+      { metricDate: TO, path: '/to', value: 4 },
+      { metricDate: AFTER, path: '/after', value: 8 },
+    ] as const;
+
+    for (const row of rows) {
+      await recordAnalytics(admin, {
+        siteId,
+        metricDate: row.metricDate,
+        source: SOURCE,
+        metric: 'pageviews',
+        value: row.value,
+      });
+      await recordAnalytics(admin, {
+        siteId,
+        metricDate: row.metricDate,
+        source: SOURCE,
+        metric: 'path_pageviews',
+        key: row.path,
+        value: row.value,
+      });
+    }
+  }
+
+  /** #64。一覧（`listPoints`）は両端を含む。 */
+  it('一覧に metric_date = from と = to の行が入る', async () => {
+    const site = await makeSite();
+    await seedFourDays(site.id);
+
+    const points = await listAnalytics(admin, {
+      siteId: site.id,
+      from: FROM,
+      to: TO,
+      source: null,
+    });
+    const dates = [...new Set(points.map((point) => point.metricDate))].sort();
+
+    expect(dates).toEqual([FROM, TO]);
+  });
+
+  /** #64。一覧に `from − 1` と `to + 1` は入らない。 */
+  it('一覧に from − 1 と to + 1 の行が入らない', async () => {
+    const site = await makeSite();
+    await seedFourDays(site.id);
+
+    const points = await listAnalytics(admin, {
+      siteId: site.id,
+      from: FROM,
+      to: TO,
+      source: null,
+    });
+    const dates = points.map((point) => point.metricDate);
+
+    expect(dates).not.toContain(BEFORE);
+    expect(dates).not.toContain(AFTER);
+  });
+
+  /** #64。一覧の値の合計が期間内の 2 日ぶんだけになる（2 + 4 = 6）。 */
+  it('一覧の pageviews の合計が期間内の 2 日ぶん', async () => {
+    const site = await makeSite();
+    await seedFourDays(site.id);
+
+    const points = await listAnalytics(admin, {
+      siteId: site.id,
+      from: FROM,
+      to: TO,
+      source: null,
+    });
+    const total = points
+      .filter((point) => point.metric === 'pageviews')
+      .reduce((sum, point) => sum + point.value, 0);
+
+    expect(total).toBe(6);
+  });
+
+  /** #64。内訳（`sumByKey`）も両端を含み、外側を含まない。 */
+  it('内訳に from と to の key が入り、from − 1 と to + 1 の key が入らない', async () => {
+    const site = await makeSite();
+    await seedFourDays(site.id);
+
+    const page = await listAnalyticsBreakdown(admin, {
+      siteId: site.id,
+      from: FROM,
+      to: TO,
+      metric: 'path_pageviews',
+      source: null,
+      page: 1,
+      perPage: 50,
+    });
+
+    expect(page.items.map((item) => item.key).sort()).toEqual(['/from', '/to']);
+  });
+
+  /** #64。件数（`countByKey` → `meta.total`）も同じ境界。 */
+  it('内訳の total が期間内の key の種類数だけを数える', async () => {
+    const site = await makeSite();
+    await seedFourDays(site.id);
+
+    const page = await listAnalyticsBreakdown(admin, {
+      siteId: site.id,
+      from: FROM,
+      to: TO,
+      metric: 'path_pageviews',
+      source: null,
+      page: 1,
+      // ページを 1 件に切っても `total` は全件数（境界の外を数えていないこと）。
+      perPage: 1,
+    });
+
+    expect(page.total).toBe(2);
+    expect(page.items).toHaveLength(1);
+  });
+
+  /**
+   * #64。**1 日の期間**（`from === to`。「昨日」プリセットの形）でも同じ境界。
+   *
+   * 一覧・内訳・件数のすべてでその日だけが出る。
+   */
+  it('1 日の期間ではその日だけが出る（一覧・内訳・件数）', async () => {
+    const site = await makeSite();
+    await seedFourDays(site.id);
+
+    const points = await listAnalytics(admin, {
+      siteId: site.id,
+      from: TO,
+      to: TO,
+      source: null,
+    });
+    const page = await listAnalyticsBreakdown(admin, {
+      siteId: site.id,
+      from: TO,
+      to: TO,
+      metric: 'path_pageviews',
+      source: null,
+      page: 1,
+      perPage: 50,
+    });
+
+    expect(
+      points
+        .filter((point) => point.metric === 'pageviews')
+        .reduce((sum, point) => sum + point.value, 0),
+    ).toBe(4);
+    expect(page.items).toEqual([{ key: '/to', value: 4 }]);
+    expect(page.total).toBe(1);
+  });
+
+  /** #64 の対。期間を広げれば外側だった日が現れる（検査が空振りしていない）。 */
+  it('期間を広げると from − 1 / to + 1 の行が現れる', async () => {
+    const site = await makeSite();
+    await seedFourDays(site.id);
+
+    const page = await listAnalyticsBreakdown(admin, {
+      siteId: site.id,
+      from: BEFORE,
+      to: AFTER,
+      metric: 'path_pageviews',
+      source: null,
+      page: 1,
+      perPage: 50,
+    });
+
+    expect(page.items.map((item) => item.key).sort()).toEqual([
+      '/after',
+      '/before',
+      '/from',
+      '/to',
+    ]);
+    expect(page.total).toBe(4);
+  });
+
+  /** #64。**ID を差し替えるだけで他サイトの値が取れない**（期間を変えても同じ）。 */
+  it('siteId を指定すると他のサイトの同じ日の値が混ざらない', async () => {
+    const siteA = await makeSite();
+    const siteB = await makeSite();
+    await seedFourDays(siteA.id);
+    await seedFourDays(siteB.id);
+
+    const points = await listAnalytics(admin, {
+      siteId: siteA.id,
+      from: FROM,
+      to: TO,
+      source: null,
+    });
+    const total = points
+      .filter((point) => point.metric === 'pageviews')
+      .reduce((sum, point) => sum + point.value, 0);
+
+    // 2 サイトぶん（12）ではなく 1 サイトぶん（6）。
+    expect(total).toBe(6);
+  });
+});

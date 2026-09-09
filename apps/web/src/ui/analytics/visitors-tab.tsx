@@ -45,9 +45,12 @@ const BOT_ACCESS_NOTE =
 
 export function VisitorsTab({
   data,
+  periodCaption,
   includeBots,
 }: {
   readonly data: VisitorsData;
+  /** 適用中の期間（034-analytics-period-scope 設計 §7.3.3）。組み立て済みの文字列を並べるだけ。 */
+  readonly periodCaption: string;
   readonly includeBots: boolean;
 }) {
   return (
@@ -97,13 +100,19 @@ export function VisitorsTab({
           rows={data.devices}
           botPageviews={data.bot.botPageviews}
           includeBots={includeBots}
+          periodCaption={periodCaption}
         />
-        <HourlyPageviews hours={data.hours} includeBots={includeBots} />
+        <HourlyPageviews
+          hours={data.hours}
+          includeBots={includeBots}
+          periodCaption={periodCaption}
+        />
       </div>
 
       <Card>
         <SectionHeader
           title="Bot のアクセス"
+          caption={periodCaption}
           aside={
             includeBots
               ? '現在、他の指標にも Bot を含めています'

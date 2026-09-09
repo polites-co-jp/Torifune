@@ -424,17 +424,19 @@ export default async function AnalyticsPage({
             value: current.dwellAvg,
             delta: prev === null ? undefined : deltaOfAverage(current.dwellAvg, prev.dwellAvg),
           },
-          // 当日は 1 日しかないので折れ線に意味が無い。カードごと出さない（§7.3）。
+          // **期間が 1 日なら折れ線に意味が無い**ので、カードごと出さない
+          // （030 §7.3 を 034 §7.2 で「1 日の期間」へ一般化した。当日もここに含まれる）。
           // 確定期間では、記録の無い日は 0 で埋める。記録が 1 つも無ければ空にして空状態を出す。
-          daily: isToday
-            ? null
-            : currentPoints.length === 0
-              ? []
-              : datesBetween(period.from, period.to).map((date) => ({
-                  date,
-                  pageviews: dailyByDate.get(date)?.pageviews ?? 0,
-                  visitors: dailyByDate.get(date)?.visitors ?? 0,
-                })),
+          daily:
+            days === 1
+              ? null
+              : currentPoints.length === 0
+                ? []
+                : datesBetween(period.from, period.to).map((date) => ({
+                    date,
+                    pageviews: dailyByDate.get(date)?.pageviews ?? 0,
+                    visitors: dailyByDate.get(date)?.visitors ?? 0,
+                  })),
           topPages: validItems(topPages.items),
           topReferrers: validItems(topReferrers.items),
           hours: hoursOf(hours.items),
@@ -531,16 +533,17 @@ export default async function AnalyticsPage({
             value: current.perVisitor,
             delta: prev === null ? undefined : deltaOfAverage(current.perVisitor, prev.perVisitor),
           },
-          // 当日は 1 日しかないので「訪問者」と同じ数になる。同じ数を 2 枚並べない（§7.3）。
+          // **期間が 1 日なら「訪問者」と同じ数になる**ので、同じ数を 2 枚並べない
+          // （030 §7.3 を 034 §7.2 で「1 日の期間」へ一般化した。当日もここに含まれる）。
           perDay:
-            isToday || prev === null
-              ? isToday
-                ? null
-                : { value: current.visitors / days }
-              : {
-                  value: current.visitors / days,
-                  delta: delta(current.visitors / days, prev.visitors / previousDays),
-                },
+            days === 1
+              ? null
+              : prev === null
+                ? { value: current.visitors / days }
+                : {
+                    value: current.visitors / days,
+                    delta: delta(current.visitors / days, prev.visitors / previousDays),
+                  },
           hours: hoursOf(hours.items),
           devices: deviceRows(devices.items, { ...summaryOptions, botPageviews: bot.botPageviews }),
           bot,
