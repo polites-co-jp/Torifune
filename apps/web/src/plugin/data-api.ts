@@ -371,9 +371,16 @@ export function createPluginDataApi(deps: PluginDataApiDeps): PluginDataApi {
         }
       },
 
-      async markPublished(id) {
+      async markPublished(id, result) {
         requireDeclared('social.write');
-        return toSocialPostView(await updateSocialPost(context, { id, status: 'published' }));
+        return toSocialPostView(
+          await updateSocialPost(context, {
+            id,
+            status: 'published',
+            ...(result?.externalId === undefined ? {} : { externalId: result.externalId }),
+            ...(result?.externalUrl === undefined ? {} : { externalUrl: result.externalUrl }),
+          }),
+        );
       },
 
       async markFailed(id, reason) {

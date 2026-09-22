@@ -240,7 +240,8 @@ describe('投稿', () => {
   it('作成できる', async () => {
     const account = await createAccount();
 
-    const post = await createSocialPost(admin, {
+    // 035-social-publishing 設計 §6.1.3：出力は `{ post, created }`。
+    const { post, created } = await createSocialPost(admin, {
       socialAccountId: account.id,
       body: 'こんにちは',
       scheduledAt: null,
@@ -249,6 +250,7 @@ describe('投稿', () => {
 
     expect(post.body).toBe('こんにちは');
     expect(post.status).toBe('draft');
+    expect(created).toBe(true);
   });
 
   it('本文が空なら ValidationError', async () => {
@@ -341,14 +343,19 @@ describe('投稿', () => {
 
   it('draft から scheduled、published へ進められる', async () => {
     const account = await createAccount();
-    const post = await createSocialPost(admin, {
+    const { post } = await createSocialPost(admin, {
       socialAccountId: account.id,
       body: 'x',
       scheduledAt: null,
       status: 'draft',
     });
 
-    const scheduled = await updateSocialPost(admin, { id: post.id, status: 'scheduled' });
+    // 035-social-publishing 設計 §11 #13：`scheduled` には予約日時が要る。
+    const scheduled = await updateSocialPost(admin, {
+      id: post.id,
+      status: 'scheduled',
+      scheduledAt: new Date(Date.now() + 60_000),
+    });
     expect(scheduled.status).toBe('scheduled');
 
     const published = await updateSocialPost(admin, { id: post.id, status: 'published' });
@@ -356,10 +363,25 @@ describe('投稿', () => {
     expect(published.publishedAt).not.toBeNull();
   });
 
+  it('scheduledAt を持たない投稿を scheduled にすると ValidationError', async () => {
+    // 035-social-publishing 設計 §6.1.2 の検査 e。既存 API の挙動変更。
+    const account = await createAccount();
+    const { post } = await createSocialPost(admin, {
+      socialAccountId: account.id,
+      body: 'x',
+      scheduledAt: null,
+      status: 'draft',
+    });
+
+    await expect(
+      updateSocialPost(admin, { id: post.id, status: 'scheduled' }),
+    ).rejects.toThrowError(ValidationError);
+  });
+
   it('published から draft へ戻せない', async () => {
     // 起きた事実は書き換えない。
     const account = await createAccount();
-    const post = await createSocialPost(admin, {
+    const { post } = await createSocialPost(admin, {
       socialAccountId: account.id,
       body: 'x',
       scheduledAt: null,
@@ -373,7 +395,7 @@ describe('投稿', () => {
 
   it('failed から draft へ戻せない', async () => {
     const account = await createAccount();
-    const post = await createSocialPost(admin, {
+    const { post } = await createSocialPost(admin, {
       socialAccountId: account.id,
       body: 'x',
       scheduledAt: null,
@@ -387,7 +409,7 @@ describe('投稿', () => {
 
   it('状態を触らない更新は published でも通る', async () => {
     const account = await createAccount();
-    const post = await createSocialPost(admin, {
+    const { post } = await createSocialPost(admin, {
       socialAccountId: account.id,
       body: 'x',
       scheduledAt: null,
@@ -466,7 +488,7 @@ describe('イベント', () => {
   it('published への更新で social.post.published が発火する', async () => {
     const received: unknown[] = [];
     const account = await createAccount();
-    const post = await createSocialPost(admin, {
+    const { post } = await createSocialPost(admin, {
       socialAccountId: account.id,
       body: 'x',
       scheduledAt: null,

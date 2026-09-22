@@ -54,6 +54,16 @@ export interface AuthorizationContext {
    * 権限の判断に混ぜると詐称の余地を作る。
    */
   readonly request?: RequestInfo;
+  /**
+   * どの API Token で認証されたか（035-social-publishing 設計 §6.1.3）。
+   *
+   * **API Token 1 本 = 外部アプリ 1 つ**とみなし、「どのアプリが登録したか」の
+   * 名前空間として使う。セッション認証・内部処理では無い。
+   *
+   * `permissions` と同じく**サーバー側で引いた Token 行からだけ**積む。
+   * リクエストの値をここへ入れる経路は作らない（04_認証設計.md §28）。
+   */
+  readonly apiToken?: { readonly id: string; readonly name: string };
 }
 
 /** その文脈が Permission を持つか。 */

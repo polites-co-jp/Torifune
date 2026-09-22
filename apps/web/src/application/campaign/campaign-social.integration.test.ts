@@ -126,10 +126,12 @@ async function makeSite(name: string): Promise<string> {
 let accountId: string;
 
 async function makePost(body: string, status: 'draft' | 'scheduled' = 'draft'): Promise<string> {
-  const post = await createSocialPost(admin, {
+  // 035-social-publishing 設計 §11 #13：`scheduled` には予約日時が要る。
+  // 同 §6.1.3：出力は `{ post, created }`。
+  const { post } = await createSocialPost(admin, {
     socialAccountId: accountId,
     body,
-    scheduledAt: null,
+    scheduledAt: status === 'scheduled' ? new Date(Date.now() + 60_000) : null,
     status,
   });
   return post.id;

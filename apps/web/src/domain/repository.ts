@@ -68,6 +68,15 @@ export class ValidationError extends Error {
     readonly resource: string,
     readonly field: string,
     readonly detail: string,
+    /**
+     * 複数のフィールドにまたがる問題。
+     *
+     * 省略すると `{ [field]: [detail] }` と同じ意味。
+     * 1 回の検証で複数の指摘が出る場面（Plugin の `validate()` など）のためにある。
+     * `field` / `detail` には先頭の 1 件を入れ、UseCase を直接呼ぶ経路でも
+     * 「少なくとも 1 件の理由」を読めるようにしておく。
+     */
+    readonly details?: Readonly<Record<string, readonly string[]>>,
   ) {
     super(`${resource} の ${field} が不正`);
     this.name = 'ValidationError';

@@ -11,6 +11,7 @@ import {
   toAccountResponse,
   updateAccountSchema,
 } from '@/api/schemas/social';
+import { ensurePluginsStartedAnonymously } from '@/plugin/runtime';
 
 export const GET = defineRoute({
   operationId: 'getSocialAccount',
@@ -34,12 +35,16 @@ export const PATCH = defineRoute({
   body: updateAccountSchema,
   response: accountEnvelopeSchema,
   handler: async ({ context, params, body }) => {
+    // `credentials` の突き合わせが publisher の登録簿を引く（設計 §6.7）。
+    await ensurePluginsStartedAnonymously();
+
     const account = await updateSocialAccount(context, {
       id: params['id'] ?? '',
       ...(body.displayName === undefined ? {} : { displayName: body.displayName }),
       ...(body.handle === undefined ? {} : { handle: body.handle }),
       ...(body.status === undefined ? {} : { status: body.status }),
       ...(body.credential === undefined ? {} : { credential: body.credential }),
+      ...(body.credentials === undefined ? {} : { credentials: body.credentials }),
     });
     return dataResponse(toAccountResponse(account));
   },

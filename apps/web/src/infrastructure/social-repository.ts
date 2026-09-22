@@ -149,6 +149,28 @@ const POST_COLUMNS = [
  */
 const DELIVERED_AT = sql<Date>`COALESCE(published_at, failed_at, updated_at)`;
 
+/** 冪等な登録の試行回数。同時要求の相手がコミットするのを待つぶん。 */
+const IDEMPOTENT_INSERT_ATTEMPTS = 3;
+
+function postInsertValues(post: NewSocialPost): Record<string, unknown> {
+  return {
+    id: post.id,
+    social_account_id: post.socialAccountId,
+    body: post.body,
+    scheduled_at: post.scheduledAt,
+    status: post.status,
+    // 省略された項目は DB の既定値（'auto' / [] / {}）に任せる。
+    ...(post.deliveryMode === undefined ? {} : { delivery_mode: post.deliveryMode }),
+    ...(post.media === undefined ? {} : { media: JSON.stringify(post.media) }),
+    ...(post.link === undefined ? {} : { link: post.link }),
+    ...(post.providerOptions === undefined
+      ? {}
+      : { provider_options: JSON.stringify(post.providerOptions) }),
+    ...(post.externalRef === undefined ? {} : { external_ref: post.externalRef }),
+    ...(post.createdByTokenId === undefined ? {} : { created_by_token_id: post.createdByTokenId }),
+  };
+}
+
 export const socialRepository: SocialRepository = {
   async listAccounts(
     connection: Connection,
@@ -339,27 +361,69 @@ export const socialRepository: SocialRepository = {
   async insertPost(connection: Connection, post: NewSocialPost): Promise<SocialPost> {
     const row = await connection.db
       .insertInto('social_posts')
-      .values({
-        id: post.id,
-        social_account_id: post.socialAccountId,
-        body: post.body,
-        scheduled_at: post.scheduledAt,
-        status: post.status,
-        // 省略された項目は DB の既定値（'auto' / [] / {}）に任せる。
-        ...(post.deliveryMode === undefined ? {} : { delivery_mode: post.deliveryMode }),
-        ...(post.media === undefined ? {} : { media: JSON.stringify(post.media) }),
-        ...(post.link === undefined ? {} : { link: post.link }),
-        ...(post.providerOptions === undefined
-          ? {}
-          : { provider_options: JSON.stringify(post.providerOptions) }),
-        ...(post.externalRef === undefined ? {} : { external_ref: post.externalRef }),
-        ...(post.createdByTokenId === undefined
-          ? {}
-          : { created_by_token_id: post.createdByTokenId }),
-      })
+      .values(postInsertValues(post) as never)
       .returning(POST_COLUMNS)
       .executeTakeFirstOrThrow();
     return toPost(row as PostRow);
+  },
+
+  async insertPostIdempotent(
+    connection: Connection,
+    post: NewSocialPost,
+  ): Promise<{ post: SocialPost; created: boolean }> {
+    const tokenId = post.createdByTokenId ?? null;
+    const externalRef = post.externalRef ?? null;
+
+    // 冪等キーが揃っていない投稿は部分一意索引の対象外。ただの INSERT と同じ。
+    if (tokenId === null || externalRef === null) {
+      return { post: await socialRepository.insertPost(connection, post), created: true };
+    }
+
+    // 同時に来た要求の相手がまだコミットしていないと、INSERT が 0 行でも
+    // 既存を引けないことがある。**数回だけ繰り返す**（無限には回さない）。
+    for (let attempt = 0; attempt < IDEMPOTENT_INSERT_ATTEMPTS; attempt += 1) {
+      const row = await connection.db
+        .insertInto('social_posts')
+        .values(postInsertValues(post) as never)
+        .onConflict((oc) =>
+          oc
+            .columns(['created_by_token_id', 'external_ref'])
+            // 部分一意索引（022_social_publishing.sql）の述語にそろえる。
+            .where('created_by_token_id', 'is not', null)
+            .where('external_ref', 'is not', null)
+            .doNothing(),
+        )
+        .returning(POST_COLUMNS)
+        .executeTakeFirst();
+
+      if (row !== undefined) {
+        return { post: toPost(row as PostRow), created: true };
+      }
+
+      const existing = await socialRepository.findByExternalRef(connection, tokenId, externalRef);
+      if (existing !== null) {
+        return { post: existing, created: false };
+      }
+    }
+
+    throw new Error('冪等な登録が確定しなかった');
+  },
+
+  async findByExternalRef(
+    connection: Connection,
+    createdByTokenId: string,
+    externalRef: string,
+  ): Promise<SocialPost | null> {
+    if (!UUID_PATTERN.test(createdByTokenId)) return null;
+
+    const row = await connection.db
+      .selectFrom('social_posts')
+      .select(POST_COLUMNS)
+      .where('created_by_token_id', '=', createdByTokenId)
+      .where('external_ref', '=', externalRef)
+      .executeTakeFirst();
+
+    return row === undefined ? null : toPost(row as PostRow);
   },
 
   async updatePost(

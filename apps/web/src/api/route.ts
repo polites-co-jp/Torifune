@@ -308,7 +308,11 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
         return errorResponse('VALIDATION_ERROR', { sort: ['並び替えに使えません。'] }, cors);
       }
       if (error instanceof ValidationError) {
-        return errorResponse('VALIDATION_ERROR', { [error.field]: [error.detail] }, cors);
+        return errorResponse(
+          'VALIDATION_ERROR',
+          error.details ?? { [error.field]: [error.detail] },
+          cors,
+        );
       }
       if (error instanceof NotFoundError) {
         return errorResponse('NOT_FOUND', undefined, cors);

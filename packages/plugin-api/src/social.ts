@@ -103,7 +103,12 @@ export interface PublisherRegistration {
     readonly post: SocialPostDraftView;
     readonly account: SocialAccountView;
   }): readonly PublisherValidationProblem[] | Promise<readonly PublisherValidationProblem[]>;
-  /** 自動配信。実装しなければ、この provider の自動配信の予約は 422 で断られる。 */
+  /**
+   * 自動配信。
+   *
+   * **実装しなくても予約そのものは断られない。** 配信の支度が整うまで、
+   * Torifune がその投稿を飛ばして待つ（035-social-publishing 設計 §6.1.2）。
+   */
   publish?(input: PublishInput): Promise<PublishResult>;
   /** 手動投稿。実装しなければ、この provider の `deliveryMode: 'manual'` は 422 で断られる。 */
   manual?(input: ManualInput): ManualHandoff | Promise<ManualHandoff>;

@@ -7,6 +7,7 @@ import {
 import { dataResponse, noContentResponse } from '@/api/response';
 import { defineRoute } from '@/api/route';
 import { postEnvelopeSchema, toPostResponse, updatePostSchema } from '@/api/schemas/social';
+import { ensurePluginsStartedAnonymously } from '@/plugin/runtime';
 
 export const GET = defineRoute({
   operationId: 'getSocialPost',
@@ -30,6 +31,9 @@ export const PATCH = defineRoute({
   body: updatePostSchema,
   response: postEnvelopeSchema,
   handler: async ({ context, params, body }) => {
+    // 事前検査が publisher の登録簿を引く（設計 §6.7）。
+    await ensurePluginsStartedAnonymously();
+
     const post = await updateSocialPost(context, {
       id: params['id'] ?? '',
       ...(body.body === undefined ? {} : { body: body.body }),
@@ -37,6 +41,12 @@ export const PATCH = defineRoute({
       ...(body.status === undefined ? {} : { status: body.status }),
       // null は「理由を消す」。undefined（変えない）と区別する。
       ...(body.failureReason === undefined ? {} : { failureReason: body.failureReason }),
+      ...(body.deliveryMode === undefined ? {} : { deliveryMode: body.deliveryMode }),
+      ...(body.media === undefined ? {} : { media: body.media }),
+      ...(body.link === undefined ? {} : { link: body.link }),
+      ...(body.providerOptions === undefined ? {} : { providerOptions: body.providerOptions }),
+      ...(body.externalId === undefined ? {} : { externalId: body.externalId }),
+      ...(body.externalUrl === undefined ? {} : { externalUrl: body.externalUrl }),
     });
     return dataResponse(toPostResponse(post));
   },

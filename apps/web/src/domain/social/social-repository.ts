@@ -126,6 +126,23 @@ export interface SocialRepository {
    */
   findPostsByIds(connection: Connection, ids: readonly string[]): Promise<readonly SocialPost[]>;
   insertPost(connection: Connection, post: NewSocialPost): Promise<SocialPost>;
+  /**
+   * 冪等に登録する（035-social-publishing 設計 §6.1.3）。
+   *
+   * `createdByTokenId` と `externalRef` の組が既にあれば**新しく作らず既存を返す**。
+   * 同じ要求が同時に 2 本来ても行は 1 つで、`created` だけが分かれる。
+   * どちらも持たない投稿は、ただの `insertPost` と同じ（`created` は常に true）。
+   */
+  insertPostIdempotent(
+    connection: Connection,
+    post: NewSocialPost,
+  ): Promise<{ readonly post: SocialPost; readonly created: boolean }>;
+  /** 冪等キーで引く。**Token をまたいで引けない**（名前空間は Token ごと）。 */
+  findByExternalRef(
+    connection: Connection,
+    createdByTokenId: string,
+    externalRef: string,
+  ): Promise<SocialPost | null>;
   updatePost(
     connection: Connection,
     id: string,

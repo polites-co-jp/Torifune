@@ -207,8 +207,16 @@ export interface PluginDataApi {
   readonly socialPosts: {
     list(options?: ListOptions & { accountId?: string }): Promise<Page<SocialPostView>>;
     get(id: string): Promise<SocialPostView | null>;
-    /** 配信結果を記録する。**実際の配信は Plugin が行う。** */
-    markPublished(id: string): Promise<SocialPostView>;
+    /**
+     * 配信結果を記録する。
+     *
+     * **`publish()` を実装する Plugin は呼ばなくてよい**（Torifune が戻り値から記録する）。
+     * 自前の経路で投稿した Plugin が、外部側の ID と URL を添えて記録するための口。
+     */
+    markPublished(
+      id: string,
+      result?: { externalId?: string; externalUrl?: string },
+    ): Promise<SocialPostView>;
     markFailed(id: string, reason: string): Promise<SocialPostView>;
   };
 

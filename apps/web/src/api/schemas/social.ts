@@ -1,16 +1,69 @@
 import { z } from 'zod';
 import {
   ACCOUNT_STATUSES,
+  DELIVERY_MODES,
   DISPLAY_NAME_MAX_LENGTH,
+  EXTERNAL_ID_MAX_LENGTH,
+  EXTERNAL_REF_MAX_LENGTH,
   FAILURE_REASON_MAX_LENGTH,
+  isValidExternalUrl,
+  isValidLink,
+  isValidMediaUrl,
+  MEDIA_ALT_MAX_LENGTH,
+  MEDIA_MAX,
+  MEDIA_URL_MAX_LENGTH,
   POST_BODY_MAX_LENGTH,
   POST_STATUSES,
+  PROVIDER_OPTIONS_MAX_BYTES,
+  type PostMedia,
   type SocialAccount,
   type SocialPost,
 } from '@/domain/social/social';
 import { dataEnvelope, pageEnvelope } from './envelope';
 
 /** SNS API の Zod スキーマ。 */
+
+export const deliveryModeSchema = z.enum(DELIVERY_MODES);
+
+/**
+ * 投稿に添える媒体（035-social-publishing 設計 §6.1.1）。
+ *
+ * **要素ごとの検証も `media` の問題として返す。** 422 の `details` のキーを
+ * `media.0.url` のように分岐させると、利用者側が拾う場所を増やすことになる。
+ */
+const mediaSchema = z
+  .array(z.object({ url: z.string(), alt: z.string().nullable().default(null) }))
+  .max(MEDIA_MAX, `媒体は${MEDIA_MAX}件以内にしてください。`)
+  .refine(
+    (items) => items.every((item) => isValidMediaUrl(item.url)),
+    `媒体の URL は https で${MEDIA_URL_MAX_LENGTH}文字以内にしてください。`,
+  )
+  .refine(
+    (items) => items.every((item) => (item.alt ?? '').length <= MEDIA_ALT_MAX_LENGTH),
+    `代替テキストは${MEDIA_ALT_MAX_LENGTH}文字以内にしてください。`,
+  );
+
+/** provider 固有の追加項目。**中身を検証するのは Plugin**（`validate()`）。 */
+const providerOptionsSchema = z
+  .record(z.string(), z.unknown())
+  .refine(
+    (value) => Buffer.byteLength(JSON.stringify(value), 'utf8') <= PROVIDER_OPTIONS_MAX_BYTES,
+    `JSON にして${PROVIDER_OPTIONS_MAX_BYTES}バイト以内にしてください。`,
+  );
+
+/**
+ * `credentialFields` に従う資格情報（035-social-publishing 設計 §6.4）。
+ *
+ * **応答には決して含めない。** 入力専用で、どのキーが設定されているかも返さない。
+ * 値の型違いも `credentials` の問題として返す（キーごとに分岐させない）。
+ */
+const credentialsSchema = z
+  .record(z.string(), z.unknown())
+  .refine(
+    (value) => Object.values(value).every((item) => typeof item === 'string'),
+    '値は文字列で指定してください。',
+  )
+  .transform((value) => value as Record<string, string>);
 
 export const accountStatusSchema = z.enum(ACCOUNT_STATUSES);
 export const postStatusSchema = z.enum(POST_STATUSES);
@@ -27,6 +80,8 @@ export const createAccountSchema = z.object({
   handle: z.string().max(200).default(''),
   /** 平文。**応答には決して含めない。** */
   credential: z.string().max(4096).optional(),
+  /** `credentialFields` に従う資格情報。`credential` との同時指定は 422。 */
+  credentials: credentialsSchema.optional(),
   status: accountStatusSchema.default('disconnected'),
   csrfToken: z.string().optional(),
 });
@@ -37,6 +92,8 @@ export const updateAccountSchema = z.object({
   status: accountStatusSchema.optional(),
   /** 省略すると変えない。空文字を送ると消す。 */
   credential: z.string().max(4096).optional(),
+  /** 省略すると変えない。空のオブジェクトを送ると消す。 */
+  credentials: credentialsSchema.optional(),
   csrfToken: z.string().optional(),
 });
 
@@ -52,6 +109,23 @@ export const createPostSchema = z.object({
   body: z.string().min(1, '入力してください。').max(POST_BODY_MAX_LENGTH),
   scheduledAt: z.coerce.date().nullable().optional(),
   status: postStatusSchema.default('draft'),
+  deliveryMode: deliveryModeSchema.default('auto'),
+  media: mediaSchema.default([]),
+  link: z
+    .string()
+    .nullish()
+    .refine(
+      (value) => value === null || value === undefined || isValidLink(value),
+      `URL は https で${MEDIA_URL_MAX_LENGTH}文字以内にしてください。`,
+    ),
+  providerOptions: providerOptionsSchema.default({}),
+  /** 外部アプリ側の ID。同じ API Token からの再送を 1 行にまとめる冪等キー。 */
+  externalRef: z
+    .string()
+    .trim()
+    .min(1, '入力してください。')
+    .max(EXTERNAL_REF_MAX_LENGTH)
+    .optional(),
   csrfToken: z.string().optional(),
 });
 
@@ -59,6 +133,25 @@ export const updatePostSchema = z.object({
   body: z.string().min(1).max(POST_BODY_MAX_LENGTH).optional(),
   scheduledAt: z.coerce.date().nullable().optional(),
   status: postStatusSchema.optional(),
+  deliveryMode: deliveryModeSchema.optional(),
+  media: mediaSchema.optional(),
+  link: z
+    .string()
+    .nullish()
+    .refine(
+      (value) => value === null || value === undefined || isValidLink(value),
+      `URL は https で${MEDIA_URL_MAX_LENGTH}文字以内にしてください。`,
+    ),
+  providerOptions: providerOptionsSchema.optional(),
+  /** 配信後の SNS 側の投稿 ID。手動投稿では人が貼る。 */
+  externalId: z.string().max(EXTERNAL_ID_MAX_LENGTH).nullish(),
+  externalUrl: z
+    .string()
+    .nullish()
+    .refine(
+      (value) => value === null || value === undefined || isValidExternalUrl(value),
+      '投稿の URL は https で指定してください。',
+    ),
   /**
    * 配信に失敗した理由。
    *
@@ -113,6 +206,13 @@ export function toAccountResponse(account: SocialAccount): AccountResponse {
   };
 }
 
+/**
+ * API が返す投稿の形。
+ *
+ * **`publishStartedAt` と `createdByTokenId` は出さない**（035-social-publishing 設計 §6.1.4）。
+ * 前者は内部の進行状態、後者は他の外部アプリの Token ID を `social.read` の誰にでも
+ * 見せることになる。資格情報に関する項目は無い。
+ */
 export const postResponseSchema = z.object({
   id: z.string(),
   socialAccountId: z.string(),
@@ -124,6 +224,15 @@ export const postResponseSchema = z.object({
   failureReason: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  deliveryMode: deliveryModeSchema,
+  media: z.array(z.object({ url: z.string(), alt: z.string().nullable() })),
+  link: z.string().nullable(),
+  providerOptions: z.record(z.string(), z.unknown()),
+  externalRef: z.string().nullable(),
+  externalId: z.string().nullable(),
+  externalUrl: z.string().nullable(),
+  attemptCount: z.number(),
+  nextAttemptAt: z.string().nullable(),
 });
 
 export const postEnvelopeSchema = dataEnvelope(postResponseSchema);
@@ -140,6 +249,15 @@ export interface PostResponse {
   readonly failureReason: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
+  readonly deliveryMode: string;
+  readonly media: readonly PostMedia[];
+  readonly link: string | null;
+  readonly providerOptions: Readonly<Record<string, unknown>>;
+  readonly externalRef: string | null;
+  readonly externalId: string | null;
+  readonly externalUrl: string | null;
+  readonly attemptCount: number;
+  readonly nextAttemptAt: string | null;
 }
 
 export function toPostResponse(post: SocialPost): PostResponse {
@@ -154,5 +272,14 @@ export function toPostResponse(post: SocialPost): PostResponse {
     failureReason: post.failureReason,
     createdAt: post.createdAt.toISOString(),
     updatedAt: post.updatedAt.toISOString(),
+    deliveryMode: post.deliveryMode,
+    media: post.media.map((item) => ({ url: item.url, alt: item.alt })),
+    link: post.link,
+    providerOptions: post.providerOptions,
+    externalRef: post.externalRef,
+    externalId: post.externalId,
+    externalUrl: post.externalUrl,
+    attemptCount: post.attemptCount,
+    nextAttemptAt: post.nextAttemptAt?.toISOString() ?? null,
   };
 }
