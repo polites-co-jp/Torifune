@@ -1,6 +1,7 @@
 import type { Plugin, PluginContext } from '@torifune/plugin-api';
 import { createDummyAuthenticationProvider } from './authentication';
 import { createDummyDatabaseProvider } from './database';
+import { createExamplePublisher, MANUAL_POST_ROUTE, PUBLISHED_POST_ROUTE } from './social';
 import {
   ExampleBrokenPage,
   ExampleLoginMethod,
@@ -9,7 +10,7 @@ import {
   ExampleSiteSidebar,
   ExampleWidget,
 } from './ui/components';
-import { ExamplePage } from './ui/pages';
+import { ExampleManualPostPage, ExamplePage, ExamplePublishedPostPage } from './ui/pages';
 
 /**
  * サンプル Plugin。
@@ -103,6 +104,21 @@ const plugin: Plugin = {
     // 自分の画面に拡張点を作り、他の Plugin へ公開する。
     ui.defineExtensionPoint('example-plugin.page.footer');
 
+    // SNS 配信の受け皿になる2つのページ（`social.ts` が返す URL の行き先）。
+    // **Permission を要求しない。** どちらも何も読まず、URL に入っているものを
+    // 見せるだけで、認可の要るデータに触れない。
+    ui.registerPage({
+      route: MANUAL_POST_ROUTE,
+      title: 'サンプルSNSへの投稿',
+      component: ExampleManualPostPage,
+    });
+
+    ui.registerPage({
+      route: PUBLISHED_POST_ROUTE,
+      title: 'サンプルSNSの投稿',
+      component: ExamplePublishedPostPage,
+    });
+
     // --- 設定 ------------------------------------------------------------
     // 項目を宣言するだけ。フォームの描画と保存は本体が行う。
     ui.registerSettings({
@@ -144,6 +160,12 @@ const plugin: Plugin = {
     if ((await store.get<string>(GREETING_KEY)) === null) {
       await store.set(GREETING_KEY, 'こんにちは');
     }
+
+    // --- SNS 配信 --------------------------------------------------------
+    // 高権限の拡張点。Manifest で extensions: ['social'] を宣言していないと使えない。
+    // **外部へ繋がないループバックの publisher。** どこにも投稿されない。
+    // 登録した provider の資格情報が publish() の引数として渡る。
+    context.social.registerPublisher(createExamplePublisher({ store }));
 
     // --- Database Provider ----------------------------------------------
     if (shouldReplaceDatabase()) {

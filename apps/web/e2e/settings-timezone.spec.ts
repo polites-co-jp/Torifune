@@ -475,8 +475,13 @@ test.describe('API', () => {
     expect(rebuild.status(), await rebuild.text()).toBe(403);
   });
 
-  /** #70。周期を持たないジョブは `intervalMinutes` が `null`。 */
-  test('GET /api/v1/jobs が 3 件を返し、洗い替えの intervalMinutes は null', async () => {
+  /**
+   * #70。周期を持たないジョブは `intervalMinutes` が `null`。
+   *
+   * 035-social-publishing 設計 §6.5.1 で `social.publish` が `JOB_NAMES` の末尾に増え、
+   * 4 件になった（同 §10「既存の E2E への影響」の「4 行に追随する」）。
+   */
+  test('GET /api/v1/jobs が 4 件を返し、洗い替えの intervalMinutes は null', async () => {
     const response = await adminRequest.get('/api/v1/jobs');
     expect(response.status(), await response.text()).toBe(200);
 
@@ -485,6 +490,7 @@ test.describe('API', () => {
       'analytics.rollup',
       'webhook.deliver',
       'analytics.timezoneRebuild',
+      'social.publish',
     ]);
     const rebuild = body.data.find((job) => job.name === 'analytics.timezoneRebuild');
     expect(rebuild?.intervalMinutes).toBeNull();

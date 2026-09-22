@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import type { AuthorizationContext } from '@/application/authorization/authorize';
 import { authorizationContextFor } from '@/application/authorization/context';
 import { resetPermissionRegistry } from '@/application/authorization/permission-registry';
+import { findPublisher } from '@/application/social/publisher-registry';
 import { emit, resetEventHandlers } from '@/application/events';
 import {
   getPluginSettings,
@@ -192,6 +193,13 @@ describe('Manifest', () => {
     expect(manifest.permissions).toContain('site.read');
     expect(manifest.extensions).toContain('database');
   });
+
+  /** 035-social-publishing 設計 §9.8。宣言なしに publisher は登録できない（§9.4）。 */
+  it('高権限の拡張点 social を宣言している', () => {
+    const manifest: PluginManifest = example().manifest;
+
+    expect(manifest.extensions).toContain('social');
+  });
 });
 
 describe('有効化', () => {
@@ -256,6 +264,36 @@ describe('有効化', () => {
 
     const sites = await withConnection((c) => c.db.selectFrom('sites').selectAll().execute());
     expect(sites).toEqual([]);
+  });
+
+  /** 035-social-publishing 設計 §9.8。ループバックの publisher が登録される。 */
+  it('publisher が登録され、provider example で引ける', async () => {
+    await activate();
+
+    const publisher = findPublisher('example');
+
+    expect(publisher?.pluginId).toBe(PLUGIN_ID);
+    expect(publisher?.registration.label).toBe('サンプルSNS');
+  });
+
+  it('publisher が宣言する資格情報の項目は handle と appPassword', async () => {
+    await activate();
+
+    expect(findPublisher('example')?.registration.credentialFields.map((f) => f.key)).toEqual([
+      'handle',
+      'appPassword',
+    ]);
+  });
+
+  it('publisher が publish と manual と validate をすべて実装している', async () => {
+    // E2E（#73〜#75、#80）はこの3つを踏む。どれかが欠けると経路が通らない。
+    await activate();
+    const registration = findPublisher('example')?.registration;
+
+    expect(typeof registration?.publish).toBe('function');
+    expect(typeof registration?.manual).toBe('function');
+    expect(typeof registration?.validate).toBe('function');
+    expect(registration?.limits).toEqual({ bodyMaxLength: 100, mediaMax: 2 });
   });
 });
 
