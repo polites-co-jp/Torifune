@@ -8,6 +8,7 @@ import type {
   PluginManifest,
   WidgetRegistration,
 } from '@torifune/plugin-api';
+import { unregisterPublishersOf } from '@/application/social/publisher-registry';
 import { processState } from '@/infrastructure/process-state';
 
 /**
@@ -49,6 +50,14 @@ interface Registrations {
    * 誰が認証済みなのかの判定が途中で変わる。元へ戻すには再起動が要る。
    */
   readonly authenticationProviders: string[];
+  /**
+   * この Plugin が登録した publisher の provider（035-social-publishing 設計 §9.4）。
+   *
+   * **記録は `databaseProviders` と同じ理由。** 管理画面で
+   * 「何を握っているか」を出せるようにする。登録の実体は
+   * `application/social/publisher-registry.ts` にあり、無効化時に外される。
+   */
+  readonly publishers: string[];
   /** 宣言された設定項目。**1 Plugin につき1つ。** */
   settings: SettingsRegistration | null;
 }
@@ -65,6 +74,7 @@ function emptyRegistrations(): Registrations {
     permissions: [],
     databaseProviders: [],
     authenticationProviders: [],
+    publishers: [],
     settings: null,
   };
 }
@@ -114,6 +124,10 @@ export function isLoaded(pluginId: string): boolean {
 export function unregisterPlugin(pluginId: string): readonly string[] {
   const entry = registrations.get(pluginId);
   const permissions = entry?.permissions ?? [];
+
+  // **publisher も外す。** 外さないと、無効化したはずの Plugin へ
+  // 配信ジョブが資格情報を渡し続ける。
+  unregisterPublishersOf(pluginId);
 
   for (const unsubscribe of entry?.unsubscribers ?? []) {
     try {

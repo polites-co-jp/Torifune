@@ -667,3 +667,121 @@ describe('ログの整形', () => {
     expect(result).toEqual({ count: 3, name: 'とりふね', flag: true });
   });
 });
+
+/**
+ * `SocialPostView` の追加 8 項目（035-social-publishing 設計 §9.5、実装プラン T8）。
+ *
+ * **`deliveryMode` / `media` / `link` / `providerOptions` / `externalRef` /
+ * `externalId` / `externalUrl` / `failedAt`。** 足さないと、配信 Plugin が
+ * Data API から自分の投稿の配信条件を読み返せない。
+ */
+describe('SNS 投稿の View（035 T8）', () => {
+  const SCHEDULED_AT = new Date('2026-03-01T00:00:00.000Z');
+  const FAILED_AT = new Date('2026-03-01T00:05:00.000Z');
+  const MEDIA = [{ url: 'https://media.example.com/a.png', alt: 'ロゴ' }];
+
+  /** 追加項目をすべて埋めた投稿を 1 件だけ作る。 */
+  async function seedPost(): Promise<string> {
+    const accountId = uuidv7();
+    const postId = uuidv7();
+
+    await withConnection(async (connection) => {
+      await connection.db
+        .insertInto('social_accounts')
+        .values({
+          id: accountId,
+          provider: 'x',
+          display_name: 'test',
+          handle: '@t',
+          credential: null,
+          status: 'connected',
+        })
+        .execute();
+
+      await connection.db
+        .insertInto('social_posts')
+        .values({
+          id: postId,
+          social_account_id: accountId,
+          body: '配信する本文',
+          scheduled_at: SCHEDULED_AT,
+          status: 'failed',
+          failure_reason: '配信に失敗した',
+          failed_at: FAILED_AT,
+          delivery_mode: 'manual',
+          media: JSON.stringify(MEDIA),
+          link: 'https://example.com/a',
+          provider_options: JSON.stringify({ replyTo: '1' }),
+          external_ref: 'ext-1',
+          external_id: 'sns-1',
+          external_url: 'https://x.example.com/p/1',
+        })
+        .execute();
+    });
+
+    return postId;
+  }
+
+  it('get が deliveryMode を返す', async () => {
+    const id = await seedPost();
+
+    expect(await apiFor(['social.read']).socialPosts.get(id)).toMatchObject({
+      deliveryMode: 'manual',
+    });
+  });
+
+  it('get が media を返す', async () => {
+    const id = await seedPost();
+
+    const post = await apiFor(['social.read']).socialPosts.get(id);
+    expect(post?.media).toEqual([{ url: 'https://media.example.com/a.png', alt: 'ロゴ' }]);
+  });
+
+  it('get が link を返す', async () => {
+    const id = await seedPost();
+
+    expect(await apiFor(['social.read']).socialPosts.get(id)).toMatchObject({
+      link: 'https://example.com/a',
+    });
+  });
+
+  it('get が providerOptions を返す', async () => {
+    const id = await seedPost();
+
+    const post = await apiFor(['social.read']).socialPosts.get(id);
+    expect(post?.providerOptions).toEqual({ replyTo: '1' });
+  });
+
+  it('get が externalRef / externalId / externalUrl を返す', async () => {
+    const id = await seedPost();
+
+    expect(await apiFor(['social.read']).socialPosts.get(id)).toMatchObject({
+      externalRef: 'ext-1',
+      externalId: 'sns-1',
+      externalUrl: 'https://x.example.com/p/1',
+    });
+  });
+
+  it('get が failedAt を ISO 文字列で返す', async () => {
+    const id = await seedPost();
+
+    expect(await apiFor(['social.read']).socialPosts.get(id)).toMatchObject({
+      failedAt: FAILED_AT.toISOString(),
+    });
+  });
+
+  it('list の要素にも追加項目がある', async () => {
+    // 変換が 1 か所にまとまっていないと、一覧だけ古い形で返る。
+    await seedPost();
+
+    const page = await apiFor(['social.read']).socialPosts.list();
+    expect(page.items[0]).toMatchObject({
+      deliveryMode: 'manual',
+      link: 'https://example.com/a',
+      externalRef: 'ext-1',
+      externalId: 'sns-1',
+      externalUrl: 'https://x.example.com/p/1',
+      failedAt: FAILED_AT.toISOString(),
+    });
+  });
+});

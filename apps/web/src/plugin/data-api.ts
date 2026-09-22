@@ -114,6 +114,14 @@ function toSocialPostView(post: SocialPost): SocialPostView {
     status: post.status,
     publishedAt: post.publishedAt?.toISOString() ?? null,
     failureReason: post.failureReason,
+    deliveryMode: post.deliveryMode,
+    media: post.media.map((item) => ({ url: item.url, alt: item.alt })),
+    link: post.link,
+    providerOptions: post.providerOptions,
+    externalRef: post.externalRef,
+    externalId: post.externalId,
+    externalUrl: post.externalUrl,
+    failedAt: post.failedAt?.toISOString() ?? null,
   };
 }
 

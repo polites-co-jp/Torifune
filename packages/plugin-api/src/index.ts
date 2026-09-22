@@ -68,6 +68,7 @@ export type {
   SiteInput,
   SiteView,
   SocialAccountView,
+  SocialMediaView,
   SocialPostView,
   UserView,
 } from './data';
@@ -91,6 +92,19 @@ export type {
   PluginDatabaseConnection,
   PluginDatabaseProvider,
 } from './database';
+
+export { PluginPublisherConflictError } from './social';
+export type {
+  ManualHandoff,
+  ManualInput,
+  PluginSocialApi,
+  PublishInput,
+  PublishResult,
+  PublisherLimits,
+  PublisherRegistration,
+  PublisherValidationProblem,
+  SocialPostDraftView,
+} from './social';
 
 export type { Plugin, PluginContext, PluginCurrentUser, PluginLogger } from './context';
 

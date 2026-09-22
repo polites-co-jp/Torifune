@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { CORE_EVENTS } from './events';
 import * as publicApi from './index';
 import {
   isValidPluginId,
@@ -10,7 +11,7 @@ import {
   validateManifest,
 } from './manifest';
 import { isValidStoreKey, MAX_VALUE_BYTES } from './store';
-import { isSupportedApiVersion, PLUGIN_API_VERSION } from './version';
+import { isSupportedApiVersion, PLUGIN_API_VERSION, SUPPORTED_API_VERSIONS } from './version';
 
 const SRC_DIR = import.meta.dirname;
 
@@ -243,5 +244,51 @@ describe('isValidStoreKey', () => {
 
   it('値の上限が公開されている', () => {
     expect(MAX_VALUE_BYTES).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * SNS 配信の拡張点（035-social-publishing 設計 §9.1 / §9.2 / §9.3 / §9.6）。
+ *
+ * 受け入れ条件 #18。**追加のみで、版は上げない。**
+ */
+describe('#18 SNS 配信（social）の公開契約', () => {
+  it('#18 extensions に social を宣言した Manifest を受け入れる', () => {
+    expect(validateManifest(validManifest({ extensions: ['social'] })).ok).toBe(true);
+  });
+
+  it('#18 PLUGIN_EXTENSION_KINDS に social がある', () => {
+    expect(PLUGIN_EXTENSION_KINDS).toContain('social');
+  });
+
+  it('#18 既存の拡張点の種類が消えていない', () => {
+    // 消すと、その拡張点を宣言している既存の Plugin が検証で弾かれる。
+    for (const kind of ['ui', 'events', 'data', 'authentication', 'database']) {
+      expect(PLUGIN_EXTENSION_KINDS).toContain(kind);
+    }
+  });
+
+  it('#18 PLUGIN_API_VERSION は 1 のまま', () => {
+    // 追加だけなので破壊的変更ではない（010-plugin-api 設計 §9）。
+    expect(PLUGIN_API_VERSION).toBe(1);
+  });
+
+  it('#18 SUPPORTED_API_VERSIONS が変わっていない', () => {
+    expect([...SUPPORTED_API_VERSIONS]).toEqual([1]);
+  });
+
+  it('#18 CORE_EVENTS に social.post.failed がある', () => {
+    // 自動配信が入ると失敗が人手を介さず起きる。拾えないと運用者が気づけない。
+    expect(CORE_EVENTS).toContain('social.post.failed');
+  });
+
+  it('#18 既存の Core イベント名が消えていない', () => {
+    for (const name of ['social.post.created', 'social.post.published', 'analytics.purged']) {
+      expect(CORE_EVENTS).toContain(name);
+    }
+  });
+
+  it('#18 公開する入口から PluginPublisherConflictError が取れる', () => {
+    expect(publicApi.PluginPublisherConflictError).toBeTypeOf('function');
   });
 });

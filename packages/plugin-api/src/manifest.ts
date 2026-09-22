@@ -31,6 +31,7 @@ export const PLUGIN_EXTENSION_KINDS = [
   'data',
   'authentication',
   'database',
+  'social',
 ] as const;
 
 export type PluginExtensionKind = (typeof PLUGIN_EXTENSION_KINDS)[number];

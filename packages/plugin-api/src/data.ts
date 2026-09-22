@@ -39,11 +39,22 @@ export interface SocialAccountView {
   /**
    * 資格情報が設定されているか。
    *
-   * **平文は渡さない。** Plugin は自分の資格情報を
-   * `store.setSecret()` / `store.getSecret()` で管理する
+   * **平文は Data API からは渡らない。** 配信 Plugin には `publish()` の引数として、
+   * その呼び出しの間だけ渡る（`PluginSocialApi`）。
+   * 自分だけで使う資格情報は `store.setSecret()` / `store.getSecret()` で管理する
    * （`docs/設計/010-plugin-api/設計.md` §5）。
    */
   readonly credentialConfigured: boolean;
+}
+
+/**
+ * 投稿に添える媒体（035-social-publishing 設計 §9.5）。
+ *
+ * **ファイルは預からない。** URL だけを持ち、取りに行くのは Plugin の仕事。
+ */
+export interface SocialMediaView {
+  readonly url: string;
+  readonly alt: string | null;
 }
 
 export interface SocialPostView {
@@ -60,6 +71,26 @@ export interface SocialPostView {
    * **以前はここが無く、渡した理由を読み返せなかった。**
    */
   readonly failureReason: string | null;
+  /** `'auto'`（ジョブが Plugin を通して送る）か `'manual'`（人が SNS 側で投稿する）。 */
+  readonly deliveryMode: string;
+  readonly media: readonly SocialMediaView[];
+  /** 本文に添える URL。 */
+  readonly link: string | null;
+  /** provider 固有の追加項目。**中身を決めるのは publisher を登録した Plugin。** */
+  readonly providerOptions: Readonly<Record<string, unknown>>;
+  /** 登録元が付けた冪等キー。 */
+  readonly externalRef: string | null;
+  /** 配信後の SNS 側の投稿 ID。 */
+  readonly externalId: string | null;
+  /** 配信後の投稿の URL。 */
+  readonly externalUrl: string | null;
+  /**
+   * 配信に失敗した時刻。
+   *
+   * **`updatedAt` で代用しない。** あれは「最後に触った時刻」であって
+   * 「失敗した時刻」ではない。
+   */
+  readonly failedAt: string | null;
 }
 
 export interface SiteInput {

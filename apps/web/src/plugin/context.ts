@@ -4,9 +4,11 @@ import type {
   PluginDatabaseApi,
   PluginEventApi,
   PluginManifest,
+  PluginSocialApi,
   PluginUiApi,
 } from '@torifune/plugin-api';
 import { PluginExtensionNotDeclaredError } from '@torifune/plugin-api';
+import { registerPublisher } from '@/application/social/publisher-registry';
 import {
   getAuthenticationProvider,
   setAuthenticationProvider,
@@ -141,11 +143,25 @@ export function buildPluginContext(deps: BuildContextDeps): PluginContext {
     },
   };
 
+  const social: PluginSocialApi = {
+    registerPublisher(registration) {
+      // **宣言していなければ登録させない。** database / authentication と同じ扱い。
+      // 宣言なしに登録できると、Plugin を入れた側が
+      // 「どの Plugin が資格情報を受け取るか」を知らないまま運用することになる。
+      if (!declaredExtensions.has('social')) {
+        throw new PluginExtensionNotDeclaredError(pluginId, 'social');
+      }
+      registerPublisher(pluginId, registration);
+      registrations.publishers.push(registration.provider);
+    },
+  };
+
   return {
     pluginId,
     apiVersion: PLUGIN_API_VERSION,
     database,
     authentication,
+    social,
     store: createPluginStore({ connection, pluginId }),
     data: createPluginDataApi({
       pluginId,
