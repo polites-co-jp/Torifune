@@ -312,6 +312,14 @@ export const readSocialCredential = defineUseCase<{ id: string }, Secret | null>
   // 資格情報の読み出しは書き込み相当の権限を要求する。
   // 読めれば外部サービスで何でもできるため、read では弱すぎる。
   permission: 'social.write',
+  // **「監査できる読み出し口」をどちらの経路でも成り立たせる**（009 §9、035 設計 §6.5.8）。
+  // 配信ジョブ側は `recordSystemAudit` で同じ `credential_read` を残す。
+  audit: {
+    action: 'credential_read',
+    resourceType: 'social_account',
+    resourceId: (input) => input.id,
+    detail: () => ({ purpose: 'manual' }),
+  },
   handler: async (context, input) => {
     const account = await socialRepository.findAccountWithCredential(context.connection, input.id);
     if (account === null) {
@@ -729,7 +737,7 @@ const PUBLISH_GUARDED_FIELDS = [
  * 想定される場所であり、長かっただけで「失敗の記録が残らない」ほうが困る。
  * 空文字は「理由なし」として null に倒す。
  */
-function normalizeFailureReason(value: string | null): string | null {
+export function normalizeFailureReason(value: string | null): string | null {
   if (value === null) {
     return null;
   }

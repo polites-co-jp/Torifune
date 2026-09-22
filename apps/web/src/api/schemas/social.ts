@@ -238,6 +238,25 @@ export const postResponseSchema = z.object({
 export const postEnvelopeSchema = dataEnvelope(postResponseSchema);
 export const postPageSchema = pageEnvelope(postResponseSchema);
 
+/**
+ * 配信の手動実行の応答（035-social-publishing 設計 §6.5.9 / §6.5.7）。
+ *
+ * **固定キーの数だけ。** 自由文は載せない（資格情報が混じりうる）。
+ * `job_runs.summary` と同じ 8 キーで、監視から件数を読める。
+ */
+export const publishSummarySchema = z.object({
+  interrupted: z.number(),
+  due: z.number(),
+  skipped: z.number(),
+  attempted: z.number(),
+  published: z.number(),
+  retried: z.number(),
+  failed: z.number(),
+  unrecorded: z.number(),
+});
+
+export const publishSummaryEnvelopeSchema = dataEnvelope(publishSummarySchema);
+
 export interface PostResponse {
   readonly id: string;
   readonly socialAccountId: string;

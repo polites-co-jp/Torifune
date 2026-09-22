@@ -106,6 +106,8 @@ const ACTION_LABEL: Record<string, string> = {
   disabled: '無効化',
   installed: '導入',
   uninstalled: '削除',
+  // 配信ジョブによる読み出しは操作者を持たないので、一覧では「—」と並ぶ（035 設計 §6.5.8）。
+  credential_read: '参照（資格情報の読み出し）',
 };
 
 const RESOURCE_LABEL: Record<string, string> = {

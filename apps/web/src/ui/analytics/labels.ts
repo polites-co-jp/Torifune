@@ -190,6 +190,7 @@ export const JOB_LABEL: Record<JobName, string> = {
   'analytics.rollup': 'アクセス解析の集計',
   'webhook.deliver': 'Webhook 配信',
   'analytics.timezoneRebuild': 'タイムゾーン変更の洗い替え',
+  'social.publish': 'SNS 投稿の配信',
 };
 
 /** 洗い替えの再実行の導線（032-timezone-setting 設計 §7.3.1）。 */

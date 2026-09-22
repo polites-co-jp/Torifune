@@ -1,4 +1,5 @@
 import { uuidv7 } from 'uuidv7';
+import type { Connection } from '../database/provider';
 import type { AuditAction, AuditResourceType } from '../domain/audit';
 import { log } from '../infrastructure/logging';
 import { auditRepository } from '../infrastructure/audit-repository';
@@ -40,6 +41,37 @@ export async function recordAudit(context: AuthorizationContext, input: AuditInp
       resourceId: input.resourceId,
       ipAddress: context.request?.ipAddress ?? null,
       userAgent: context.request?.userAgent ?? null,
+      detail: input.detail ?? {},
+    });
+  } catch (error) {
+    log.error('failed to record audit log', {
+      action: input.action,
+      resourceType: input.resourceType,
+      resourceId: input.resourceId,
+      reason: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/**
+ * 本体の処理として記録する（035-social-publishing 設計 §6.5.8）。
+ *
+ * 配信ジョブのように `AuthorizationContext` を持たない経路で使う。
+ * **操作者も要求元も無い**ので `actor_user_id` / `ip_address` / `user_agent` は NULL。
+ *
+ * `recordAudit` と同じく**失敗しても呼び出し元へ例外を投げない**。
+ * 記録できないことと、処理を続けられないことは別。
+ */
+export async function recordSystemAudit(connection: Connection, input: AuditInput): Promise<void> {
+  try {
+    await auditRepository.record(connection, {
+      id: uuidv7(),
+      actorUserId: null,
+      action: input.action,
+      resourceType: input.resourceType,
+      resourceId: input.resourceId,
+      ipAddress: null,
+      userAgent: null,
       detail: input.detail ?? {},
     });
   } catch (error) {

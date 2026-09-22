@@ -129,6 +129,8 @@ test('OpenAPI に登録済みエンドポイントが含まれる', async ({ req
     '/social/accounts/{id}',
     '/social/posts',
     '/social/posts/{id}',
+    // 035-social-publishing 設計 §6.5.9。
+    '/social/publish',
     '/users',
     '/users/{id}',
     '/webhooks',

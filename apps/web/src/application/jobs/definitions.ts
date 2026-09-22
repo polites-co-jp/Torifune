@@ -2,6 +2,7 @@ import { rebuildAnalyticsForTimeZone, type RebuildInput } from '@/application/an
 import { rollupAnalytics } from '@/application/analytics/rollup';
 import { resolveAnalyticsTimeZone } from '@/application/analytics/timezone';
 import type { JobDefinition, JobTask } from '@/application/jobs/scheduler';
+import { publishDuePosts } from '@/application/social/publish';
 import { deliverPendingWebhooks } from '@/application/webhook/deliver';
 import type { Connection } from '@/database/provider';
 import { dateInTimeZone, todayInTimeZone } from '@/domain/analytics/day';
@@ -16,6 +17,7 @@ import { jobRunRepository } from '@/infrastructure/job-run-repository';
  * | `analytics.rollup` | 15 分 | `{ from, to, days, points }` |
  * | `webhook.deliver` | 1 分 | `{ attempted, delivered, failed }` |
  * | `analytics.timezoneRebuild` | **周期なし** | `{ timeZone, previousTimeZone, from, to, completedThrough, days, points, deletedDays, deletedCoreRows, deletedPluginRows }` |
+ * | `social.publish` | 1 分 | `{ interrupted, due, skipped, attempted, published, retried, failed, unrecorded }` |
  *
  * `intervalMs` は既定値。環境変数での上書きは `bootScheduler` が行う（§6.1.2）。
  * **Plugin からのジョブ登録は無い**（§9 / §11）。
@@ -96,6 +98,25 @@ export const WEBHOOK_JOB = {
  * `replaceCorePoints` の DELETE → INSERT がぶつかる（029 設計 §6.3 が解いた問題の再発）。
  * `job_runs.job_name` は洗い替えの名前のまま残るので、画面から結果を読み取れる。
  */
+/**
+ * 期限の来た SNS 投稿の配信（035-social-publishing 設計 §6.5.1）。
+ *
+ * 間隔 1 分の根拠：`publishRetryDelayMs` の最短が 1 分。周期が 1 分なら予約どおりの時刻に送れる
+ * （Webhook と同じ）。**`lockName` は省略する**（`social.publish` 自身の鍵を取り、
+ * ロールアップ・Webhook と並行して走ってよい）。
+ *
+ * **publisher を登録する Plugin が無ければ何もしない。** 期限の来た投稿は
+ * `skipped` のまま次の周期を待つ（要件 §4 裁定 #8）。
+ */
+export const SOCIAL_PUBLISH_JOB = {
+  name: 'social.publish',
+  intervalMs: 1 * MINUTE_MS,
+  async run(connection: Connection, _input: undefined) {
+    // **制限時間は渡さない。** 差し替えられるのは結合テストだけ（実装プラン §8 の 2）。
+    return publishDuePosts(connection);
+  },
+} satisfies JobDefinition;
+
 export const TIMEZONE_REBUILD_JOB: JobTask<RebuildInput> = {
   name: 'analytics.timezoneRebuild',
   lockName: 'analytics.rollup',

@@ -10,6 +10,7 @@ import { log } from '@/infrastructure/logging';
  * | `TORIFUNE_SCHEDULER` | `on` | `off` で本体の定期実行を止める（外部スケジューラ向け） |
  * | `TORIFUNE_ROLLUP_INTERVAL_MINUTES` | `15` | analytics ロールアップの間隔（1〜1440 の整数） |
  * | `TORIFUNE_WEBHOOK_INTERVAL_MINUTES` | `1` | Webhook 配信の間隔（1〜1440 の整数） |
+ * | `TORIFUNE_SOCIAL_PUBLISH_INTERVAL_MINUTES` | `1` | SNS 投稿の配信の間隔（1〜1440 の整数） |
  *
  * **落とさない。** `TORIFUNE_TIMEZONE` と同じ扱いで、設定の誤りで本体の起動を止めない。
  * ただし黙って既定へ落ちない（警告をプロセスで 1 回だけ出す）。
@@ -19,11 +20,14 @@ import { log } from '@/infrastructure/logging';
 
 const DEFAULT_ROLLUP_INTERVAL_MINUTES = 15;
 const DEFAULT_WEBHOOK_INTERVAL_MINUTES = 1;
+/** 再試行の最短間隔が 1 分なので、既定も 1 分（035-social-publishing 設計 §6.5.1、裁定 #1）。 */
+const DEFAULT_SOCIAL_PUBLISH_INTERVAL_MINUTES = 1;
 
 export interface SchedulerConfig {
   readonly enabled: boolean;
   readonly rollupIntervalMinutes: number;
   readonly webhookIntervalMinutes: number;
+  readonly socialPublishIntervalMinutes: number;
 }
 
 let cached: SchedulerConfig | null = null;
@@ -69,6 +73,10 @@ export function schedulerConfig(): SchedulerConfig {
     webhookIntervalMinutes: readInterval(
       'TORIFUNE_WEBHOOK_INTERVAL_MINUTES',
       DEFAULT_WEBHOOK_INTERVAL_MINUTES,
+    ),
+    socialPublishIntervalMinutes: readInterval(
+      'TORIFUNE_SOCIAL_PUBLISH_INTERVAL_MINUTES',
+      DEFAULT_SOCIAL_PUBLISH_INTERVAL_MINUTES,
     ),
   };
   return cached;

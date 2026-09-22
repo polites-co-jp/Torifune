@@ -10,7 +10,7 @@ import { jobRunRepository } from '@/infrastructure/job-run-repository';
  * 監視から `GET /api/v1/jobs` で叩く用途（「最後の成功が N 分より古ければ警告」）と、
  * 設定画面「一般」タブの区画が使う。
  *
- * **`JOB_NAMES` の順で常に 3 件返す。** 未登録・未実行でも `lastRun: null` で返す
+ * **`JOB_NAMES` の順で常に 4 件返す。** 未登録・未実行でも `lastRun: null` で返す
  * （「ジョブが無い」と「まだ走っていない」を画面で区別できるようにする）。
  *
  * `scheduled` / `nextRunAt` / `running` は**このプロセス**の予定。
@@ -56,6 +56,7 @@ export const listJobStatuses = defineUseCase<Record<string, never>, readonly Job
       // **周期を持たない。** `bootScheduler` に載せないので `scheduled` が undefined になり、
       // ここがそのまま `null` として出る（分岐を足さない）。
       'analytics.timezoneRebuild': null,
+      'social.publish': config.socialPublishIntervalMinutes,
     };
 
     return Promise.all(

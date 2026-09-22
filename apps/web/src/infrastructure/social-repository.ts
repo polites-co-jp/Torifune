@@ -10,7 +10,9 @@ import type {
   SocialAccountWithCredential,
   SocialPost,
 } from '../domain/social/social';
+import type { PublishVerdict } from '../domain/social/publishing';
 import type {
+  InterruptedPost,
   NewSocialAccount,
   NewSocialPost,
   SocialAccountListQuery,
@@ -466,5 +468,121 @@ export const socialRepository: SocialRepository = {
       .where('id', '=', id)
       .executeTakeFirst();
     return Number(result.numDeletedRows) > 0;
+  },
+
+  async failInterrupted(
+    connection: Connection,
+    reason: string,
+  ): Promise<readonly InterruptedPost[]> {
+    const rows = await connection.db
+      .updateTable('social_posts')
+      .set({
+        status: 'failed',
+        failed_at: sql<Date>`now()`,
+        failure_reason: reason,
+        // **必ず NULL へ戻す。** 「非 NULL ⇔ 進行中」が不変条件（設計 §5.8）。
+        publish_started_at: null,
+        updated_at: sql<Date>`now()`,
+      } as never)
+      .where('status', '=', 'scheduled')
+      .where('delivery_mode', '=', 'auto')
+      .where('publish_started_at', 'is not', null)
+      .returning(['id', 'social_account_id'])
+      .execute();
+
+    return rows.map((row) => ({
+      id: (row as { id: string }).id,
+      socialAccountId: (row as { social_account_id: string }).social_account_id,
+    }));
+  },
+
+  async listDue(connection: Connection, limit: number): Promise<readonly SocialPost[]> {
+    const rows = await connection.db
+      .selectFrom('social_posts')
+      .select(POST_COLUMNS)
+      .where('status', '=', 'scheduled')
+      // 手動投稿はジョブが一切触らない（設計 §6.5.3）。
+      .where('delivery_mode', '=', 'auto')
+      .where('publish_started_at', 'is', null)
+      // 022 より前に作られた「予約日時の無い予約」は、これまでどおり誰も取り出さない。
+      .where('scheduled_at', 'is not', null)
+      .where('scheduled_at', '<=', sql<Date>`now()`)
+      .where((eb) =>
+        eb.or([eb('next_attempt_at', 'is', null), eb('next_attempt_at', '<=', sql<Date>`now()`)]),
+      )
+      .orderBy('scheduled_at', 'asc')
+      .orderBy('id', 'asc')
+      .limit(limit)
+      .execute();
+
+    return rows.map((row) => toPost(row as PostRow));
+  },
+
+  async claimForPublish(connection: Connection, id: string): Promise<SocialPost | null> {
+    if (!UUID_PATTERN.test(id)) return null;
+
+    // **自分のトランザクションでコミットしてから返す**（設計 §6.5.4、実装プラン §7 の 5）。
+    return connection.transaction(async (tx) => {
+      const row = await tx.db
+        .updateTable('social_posts')
+        .set({
+          publish_started_at: sql<Date>`now()`,
+          attempt_count: sql<number>`attempt_count + 1`,
+          next_attempt_at: null,
+          updated_at: sql<Date>`now()`,
+        } as never)
+        .where('id', '=', id)
+        .where('status', '=', 'scheduled')
+        .where('publish_started_at', 'is', null)
+        .returning(POST_COLUMNS)
+        .executeTakeFirst();
+
+      return row === undefined ? null : toPost(row as PostRow);
+    });
+  },
+
+  async recordOutcome(
+    connection: Connection,
+    id: string,
+    verdict: PublishVerdict,
+  ): Promise<number> {
+    if (!UUID_PATTERN.test(id)) return 0;
+
+    const values: Record<string, unknown> = {
+      updated_at: sql<Date>`now()`,
+      // 成功・失敗・再試行のいずれでも着手印は外す（設計 §5.8）。
+      publish_started_at: null,
+    };
+
+    if (verdict.kind === 'published') {
+      values['status'] = 'published';
+      values['published_at'] = sql<Date>`now()`;
+      values['external_id'] = verdict.externalId;
+      values['external_url'] = verdict.externalUrl;
+      values['failure_reason'] = null;
+      values['next_attempt_at'] = null;
+    } else if (verdict.kind === 'retry') {
+      // **`status` は `scheduled` のまま。** 「再試行待ち」は状態を増やさずに表す（設計 §5.8）。
+      values['next_attempt_at'] = verdict.nextAttemptAt;
+      values['failure_reason'] = verdict.reason;
+    } else {
+      values['status'] = 'failed';
+      values['failed_at'] = sql<Date>`now()`;
+      values['failure_reason'] = verdict.reason;
+      values['next_attempt_at'] = null;
+    }
+
+    const result = await connection.transaction(async (tx) =>
+      tx.db
+        .updateTable('social_posts')
+        .set(values as never)
+        .where('id', '=', id)
+        // **着手印が立っている間だけ書き戻せる。** 外から消されていたら記録しない。
+        .where('status', '=', 'scheduled')
+        .where('publish_started_at', 'is not', null)
+        .executeTakeFirst(),
+    );
+
+    return Number(result.numUpdatedRows);
   },
 };

@@ -1,4 +1,5 @@
 import type { Connection } from '../../database/provider';
+import type { PublishVerdict } from './publishing';
 import type {
   AccountStatus,
   DeliveryMode,
@@ -96,6 +97,16 @@ export interface SocialPostPage {
   readonly total: number;
 }
 
+/**
+ * 中断として `failed` に落とした行（035-social-publishing 設計 §6.5.4）。
+ *
+ * イベント `social.post.failed` の payload に要るぶんだけ返す。
+ */
+export interface InterruptedPost {
+  readonly id: string;
+  readonly socialAccountId: string;
+}
+
 export interface SocialRepository {
   listAccounts(connection: Connection, query: SocialAccountListQuery): Promise<SocialAccountPage>;
   findAccountById(connection: Connection, id: string): Promise<SocialAccount | null>;
@@ -149,4 +160,39 @@ export interface SocialRepository {
     patch: SocialPostUpdate,
   ): Promise<SocialPost | null>;
   deletePost(connection: Connection, id: string): Promise<boolean>;
+
+  // -------------------------------------------------------------------------
+  // 配信ジョブ（035-social-publishing 設計 §6.5.3 / §6.5.4 / §6.5.6）
+  // -------------------------------------------------------------------------
+
+  /**
+   * 前回の実行が途中で死んだ行を `failed` に落とす（§6.5.4）。
+   *
+   * **ジョブの最初に呼ぶ。** 着手印が残っている行は、正常に終われば必ず NULL に
+   * 戻るはずのものなので、残っていれば前回が `publish()` の途中で死んでいる。
+   * **再送しない**（二重投稿より未投稿のほうがまし）。
+   */
+  failInterrupted(connection: Connection, reason: string): Promise<readonly InterruptedPost[]>;
+
+  /** 期限の来た自動配信の投稿を `scheduled_at` の古い順に引く（§6.5.3）。 */
+  listDue(connection: Connection, limit: number): Promise<readonly SocialPost[]>;
+
+  /**
+   * 着手印を立てる（§6.5.4）。
+   *
+   * **自分のトランザクションを開いてコミットしてから返す。** `publish()` と
+   * 同じトランザクションに入れると、プロセスが死んだときに印がロールバックされ、
+   * 次の実行が同じ投稿をもう一度送る。
+   *
+   * 誰かが先に触っていれば `null`（更新 0 行）。
+   */
+  claimForPublish(connection: Connection, id: string): Promise<SocialPost | null>;
+
+  /**
+   * 配信の結果を書き戻す（§6.5.6）。
+   *
+   * **更新できた行数を返す。** 0 なら着手印が外から消されており、
+   * 結果を記録できていない（`unrecorded`）。イベントを出してはならない。
+   */
+  recordOutcome(connection: Connection, id: string, verdict: PublishVerdict): Promise<number>;
 }
