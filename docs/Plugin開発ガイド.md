@@ -234,8 +234,13 @@ const token = await context.store.getSecret('api-token');
 const configured = await context.store.hasSecret('api-token');
 ```
 
-**Core は Plugin へ資格情報を渡さない。**
-SNS の投稿を行う Plugin は、その資格情報を自分の名前空間で持つ。
+**自分だけで使う資格情報は、自分の名前空間の Secret に置く。**
+外部サービスへ自分で繋ぐ Plugin は、上のように `setSecret` / `getSecret` で持つ。
+
+**ただし SNS の配信 Plugin は、資格情報を自分で持たない。**
+`social_accounts` に登録されたものが `publish()` の引数として、
+**その呼び出しの間だけ**渡る（§9「SNS 配信（`social`）」）。
+受け取った値を `setSecret` へ写さない。二重に持つと、どちらが正かが分からなくなる。
 
 ### 置ける範囲
 
@@ -454,6 +459,120 @@ Plugin が受け持つのは、認可要求の組み立て・Token Exchange・To
 短絡しているのは「外部 Provider が居るかどうか」だけで、
 State の発行と照合・使い捨て・セッション発行は本番と同じ経路を通る。
 
+### SNS 配信（`social`）
+
+SNS への実際の投稿を受け持つ。**Plugin が書くのは「1 回配信する関数」と
+「投稿画面の URL を返す関数」だけ。** いつ送るか・再試行・記録・画面は Torifune が持つ。
+
+```json
+{ "extensions": ["social"] }
+```
+
+```ts
+context.social.registerPublisher({
+  provider: 'bluesky',            // social_accounts.provider と同じ値
+  label: 'Bluesky',               // 画面の表示名。Torifune の対応表より優先される
+  credentialFields: [
+    { key: 'identifier', label: 'ハンドル', kind: 'text' },
+    { key: 'appPassword', label: 'App Password', kind: 'secret' },
+  ],
+  limits: { bodyMaxLength: 300, mediaMax: 4 },
+
+  validate({ post, account }) {
+    // 登録時の事前検査。問題が無ければ空配列
+    return post.body.length > 300 ? [{ field: 'body', message: '300文字以内で。' }] : [];
+  },
+
+  async publish({ post, account, credential, attempt, signal, logger }) {
+    // credential は credentialFields で宣言したキーがそのまま入る
+    const id = await postToBluesky(post, credential, signal);
+    return { ok: true, externalId: id, externalUrl: `https://bsky.app/…/${id}` };
+  },
+
+  manual({ post, account }) {
+    return { url: 'https://bsky.app/intent/compose?text=' + encodeURIComponent(post.body) };
+  },
+});
+```
+
+**宣言していなければ使えない**（`PluginExtensionNotDeclaredError`）。
+登録した provider の資格情報が `publish()` の引数として渡るため、
+Plugin を入れる側が「どの Plugin が資格情報を受け取るか」を導入時に見られるようにしてある。
+
+| 項目 | 役割 |
+| --- | --- |
+| `credentialFields` | **資格情報の形の宣言だけ。** 入力欄の描画・形式検証・暗号化・保存・再表示しないことは Torifune が持つ。`kind: 'secret'` は打ち込むときに伏せる項目という意味で、保存はどの項目も暗号化される。空なら資格情報なしで `publish()` が呼ばれる（`credential` は `{}`） |
+| `limits` | `bodyMaxLength` / `mediaRequired` / `mediaMax`。**適用するのは Torifune**（投稿の登録時に 422 で弾く）。文字数の数え方は SNS ごとに違うので、ここは早く弾くための粗い上限 |
+| `validate` | 登録時の事前検査。`field` は要求のフィールド名（`body` / `media` / `link` / `providerOptions.<key>`）。返した文言がそのまま 422 の `details` と投稿フォームに出る |
+| `publish` | 自動配信。**1 回送るだけ。** 再試行の回数・間隔・打ち切りは Torifune が決める |
+| `manual` | 手動投稿。投稿内容を反映した**投稿画面の URL**（Web Intent）を返すだけ。資格情報は渡らない |
+
+#### `retryable` の基準
+
+```ts
+return { ok: false, reason: '送信できませんでした。', retryable: true, retryAfterMs: 300_000 };
+```
+
+**「送る前に失敗した」なら `true`、「届いたか分からない」なら `false`。**
+
+| 起きたこと | `retryable` |
+| --- | --- |
+| 送信前のネットワーク断、429、（まだ送っていない）認証エラー | `true` |
+| 5xx、タイムアウト、応答の解釈に失敗した | `false` |
+| 迷ったとき | `false`（二重投稿より未投稿のほうがまし） |
+
+**SNS の投稿は取り消せない。** だから `true` は「絶対に届いていない」と言えるときだけにする。
+
+* `reason` は利用者に見せる理由（履歴画面に出る）。**資格情報を含めない**
+* `retryAfterMs` は Torifune の既定（1 → 2 → 4 → 8 分）より長いときだけ使われる（上限 24 時間）
+
+#### 例外は「結果不明」になる
+
+**`publish()` が例外を投げると、その投稿は再試行されずに `failed`（結果不明）になる。**
+タイムアウト（30 秒）も同じ。届いたかどうかを Torifune が判断できないためで、
+`retryable: true` のつもりで例外を投げても再送はされない。
+**送る前の失敗は、必ず `{ ok: false, retryable: true }` で返す。**
+
+`signal` は 30 秒で発火する。以後の処理は打ち切ってよい。
+
+#### 資格情報の更新（`rotatedCredential`）
+
+トークンの期限が延びたときなどは、**自分で保存し直さない。**
+
+```ts
+return { ok: true, externalId: id, rotatedCredential: { ...credential, accessToken: next } };
+```
+
+Torifune が暗号化して書き戻し、監査ログにも残す。
+キーは `credentialFields` のまま。宣言に合わないものは書き戻されず、警告がログに出る。
+
+#### 守ること
+
+* **資格情報の値をログに渡さない。** `logger` にキー名で伏せる仕掛けはあるが、値まで守るのは Plugin の責任。
+  `reason` や例外のメッセージにも混ぜない
+* **受け取った `credential` を保存し直さない。** その呼び出しの間だけ有効な値である
+* **自前のタイマーを持たない。** 複数プロセスで動かすと二重投稿になる
+* **同じ `provider` を登録できるのは 1 つの Plugin だけ。**
+  別の Plugin が既に登録していると `PluginPublisherConflictError` になり、後から有効化したほうが `disabled` に落ちる
+  （同じ Plugin が同じ provider をもう一度登録した場合は置き換わる）
+
+#### Torifune が持つもの
+
+**手動投稿の待ち行列・子ウィンドウ・「投稿した／取りやめ」の操作は Torifune の画面（`/social`）が持つ。**
+`manual()` が返すのは URL と注意書きだけで、Plugin は画面を作らない。
+
+配信のスケジュール・排他・着手印（二重投稿の防止）・再試行・結果の記録・
+`social.post.published` / `social.post.failed` の発火も Torifune 側にある。
+`data.socialPosts.markPublished()` を `publish()` から呼ぶ必要は無い。
+
+`publish()` を実装しない publisher を登録してもよい（手動投稿だけを受け持つ形）。
+その場合でも**その provider への自動配信の予約は断られない。**
+支度が整うまで定期実行が飛ばして待ち、画面には「配信 Plugin なし」の警告が出る。
+逆に `manual()` を実装しなければ、その provider の `deliveryMode: 'manual'` は 422 で断られる。
+
+実物の例は `plugins/example-plugin/social.ts`（**外部へ繋がないループバックの publisher**）。
+外部アプリから投稿を登録する手順は [`docs/マニュアル/SNS投稿の外部連携.md`](マニュアル/SNS投稿の外部連携.md)。
+
 ---
 
 ## 10. 導入する
@@ -523,7 +642,9 @@ Plugin は信頼されたコードとして動く。特に Database Provider は
 だからこそ、
 
 * 要求する Permission は**必要な最小限**を宣言する
-* 資格情報は自分の名前空間の Secret に置き、ログへ出さない
+* 自分で外部サービスに繋ぐ Plugin の資格情報は自分の名前空間の Secret に、
+  SNS アカウントの資格情報は Core の `social_accounts` に置く（受け取るのは `publish()` の引数として、
+  その呼び出しの間だけ。§9「SNS 配信（`social`）」）。どちらもログへ出さない
   （`logger` に Secret を渡しても平文は出ないが、頼りにしない）
 * 拡張点は宣言したものだけを使う
 

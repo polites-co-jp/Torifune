@@ -28,7 +28,8 @@ Plugin は `context.events.on(...)` で購読する。使い方は
 | `social.account.connected` | SNSアカウントを接続した | `SocialAccountEventPayload` |
 | `social.account.disconnected` | SNSアカウントの接続を切った | `SocialAccountEventPayload` |
 | `social.post.created` | SNS投稿を作った | `SocialPostEventPayload` |
-| `social.post.published` | SNS投稿の配信が完了した | `SocialPostEventPayload` |
+| `social.post.published` | SNS投稿の配信が完了した（**本体の定期実行が配信を終えたとき**、または手動投稿を「投稿した」と記録したとき） | `SocialPostEventPayload` |
+| `social.post.failed` | SNS投稿の配信が失敗した（本体の定期実行が失敗・打ち切り・中断と判定したとき、または `PATCH /api/v1/social/posts/{id}` で `failed` にしたとき） | `SocialPostEventPayload` |
 | `campaign.created` | キャンペーンを作った | `CampaignEventPayload` |
 | `campaign.updated` | キャンペーンを更新した | `CampaignEventPayload` |
 | `campaign.deleted` | キャンペーンを削除した | `CampaignEventPayload` |
@@ -54,6 +55,11 @@ interface SocialAccountEventPayload {
 interface SocialPostEventPayload {
   readonly postId: string;
   readonly accountId: string;
+  /**
+   * 投稿の状態。`social.post.published` なら `'published'`、
+   * `social.post.failed` なら `'failed'`。`social.post.created` では
+   * 作成時の状態（`'draft'` / `'scheduled'`）。
+   */
   readonly status?: string;
 }
 
