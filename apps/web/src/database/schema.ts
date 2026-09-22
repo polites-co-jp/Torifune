@@ -208,6 +208,29 @@ export interface SocialPostsTable {
   failed_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   created_at: CreatedAt;
   updated_at: UpdatedAt;
+  // ここから 022_social_publishing.sql（035-social-publishing 設計 §5.5）。
+  /** 'auto'（ジョブが配信）/ 'manual'（人が投稿する）。 */
+  delivery_mode: Generated<string>;
+  /** `[{ url, alt }]`。**ファイルは預からない。** */
+  media: JSONColumnType<readonly { url: string; alt: string | null }[], string | undefined, string>;
+  link: string | null;
+  /** provider 固有の追加項目。中身の検証は Plugin（`validate()`）。 */
+  provider_options: JSONColumnType<Record<string, unknown>, string | undefined, string>;
+  /** 外部アプリ側の ID。冪等キー。 */
+  external_ref: string | null;
+  /** 登録した API Token（＝外部アプリ）。セッションからの登録は NULL。 */
+  created_by_token_id: string | null;
+  external_id: string | null;
+  external_url: string | null;
+  /** 配信の着手印。**非 NULL ⇔ 配信が進行中**（設計 §5.8）。 */
+  publish_started_at: ColumnType<
+    Date | null,
+    Date | string | null | undefined,
+    Date | string | null
+  >;
+  attempt_count: Generated<number>;
+  /** 再試行の予定。NULL なら `scheduled_at` で判定する。 */
+  next_attempt_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
 }
 
 export interface PluginsTable {

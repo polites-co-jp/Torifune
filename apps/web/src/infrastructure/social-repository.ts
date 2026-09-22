@@ -4,6 +4,7 @@ import type { Schema } from '../database/schema';
 import { decryptSecret } from './crypto/cipher';
 import type {
   AccountStatus,
+  DeliveryMode,
   PostStatus,
   SocialAccount,
   SocialAccountWithCredential,
@@ -75,6 +76,17 @@ interface PostRow {
   failure_reason: string | null;
   created_at: Date;
   updated_at: Date;
+  delivery_mode: string;
+  media: readonly { url: string; alt: string | null }[];
+  link: string | null;
+  provider_options: Record<string, unknown>;
+  external_ref: string | null;
+  created_by_token_id: string | null;
+  external_id: string | null;
+  external_url: string | null;
+  publish_started_at: Date | null;
+  attempt_count: number;
+  next_attempt_at: Date | null;
 }
 
 function toPost(row: PostRow): SocialPost {
@@ -89,6 +101,18 @@ function toPost(row: PostRow): SocialPost {
     failureReason: row.failure_reason,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    deliveryMode: row.delivery_mode as DeliveryMode,
+    media: row.media.map((item) => ({ url: item.url, alt: item.alt ?? null })),
+    link: row.link,
+    providerOptions: row.provider_options,
+    externalRef: row.external_ref,
+    createdByTokenId: row.created_by_token_id,
+    externalId: row.external_id,
+    externalUrl: row.external_url,
+    publishStartedAt: row.publish_started_at,
+    // integer の列だが、ドライバの設定によっては文字列で返りうる。
+    attemptCount: Number(row.attempt_count),
+    nextAttemptAt: row.next_attempt_at,
   };
 }
 
@@ -103,6 +127,17 @@ const POST_COLUMNS = [
   'failure_reason',
   'created_at',
   'updated_at',
+  'delivery_mode',
+  'media',
+  'link',
+  'provider_options',
+  'external_ref',
+  'created_by_token_id',
+  'external_id',
+  'external_url',
+  'publish_started_at',
+  'attempt_count',
+  'next_attempt_at',
 ] as const;
 
 /**
@@ -310,6 +345,17 @@ export const socialRepository: SocialRepository = {
         body: post.body,
         scheduled_at: post.scheduledAt,
         status: post.status,
+        // 省略された項目は DB の既定値（'auto' / [] / {}）に任せる。
+        ...(post.deliveryMode === undefined ? {} : { delivery_mode: post.deliveryMode }),
+        ...(post.media === undefined ? {} : { media: JSON.stringify(post.media) }),
+        ...(post.link === undefined ? {} : { link: post.link }),
+        ...(post.providerOptions === undefined
+          ? {}
+          : { provider_options: JSON.stringify(post.providerOptions) }),
+        ...(post.externalRef === undefined ? {} : { external_ref: post.externalRef }),
+        ...(post.createdByTokenId === undefined
+          ? {}
+          : { created_by_token_id: post.createdByTokenId }),
       })
       .returning(POST_COLUMNS)
       .executeTakeFirstOrThrow();
@@ -330,6 +376,14 @@ export const socialRepository: SocialRepository = {
     if (patch.publishedAt !== undefined) values['published_at'] = patch.publishedAt;
     if (patch.failedAt !== undefined) values['failed_at'] = patch.failedAt;
     if (patch.failureReason !== undefined) values['failure_reason'] = patch.failureReason;
+    if (patch.deliveryMode !== undefined) values['delivery_mode'] = patch.deliveryMode;
+    if (patch.media !== undefined) values['media'] = JSON.stringify(patch.media);
+    if (patch.link !== undefined) values['link'] = patch.link;
+    if (patch.providerOptions !== undefined) {
+      values['provider_options'] = JSON.stringify(patch.providerOptions);
+    }
+    if (patch.externalId !== undefined) values['external_id'] = patch.externalId;
+    if (patch.externalUrl !== undefined) values['external_url'] = patch.externalUrl;
 
     const row = await connection.db
       .updateTable('social_posts')

@@ -1,6 +1,8 @@
 import type { Connection } from '../../database/provider';
 import type {
   AccountStatus,
+  DeliveryMode,
+  PostMedia,
   PostStatus,
   SocialAccount,
   SocialAccountWithCredential,
@@ -45,6 +47,13 @@ export interface NewSocialPost {
   readonly body: string;
   readonly scheduledAt: Date | null;
   readonly status: PostStatus;
+  readonly deliveryMode?: DeliveryMode | undefined;
+  readonly media?: readonly PostMedia[] | undefined;
+  readonly link?: string | null | undefined;
+  readonly providerOptions?: Readonly<Record<string, unknown>> | undefined;
+  readonly externalRef?: string | null | undefined;
+  /** 登録した API Token。セッションからの登録は null。 */
+  readonly createdByTokenId?: string | null | undefined;
 }
 
 export interface SocialPostUpdate {
@@ -54,6 +63,12 @@ export interface SocialPostUpdate {
   readonly publishedAt?: Date | null | undefined;
   readonly failedAt?: Date | null | undefined;
   readonly failureReason?: string | null | undefined;
+  readonly deliveryMode?: DeliveryMode | undefined;
+  readonly media?: readonly PostMedia[] | undefined;
+  readonly link?: string | null | undefined;
+  readonly providerOptions?: Readonly<Record<string, unknown>> | undefined;
+  readonly externalId?: string | null | undefined;
+  readonly externalUrl?: string | null | undefined;
 }
 
 export interface SocialPostListQuery {

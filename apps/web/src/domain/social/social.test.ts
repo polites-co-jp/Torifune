@@ -2,13 +2,18 @@ import { describe, expect, it } from 'vitest';
 import {
   ACCOUNT_STATUSES,
   canTransition,
+  DELIVERY_MODES,
   DISPLAY_NAME_MAX_LENGTH,
   isAccountStatus,
+  isDeliveryMode,
+  isManualPending,
   isPostStatus,
   isValidDisplayName,
+  isValidMediaUrl,
   isValidPostBody,
   isValidProvider,
   KNOWN_PROVIDERS,
+  MEDIA_URL_MAX_LENGTH,
   POST_BODY_MAX_LENGTH,
   POST_STATUSES,
   providerLabel,
@@ -158,5 +163,149 @@ describe('状態の判定', () => {
 
   it('定義外のアカウント状態を拒否する', () => {
     expect(isAccountStatus('pending')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 035-social-publishing 設計 §5.6.1（受け入れ条件 #5、#9、#12）
+// ---------------------------------------------------------------------------
+
+describe('isDeliveryMode', () => {
+  /** #5 */
+  it('定義済みの配信方法を受け入れる', () => {
+    for (const mode of DELIVERY_MODES) {
+      expect(isDeliveryMode(mode)).toBe(true);
+    }
+  });
+
+  /** #5。DB の CHECK 制約と同じ値しか通さない。 */
+  it('大文字を拒否する', () => {
+    expect(isDeliveryMode('Auto')).toBe(false);
+  });
+
+  /** #5 */
+  it('空文字を拒否する', () => {
+    expect(isDeliveryMode('')).toBe(false);
+  });
+});
+
+describe('isValidMediaUrl', () => {
+  /** #5 */
+  it('https の URL を受け入れる', () => {
+    expect(isValidMediaUrl('https://a/b.png')).toBe(true);
+  });
+
+  /**
+   * #5。Plugin が取りに行く URL なので、localhost の http も許さない
+   * （`isValidWebhookUrl` と違い、開発用の抜け道を作らない。設計 §5.6.1）。
+   */
+  it('http の URL を受け入れない', () => {
+    expect(isValidMediaUrl('http://a/b.png')).toBe(false);
+  });
+
+  /** #5。保存すると一覧やログに資格情報が載る。 */
+  it('URL に資格情報を書かせない', () => {
+    expect(isValidMediaUrl('https://u:p@a/b.png')).toBe(false);
+  });
+
+  /** #5 */
+  it('上限ちょうどの長さを受け入れる', () => {
+    const url = `https://example.com/${'a'.repeat(MEDIA_URL_MAX_LENGTH - 20)}`;
+
+    expect(url).toHaveLength(MEDIA_URL_MAX_LENGTH);
+    expect(isValidMediaUrl(url)).toBe(true);
+  });
+
+  /** #5 */
+  it('上限を超えた長さを拒否する', () => {
+    const url = `https://example.com/${'a'.repeat(MEDIA_URL_MAX_LENGTH - 19)}`;
+
+    expect(url).toHaveLength(MEDIA_URL_MAX_LENGTH + 1);
+    expect(isValidMediaUrl(url)).toBe(false);
+  });
+
+  /** #5 */
+  it.each(['', 'not a url', 'javascript:alert(1)', 'file:///etc/passwd'])(
+    '不正な URL を受け入れない: %s',
+    (value) => {
+      expect(isValidMediaUrl(value)).toBe(false);
+    },
+  );
+});
+
+describe('isManualPending', () => {
+  const now = new Date('2026-09-22T10:00:00.000Z');
+
+  /** #9。状態は増やさず、manual かつ scheduled かつ期限到来で導出する（裁定 #3）。 */
+  it('予約時刻の来た手動投稿は投稿待ちになる', () => {
+    const post = {
+      deliveryMode: 'manual',
+      status: 'scheduled',
+      scheduledAt: new Date(now.getTime() - 1_000),
+    } as const;
+
+    expect(isManualPending(post, now)).toBe(true);
+  });
+
+  /** #9 */
+  it('予約時刻がまだ先の手動投稿は投稿待ちではない', () => {
+    const post = {
+      deliveryMode: 'manual',
+      status: 'scheduled',
+      scheduledAt: new Date(now.getTime() + 1_000),
+    } as const;
+
+    expect(isManualPending(post, now)).toBe(false);
+  });
+
+  /** #9。自動配信はジョブが送るので、人の出番は無い。 */
+  it('自動配信の投稿は投稿待ちではない', () => {
+    const post = {
+      deliveryMode: 'auto',
+      status: 'scheduled',
+      scheduledAt: new Date(now.getTime() - 1_000),
+    } as const;
+
+    expect(isManualPending(post, now)).toBe(false);
+  });
+
+  /** #9。「取りやめ」で下書きへ戻した投稿は一覧から消える（§6.2）。 */
+  it('下書きの投稿は投稿待ちではない', () => {
+    const post = {
+      deliveryMode: 'manual',
+      status: 'draft',
+      scheduledAt: new Date(now.getTime() - 1_000),
+    } as const;
+
+    expect(isManualPending(post, now)).toBe(false);
+  });
+
+  /** #9。予約日時の無い行は期限が来ない（§5.3）。 */
+  it('予約日時の無い投稿は投稿待ちではない', () => {
+    const post = { deliveryMode: 'manual', status: 'scheduled', scheduledAt: null } as const;
+
+    expect(isManualPending(post, now)).toBe(false);
+  });
+});
+
+describe('providerLabel（publisher の表示名）', () => {
+  /** #12。Plugin を無効にしても表示名が生の値に落ちないように Core が知っておく。 */
+  it('bluesky の表示名を Core が知っている', () => {
+    expect(providerLabel('bluesky')).toBe('Bluesky');
+  });
+
+  /** #12 */
+  it('bluesky が既知の provider に入っている', () => {
+    expect(KNOWN_PROVIDERS).toContain('bluesky');
+  });
+
+  /** #12。登録された publisher の label を優先する（要件 §5.1）。 */
+  it('publisher の表示名が Core の表示名より優先される', () => {
+    expect(providerLabel('x', { x: 'X（Plugin）' })).toBe('X（Plugin）');
+  });
+
+  /** #12 */
+  it('どちらにも無い provider はそのまま返す', () => {
+    expect(providerLabel('mastodon', { x: 'X（Plugin）' })).toBe('mastodon');
   });
 });

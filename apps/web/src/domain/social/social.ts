@@ -15,13 +15,21 @@ import type { Secret } from '../secret';
  * **この一覧に無い値も受け入れる。** Plugin が新しいSNSを足せる必要がある
  * （03_プラグイン設計.md §9）。ここは表示名を引くための対応表にすぎない。
  */
-export const KNOWN_PROVIDERS = ['x', 'facebook', 'instagram', 'youtube', 'other'] as const;
+export const KNOWN_PROVIDERS = [
+  'x',
+  'facebook',
+  'instagram',
+  'youtube',
+  'bluesky',
+  'other',
+] as const;
 
 export const PROVIDER_LABELS: Record<string, string> = {
   x: 'X',
   facebook: 'Facebook',
   instagram: 'Instagram',
   youtube: 'YouTube',
+  bluesky: 'Bluesky',
   other: 'その他',
 };
 
@@ -32,8 +40,18 @@ export function isValidProvider(value: string): boolean {
   return PROVIDER_PATTERN.test(value);
 }
 
-export function providerLabel(provider: string): string {
-  return PROVIDER_LABELS[provider] ?? provider;
+/**
+ * provider の表示名。
+ *
+ * **登録された publisher の表示名を優先する。** `overrides` は Application が
+ * publisher の登録簿から作って渡す。Plugin を無効にしても `PROVIDER_LABELS` が
+ * 残るので、一覧の表示が生の値に落ちない（035-social-publishing 設計 §5.6.1）。
+ */
+export function providerLabel(
+  provider: string,
+  overrides?: Readonly<Record<string, string>>,
+): string {
+  return overrides?.[provider] ?? PROVIDER_LABELS[provider] ?? provider;
 }
 
 export const ACCOUNT_STATUSES = ['connected', 'disconnected', 'error'] as const;
@@ -72,6 +90,29 @@ export function isValidDisplayName(value: string): boolean {
 export const POST_STATUSES = ['draft', 'scheduled', 'published', 'failed'] as const;
 export type PostStatus = (typeof POST_STATUSES)[number];
 
+/**
+ * 配信の方法（035-social-publishing 設計 §5.6.1）。
+ *
+ * `auto` はジョブが Plugin を通して送る。`manual` は人が SNS 側で投稿し、
+ * 結果を画面から記録する。**状態（`PostStatus`）は増やさない**（§5.8）。
+ */
+export const DELIVERY_MODES = ['auto', 'manual'] as const;
+export type DeliveryMode = (typeof DELIVERY_MODES)[number];
+
+export function isDeliveryMode(value: string): value is DeliveryMode {
+  return (DELIVERY_MODES as readonly string[]).includes(value);
+}
+
+/**
+ * 投稿に添える媒体。
+ *
+ * **ファイルは預からない。** URL だけを持ち、取りに行くのは Plugin の仕事。
+ */
+export interface PostMedia {
+  readonly url: string;
+  readonly alt: string | null;
+}
+
 export interface SocialPost {
   readonly id: string;
   readonly socialAccountId: string;
@@ -89,6 +130,25 @@ export interface SocialPost {
   readonly failureReason: string | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
+  readonly deliveryMode: DeliveryMode;
+  readonly media: readonly PostMedia[];
+  /** 本文に添える URL（X の `url=`、Bluesky の外部埋め込みなど）。 */
+  readonly link: string | null;
+  /** provider 固有の追加項目。**中身を検証するのは Plugin**（`validate()`）。 */
+  readonly providerOptions: Readonly<Record<string, unknown>>;
+  /** 外部アプリ側の ID。同じ API Token からの再送を 1 行にまとめる冪等キー。 */
+  readonly externalRef: string | null;
+  /** 登録した API Token。セッションからの登録は null。 */
+  readonly createdByTokenId: string | null;
+  /** 配信後の SNS 側の投稿 ID。 */
+  readonly externalId: string | null;
+  /** 配信後の投稿の URL。 */
+  readonly externalUrl: string | null;
+  /** 配信の着手印。**非 NULL ⇔ 配信が進行中**（035-social-publishing 設計 §5.8）。 */
+  readonly publishStartedAt: Date | null;
+  readonly attemptCount: number;
+  /** 再試行の予定。null なら `scheduledAt` で期限を判定する。 */
+  readonly nextAttemptAt: Date | null;
 }
 
 /**
@@ -113,6 +173,71 @@ export const FAILURE_REASON_MAX_LENGTH = 2000;
 
 export function isValidPostBody(value: string): boolean {
   return value.trim() !== '' && value.length <= POST_BODY_MAX_LENGTH;
+}
+
+/** 1 つの投稿に添えられる媒体の数。 */
+export const MEDIA_MAX = 10;
+export const MEDIA_URL_MAX_LENGTH = 2048;
+export const MEDIA_ALT_MAX_LENGTH = 1000;
+export const LINK_MAX_LENGTH = 2048;
+export const EXTERNAL_REF_MAX_LENGTH = 200;
+export const EXTERNAL_ID_MAX_LENGTH = 200;
+export const EXTERNAL_URL_MAX_LENGTH = 2048;
+/** `providerOptions` を JSON にしたときの上限（バイト）。 */
+export const PROVIDER_OPTIONS_MAX_BYTES = 4096;
+
+/**
+ * 外から取りに行く URL として受け付けるか。
+ *
+ * **https だけ。** 資格情報付き URL は不可（`isValidWebhookUrl` と同じ判断）。
+ * ただし localhost の http は許さない。**Plugin が取りに行く URL** であり、
+ * 開発用の抜け道を作ると、そのまま SNS へ渡して届かない URL になる。
+ */
+function isValidExternalHttpsUrl(value: string, maxLength: number): boolean {
+  if (value.length > maxLength) {
+    return false;
+  }
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  if (url.username !== '' || url.password !== '') {
+    // URL に資格情報を書かせない。保存すると一覧やログに載る。
+    return false;
+  }
+  return url.protocol === 'https:';
+}
+
+export function isValidMediaUrl(value: string): boolean {
+  return isValidExternalHttpsUrl(value, MEDIA_URL_MAX_LENGTH);
+}
+
+export function isValidLink(value: string): boolean {
+  return isValidExternalHttpsUrl(value, LINK_MAX_LENGTH);
+}
+
+export function isValidExternalUrl(value: string): boolean {
+  return isValidExternalHttpsUrl(value, EXTERNAL_URL_MAX_LENGTH);
+}
+
+/**
+ * 手動投稿待ちか。
+ *
+ * **状態は増やさない**（035-social-publishing 設計 §5.8）。
+ * 「手動投稿待ち」は `manual` かつ `scheduled` かつ予約時刻が来たことから導く。
+ */
+export function isManualPending(
+  post: Pick<SocialPost, 'deliveryMode' | 'status' | 'scheduledAt'>,
+  now: Date,
+): boolean {
+  return (
+    post.deliveryMode === 'manual' &&
+    post.status === 'scheduled' &&
+    post.scheduledAt !== null &&
+    post.scheduledAt.getTime() <= now.getTime()
+  );
 }
 
 /**
