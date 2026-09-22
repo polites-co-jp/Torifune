@@ -3,7 +3,11 @@ import { listAnalytics, listTrackedSites } from '@/application/analytics/analyti
 import { listRecentActivities } from '@/application/audit-use-cases';
 import { listCampaigns } from '@/application/campaign/campaign-use-cases';
 import { listSites } from '@/application/site/site-use-cases';
-import { listSocialPosts, listSocialPostsByIds } from '@/application/social/social-use-cases';
+import {
+  listManualPendingPosts,
+  listSocialPosts,
+  listSocialPostsByIds,
+} from '@/application/social/social-use-cases';
 import type { AnalyticsPoint } from '@/domain/analytics/analytics';
 import { formatDateTimeInTimeZone, shiftDays, todayInTimeZone } from '@/domain/analytics/day';
 import {
@@ -20,6 +24,7 @@ import { Card } from '@/ui/components';
 import {
   AccessOverview,
   ActiveCampaigns,
+  ManualPendingReminder,
   RecentActivities,
   RecentPosts,
   type ActiveCampaignRow,
@@ -122,6 +127,11 @@ export default async function DashboardPage() {
           status: 'published',
         })
       ).total
+    : 0;
+
+  // 手動投稿待ちは**件数だけ**を取る（設計 §7.6）。操作は `/social` の区画に置く。
+  const manualPendingTotal = canReadSocial
+    ? (await listManualPendingPosts(context, { limit: 1 })).total
     : 0;
 
   // サイト別の行。名前順、`archived` を除く既定（設計 §7.2）。
@@ -254,6 +264,9 @@ export default async function DashboardPage() {
         )}
 
         {canReadCampaigns && <ActiveCampaigns campaigns={campaignRows} />}
+
+        {/* 「最近の投稿」の上・Plugin の Widget の前に置く（設計 §7.6 / §7.8）。 */}
+        {canReadSocial && <ManualPendingReminder count={manualPendingTotal} />}
 
         <div
           style={{

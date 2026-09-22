@@ -32,46 +32,95 @@ export interface AccountRow {
   readonly credentialConfigured: boolean;
 }
 
-const PROVIDER_LABEL: Record<string, string> = {
-  x: 'X',
-  facebook: 'Facebook',
-  instagram: 'Instagram',
-  youtube: 'YouTube',
-  other: 'その他',
-};
+/**
+ * 資格情報の入力欄の宣言（035-social-publishing 設計 §7.5）。
+ *
+ * **`kind` の違いは入力欄の見え方だけ。** 保存はどの項目も暗号化され、
+ * どの項目も再表示されない（設計 §5.7）。
+ */
+export interface ProviderCredentialField {
+  readonly key: string;
+  readonly label: string;
+  readonly kind: 'text' | 'secret';
+}
+
+/**
+ * 「サービス」の選択肢。
+ *
+ * **部品の中に固定の一覧を持たない。** Core が知る provider に加えて、
+ * publisher を登録した Plugin の provider が並ぶ。Server Component が組む（設計 §7.5）。
+ */
+export interface ProviderOption {
+  readonly value: string;
+  readonly label: string;
+  readonly credentialFields: readonly ProviderCredentialField[];
+}
 
 export interface SocialAccountsProps {
   readonly initialAccounts: readonly AccountRow[];
   readonly permissions: readonly string[];
+  readonly providers: readonly ProviderOption[];
+  /**
+   * 追加の Modal を開いた状態で描く。既定は false（Server Component は渡さない）。
+   *
+   * 単体テストの環境には DOM が無く、ボタンを押して開けないため。
+   */
+  readonly initialCreating?: boolean;
 }
 
 export function SocialAccounts(props: SocialAccountsProps) {
   const [accounts, setAccounts] = useState(props.initialAccounts);
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState(props.initialCreating === true);
   const [deleting, setDeleting] = useState<AccountRow | null>(null);
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [credential, setCredential] = useState('');
+  const [provider, setProvider] = useState(props.providers[0]?.value ?? '');
+  const [credentialValues, setCredentialValues] = useState<Readonly<Record<string, string>>>({});
 
   const permissions = new Set(props.permissions);
   // 表示制御であって認可ではない。サーバー側で必ず検証している。
   const canWrite = permissions.has('social.write');
   const canDelete = permissions.has('social.delete');
 
+  const providerLabels: Readonly<Record<string, string>> = Object.fromEntries(
+    props.providers.map((option) => [option.value, option.label]),
+  );
+  const credentialFields =
+    props.providers.find((option) => option.value === provider)?.credentialFields ?? [];
+
+  /** **入力値を持ち越さない。** 閉じたら捨てる（設計 §7.5）。 */
+  function closeCreate(): void {
+    setCreating(false);
+    setCredential('');
+    setCredentialValues({});
+    setFormError(null);
+  }
+
   async function submitCreate(event: React.FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     setFormError(null);
 
     const form = new FormData(event.currentTarget);
+    // 項目ごとの欄があるときは `credentials`、無ければ従来どおり 1 つの `credential`。
+    // **両方は送れない**（API が 422 にする。設計 §6.4）。
+    const filled = Object.fromEntries(
+      credentialFields
+        .map((field) => [field.key, credentialValues[field.key] ?? ''] as const)
+        .filter(([, value]) => value !== ''),
+    );
+    const configured =
+      credentialFields.length === 0 ? credential !== '' : Object.keys(filled).length > 0;
+
     const result = await apiRequest<AccountRow>('/api/v1/social/accounts', {
       method: 'POST',
       body: {
-        provider: String(form.get('provider') ?? 'other'),
+        provider: String(form.get('provider') ?? provider),
         displayName: String(form.get('displayName') ?? ''),
         handle: String(form.get('handle') ?? ''),
         // 平文はここでだけ扱う。応答には含まれない。
-        credential,
-        status: credential === '' ? 'disconnected' : 'connected',
+        ...(credentialFields.length === 0 ? { credential } : { credentials: filled }),
+        status: configured ? 'connected' : 'disconnected',
       },
     });
 
@@ -81,8 +130,7 @@ export function SocialAccounts(props: SocialAccountsProps) {
     }
 
     setAccounts((current) => [result.data, ...current]);
-    setCreating(false);
-    setCredential('');
+    closeCreate();
     setToast({ id: result.data.id, text: '登録しました。', tone: 'success' });
   }
 
@@ -109,7 +157,8 @@ export function SocialAccounts(props: SocialAccountsProps) {
       key: 'provider',
       header: 'サービス',
       width: '10rem',
-      render: (account) => PROVIDER_LABEL[account.provider] ?? account.provider,
+      // publisher の表示名を優先する（設計 §5.6.1）。部品に自前の対応表を持たない。
+      render: (account) => providerLabels[account.provider] ?? account.provider,
     },
     { key: 'displayName', header: '表示名', render: (account) => account.displayName },
     { key: 'handle', header: 'ハンドル', render: (account) => account.handle },
@@ -183,7 +232,7 @@ export function SocialAccounts(props: SocialAccountsProps) {
         </Card>
       </AsyncState>
 
-      <Modal open={creating} title="SNSアカウントを追加" onClose={() => setCreating(false)}>
+      <Modal open={creating} title="SNSアカウントを追加" onClose={closeCreate}>
         {formError !== null && (
           <div style={{ marginBottom: 'var(--tf-space-4)' }}>
             <Alert tone="danger">{formError}</Alert>
@@ -192,12 +241,22 @@ export function SocialAccounts(props: SocialAccountsProps) {
         <form onSubmit={submitCreate}>
           <FormField label="サービス">
             {(fieldProps) => (
-              <Select {...fieldProps} name="provider" defaultValue="x">
-                <option value="x">X</option>
-                <option value="facebook">Facebook</option>
-                <option value="instagram">Instagram</option>
-                <option value="youtube">YouTube</option>
-                <option value="other">その他</option>
+              <Select
+                {...fieldProps}
+                name="provider"
+                value={provider}
+                onChange={(event) => {
+                  // provider が変われば資格情報の形も変わる。入力値を持ち越さない。
+                  setProvider(event.target.value);
+                  setCredentialValues({});
+                  setCredential('');
+                }}
+              >
+                {props.providers.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
               </Select>
             )}
           </FormField>
@@ -206,19 +265,59 @@ export function SocialAccounts(props: SocialAccountsProps) {
             {(fieldProps) => <Input {...fieldProps} name="displayName" required />}
           </FormField>
 
-          <FormField label="ハンドル" description="@ から始まる識別子など">
+          {/*
+            説明に「識別子」と書かない。publisher が宣言する項目名（`credentialFields` の
+            ラベル）と紛れる。ここは常に出る欄で、資格情報の欄ではない。
+          */}
+          <FormField label="ハンドル" description="@ から始まる名前など">
             {(fieldProps) => <Input {...fieldProps} name="handle" />}
           </FormField>
 
-          <SecretField
-            label="資格情報（アクセストークン等）"
-            configured={false}
-            onChange={setCredential}
-            placeholder="保存後は再表示されません"
-          />
+          {/*
+            publisher が項目を宣言していれば項目ごとの欄、無ければ従来どおり 1 つの欄
+            （設計 §7.5）。**保存後は再表示しない**（`06` §38）。
+          */}
+          {credentialFields.length === 0 ? (
+            <SecretField
+              label="資格情報（アクセストークン等）"
+              configured={false}
+              onChange={setCredential}
+              placeholder="保存後は再表示されません"
+            />
+          ) : (
+            credentialFields.map((field) =>
+              field.kind === 'secret' ? (
+                <SecretField
+                  key={field.key}
+                  label={field.label}
+                  configured={false}
+                  onChange={(value) =>
+                    setCredentialValues((current) => ({ ...current, [field.key]: value }))
+                  }
+                  placeholder="保存後は再表示されません"
+                />
+              ) : (
+                <FormField key={field.key} label={field.label}>
+                  {(fieldProps) => (
+                    <Input
+                      {...fieldProps}
+                      value={credentialValues[field.key] ?? ''}
+                      autoComplete="off"
+                      onChange={(event) =>
+                        setCredentialValues((current) => ({
+                          ...current,
+                          [field.key]: event.target.value,
+                        }))
+                      }
+                    />
+                  )}
+                </FormField>
+              ),
+            )
+          )}
 
           <div style={{ display: 'flex', gap: 'var(--tf-space-2)', justifyContent: 'flex-end' }}>
-            <Button variant="secondary" onClick={() => setCreating(false)}>
+            <Button variant="secondary" onClick={closeCreate}>
               キャンセル
             </Button>
             <Button type="submit" variant="primary">

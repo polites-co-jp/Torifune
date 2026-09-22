@@ -1,8 +1,9 @@
-import type { SocialAccountView, SocialPostDraftView } from '@torifune/plugin-api';
+import type { SocialAccountView, SocialPostDraftView, SocialPostView } from '@torifune/plugin-api';
 import { uuidv7 } from 'uuidv7';
 import { defineUseCase } from '@/application/authorization/use-case';
 import { emit } from '@/application/events';
 import { findPublisher, type RegisteredPublisher } from '@/application/social/publisher-registry';
+import { isSafeReturnTo } from '@/domain/authorization-state';
 import { NotFoundError, ValidationError } from '@/domain/repository';
 import type { Secret } from '@/domain/secret';
 import {
@@ -53,7 +54,13 @@ function credentialFieldsOf(publisher: RegisteredPublisher | null): readonly Cre
   }));
 }
 
-function toAccountView(account: SocialAccount): SocialAccountView {
+/**
+ * Plugin へ渡すアカウントの形。
+ *
+ * **資格情報の平文を載せない。** 設定済みかどうかだけを持たせる
+ * （`SocialAccount` 自体が平文を持たない）。
+ */
+export function toAccountView(account: SocialAccount): SocialAccountView {
   return {
     id: account.id,
     provider: account.provider,
@@ -61,6 +68,27 @@ function toAccountView(account: SocialAccount): SocialAccountView {
     handle: account.handle,
     status: account.status,
     credentialConfigured: account.credentialConfigured,
+  };
+}
+
+/** Plugin へ渡す投稿の形。日時は ISO 文字列にする。 */
+export function toPostView(post: SocialPost): SocialPostView {
+  return {
+    id: post.id,
+    socialAccountId: post.socialAccountId,
+    body: post.body,
+    scheduledAt: post.scheduledAt?.toISOString() ?? null,
+    status: post.status,
+    publishedAt: post.publishedAt?.toISOString() ?? null,
+    failureReason: post.failureReason,
+    deliveryMode: post.deliveryMode,
+    media: post.media.map((item) => ({ url: item.url, alt: item.alt })),
+    link: post.link,
+    providerOptions: post.providerOptions,
+    externalRef: post.externalRef,
+    externalId: post.externalId,
+    externalUrl: post.externalUrl,
+    failedAt: post.failedAt?.toISOString() ?? null,
   };
 }
 
@@ -871,5 +899,119 @@ export const deleteSocialPost = defineUseCase<{ id: string }, void>({
     if (!deleted) {
       throw new NotFoundError('SocialPost', input.id);
     }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// 手動投稿（035-social-publishing 設計 §6.6）
+// ---------------------------------------------------------------------------
+
+export interface ListManualPendingInput {
+  /** 画面は 50 を渡す。ダッシュボードは件数だけが要るので 1 を渡す（設計 §6.6 / §7.6）。 */
+  readonly limit: number;
+}
+
+/**
+ * 手動投稿待ちの一覧（設計 §5.8 の導出状態）。
+ *
+ * **状態を増やさない。** `status = 'scheduled'` かつ `deliveryMode = 'manual'` かつ
+ * 予約日時が来ていることから導く。`total` は `limit` で切る前の全件数。
+ */
+export const listManualPendingPosts = defineUseCase<ListManualPendingInput, SocialPostPage>({
+  name: 'social.post.listManualPending',
+  permission: 'social.read',
+  handler: async (context, input) =>
+    socialRepository.listManualPending(context.connection, input.limit),
+});
+
+/**
+ * 「投稿画面を開く」の結果（設計 §6.6）。
+ *
+ * **失敗しても例外にしない。** 区画は行ごとに描かれ、1 つの Plugin の不調で
+ * 画面全体を落とすわけにはいかない。理由は画面の文言に写される。
+ */
+export type ManualHandoffOutcome =
+  | { readonly ok: true; readonly url: string; readonly note: string | null }
+  | { readonly ok: false; readonly reason: 'unsupported' | 'invalid_url' | 'plugin_error' };
+
+/**
+ * publisher が返した投稿画面の URL として受け付けるか（設計 §6.6）。
+ *
+ * **https の絶対 URL**、または **`/` で始まる同一オリジンのパス**（`//` / `/\` で
+ * 始まらない）だけを通す。判定は `025` §8（`isSafeReturnTo`）と同じものを使う。
+ * Plugin が返した文字列をそのまま `window.open` へ渡すので、ここが最後の関門になる。
+ */
+function isValidHandoffUrl(url: string): boolean {
+  if (url.startsWith('/')) {
+    return isSafeReturnTo(url);
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  return parsed.protocol === 'https:';
+}
+
+/**
+ * その投稿の「投稿画面の URL」を publisher に作らせる。
+ *
+ * **資格情報は渡さない**（設計 §6.5.5 末尾）。Web Intent は公開 URL で足りる。
+ * 渡すと「配信のときだけ」という約束が崩れ、監査の外で平文が広がる。
+ */
+export const resolveManualHandoff = defineUseCase<{ id: string }, ManualHandoffOutcome>({
+  name: 'social.post.manualHandoff',
+  permission: 'social.read',
+  handler: async (context, input) => {
+    const post = await socialRepository.findPostById(context.connection, input.id);
+    if (post === null) {
+      throw new NotFoundError('SocialPost', input.id);
+    }
+    if (post.deliveryMode !== 'manual') {
+      // 自動配信の投稿に「投稿画面を開く」は無い。
+      throw new ValidationError('SocialPost', 'deliveryMode', '手動投稿ではありません。');
+    }
+
+    const account = await socialRepository.findAccountById(
+      context.connection,
+      post.socialAccountId,
+    );
+    if (account === null) {
+      throw new NotFoundError('SocialAccount', post.socialAccountId);
+    }
+
+    const publisher = findPublisher(account.provider);
+    const manual = publisher?.registration.manual;
+    if (publisher === null || manual === undefined) {
+      // Plugin を無効にした後の画面がこれ（設計 §7.1 の「この SNS の Plugin が無効です」）。
+      return { ok: false, reason: 'unsupported' };
+    }
+
+    let handoff;
+    try {
+      // 同期でも Promise でもよい（設計 §6.6）。
+      handoff = await manual({ post: toPostView(post), account: toAccountView(account) });
+    } catch (error) {
+      // Plugin の例外を素で外へ出さない（027 設計 §3.3）。**戻り値にも画面にも内容を載せない。**
+      log.error('social publisher manual failed', {
+        provider: account.provider,
+        pluginId: publisher.pluginId,
+        postId: post.id,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+      return { ok: false, reason: 'plugin_error' };
+    }
+
+    if (!isValidHandoffUrl(handoff.url)) {
+      log.warn('social publisher manual returned an unusable url', {
+        provider: account.provider,
+        pluginId: publisher.pluginId,
+        postId: post.id,
+      });
+      return { ok: false, reason: 'invalid_url' };
+    }
+
+    return { ok: true, url: handoff.url, note: handoff.note ?? null };
   },
 });

@@ -161,6 +161,16 @@ export interface SocialRepository {
   ): Promise<SocialPost | null>;
   deletePost(connection: Connection, id: string): Promise<boolean>;
 
+  /**
+   * 手動投稿待ちを引く（035-social-publishing 設計 §6.6）。
+   *
+   * **状態を増やさずに導出する**（§5.8）：`status = 'scheduled'` かつ
+   * `delivery_mode = 'manual'` かつ予約日時が来ているもの。`scheduled_at` の古い順。
+   *
+   * `total` は `limit` で切る前の全件数（ダッシュボードの件数に使う。§7.6）。
+   */
+  listManualPending(connection: Connection, limit: number): Promise<SocialPostPage>;
+
   // -------------------------------------------------------------------------
   // 配信ジョブ（035-social-publishing 設計 §6.5.3 / §6.5.4 / §6.5.6）
   // -------------------------------------------------------------------------

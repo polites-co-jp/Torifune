@@ -55,6 +55,7 @@ export default async function SocialHistoryPage({
     // `failedAt` を足す前の行は空になるので、その場合は最後に触った時刻で代える。
     resultAt: (post.publishedAt ?? post.failedAt ?? post.updatedAt).toISOString(),
     failureReason: post.failureReason,
+    externalUrl: post.externalUrl,
   }));
 
   return (

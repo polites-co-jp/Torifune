@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { CSSProperties, MouseEvent, ReactNode } from 'react';
 import {
+  Alert,
   Badge,
   Card,
   Chart,
@@ -576,6 +577,28 @@ export function ActiveCampaigns({
         />
       )}
     </Card>
+  );
+}
+
+/**
+ * 手動投稿待ちの導線（035-social-publishing 設計 §7.6）。
+ *
+ * **操作は置かない。** 「投稿した／取りやめ」は `/social` の区画だけに置く。
+ * 2 か所に置くと、片方だけ直す事故が起きる（設計 §7.1）。
+ * ここに出すのは件数と導線だけで、0 件なら何も描かない。
+ */
+export function ManualPendingReminder({ count }: { readonly count: number }) {
+  if (count <= 0) {
+    return null;
+  }
+
+  return (
+    <Alert tone="warning">
+      {`手動投稿待ちが ${formatCount(count)} 件あります。SNS 画面で投稿してください。`}{' '}
+      <Link href="/social#manual-pending" style={LINK_STYLE}>
+        SNS 画面へ →
+      </Link>
+    </Alert>
   );
 }
 

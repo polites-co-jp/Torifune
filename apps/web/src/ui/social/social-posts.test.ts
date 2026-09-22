@@ -1,0 +1,290 @@
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { describe, expect, it } from 'vitest';
+import { SocialPosts, type PostRow, type SocialPostsProps } from './social-posts';
+
+/**
+ * SNS 投稿一覧の「配信方法」列と、配信の支度ができていない予約の警告
+ * （035-social-publishing 設計 §7.3、受け入れ条件 #69）。
+ *
+ * 足す props（実装プラン T21）：
+ *
+ * ```ts
+ * PostRow に deliveryMode / failureReason / attemptCount / externalUrl
+ *
+ * SocialPosts({
+ *   …既存,
+ *   // アカウント ID → そのアカウントの provider と資格情報の有無。
+ *   accountProviders: Record<string, { provider: string; credentialConfigured: boolean }>;
+ *   // provider → 登録された publisher（`publisherRegistry.listPublishers()` から組み立てる）。
+ *   publisherProviders: Record<
+ *     string,
+ *     { label: string; manual: boolean; publish: boolean; credentialFieldKeys: readonly string[] }
+ *   >;
+ * })
+ * ```
+ *
+ * **これは「予約を断らない」ことと対になっている**（要件 §4 裁定 #8、設計 §6.1.2）。
+ * 配信 Plugin が無くても資格情報が未設定でも予約そのものは通すので、
+ * 代わりに予約した時点で画面に出す。警告は 2 種類ある（2026-09-23 の改訂）。
+ *
+ * **既存の E2E（`social.spec.ts`）の locator を変えない**：見出し「投稿」、
+ * 本文の抜粋、「編集」「削除」（#79）。
+ */
+
+const ACCOUNT_ID = '01900000-0000-7000-8000-0000000000a1';
+const OTHER_ACCOUNT_ID = '01900000-0000-7000-8000-0000000000a2';
+
+const NO_PLUGIN_BADGE = '配信 Plugin なし';
+const NO_CREDENTIAL_BADGE = '資格情報 未設定';
+
+function post(overrides: Partial<PostRow> = {}): PostRow {
+  return {
+    id: '01900000-0000-7000-8000-0000000000b1',
+    socialAccountId: ACCOUNT_ID,
+    body: '新製品のお知らせ',
+    scheduledAt: '2026-09-22T10:00:00.000Z',
+    status: 'scheduled',
+    publishedAt: null,
+    deliveryMode: 'auto',
+    failureReason: null,
+    attemptCount: 0,
+    externalUrl: null,
+    ...overrides,
+  };
+}
+
+const BASE: SocialPostsProps = {
+  initialPosts: [post()],
+  accountNames: { [ACCOUNT_ID]: '公式（テストSNS）', [OTHER_ACCOUNT_ID]: '公式（X）' },
+  accountProviders: {
+    [ACCOUNT_ID]: { provider: 'testsns', credentialConfigured: true },
+    [OTHER_ACCOUNT_ID]: { provider: 'x', credentialConfigured: false },
+  },
+  publisherProviders: {
+    testsns: {
+      label: 'テストSNS',
+      manual: true,
+      publish: true,
+      credentialFieldKeys: ['identifier', 'appPassword'],
+    },
+  },
+  total: 1,
+  page: 1,
+  perPage: 20,
+  permissions: ['social.read', 'social.write', 'social.delete'],
+};
+
+function render(overrides: Partial<SocialPostsProps> = {}): string {
+  return renderToStaticMarkup(createElement(SocialPosts, { ...BASE, ...overrides }));
+}
+
+function textOf(html: string): string {
+  return html
+    .replace(/<[^>]+>/g, '')
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+}
+
+/** `<tr>` の中身（見出し行を含む）。 */
+function rows(html: string): string[] {
+  return [...html.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/g)].map((match) => textOf(match[1] ?? ''));
+}
+
+describe('SocialPosts の配信方法', () => {
+  it('#69 列見出しに「配信方法」がある', () => {
+    expect(rows(render())[0]).toContain('配信方法');
+  });
+
+  it('#69 auto の行を「自動」と出す', () => {
+    const body = rows(render())[1] ?? '';
+
+    expect(body).toContain('自動');
+  });
+
+  it('#69 manual の行を「手動」と出す', () => {
+    const body = rows(render({ initialPosts: [post({ deliveryMode: 'manual' })] }))[1] ?? '';
+
+    expect(body).toContain('手動');
+  });
+
+  it('#69 既存の locator（見出し「投稿」・本文・編集・削除）を壊さない', () => {
+    // `social.spec.ts` は変更しないこと自体が受け入れ条件（#79）。
+    const html = render();
+    const text = textOf(html);
+
+    expect(html).toMatch(/<h2[^>]*>投稿<\/h2>/);
+    expect(text).toContain('新製品のお知らせ');
+    expect(text).toContain('編集');
+    expect(text).toContain('削除');
+  });
+});
+
+describe('配信の支度ができていない予約の警告', () => {
+  it('#69 publisher の無い provider の予約に「配信 Plugin なし」を付ける', () => {
+    const html = render({ initialPosts: [post({ socialAccountId: OTHER_ACCOUNT_ID })] });
+
+    expect(textOf(html)).toContain(NO_PLUGIN_BADGE);
+  });
+
+  it('#69 publisher があり資格情報も設定済みなら警告を付けない', () => {
+    const text = textOf(render());
+
+    expect(text).not.toContain(NO_PLUGIN_BADGE);
+    expect(text).not.toContain(NO_CREDENTIAL_BADGE);
+  });
+
+  it('#69 publisher はあるが資格情報が未設定なら「資格情報 未設定」を付ける', () => {
+    // 2026-09-23 の改訂（要件 §4 裁定 #8）。警告は 2 種類ある。
+    const text = textOf(
+      render({
+        accountProviders: {
+          ...BASE.accountProviders,
+          [ACCOUNT_ID]: { provider: 'testsns', credentialConfigured: false },
+        },
+      }),
+    );
+
+    expect(text).toContain(NO_CREDENTIAL_BADGE);
+  });
+
+  it('#69 credentialFieldKeys が空の publisher では資格情報が未設定でも警告しない', () => {
+    // 資格情報の要らない配信手段（設計 §5.7）。
+    const text = textOf(
+      render({
+        accountProviders: {
+          ...BASE.accountProviders,
+          [ACCOUNT_ID]: { provider: 'testsns', credentialConfigured: false },
+        },
+        publisherProviders: {
+          testsns: { label: 'テストSNS', manual: true, publish: true, credentialFieldKeys: [] },
+        },
+      }),
+    );
+
+    expect(text).not.toContain(NO_CREDENTIAL_BADGE);
+  });
+
+  it('#69 publish を持たない publisher は「配信 Plugin なし」扱い', () => {
+    const text = textOf(
+      render({
+        publisherProviders: {
+          testsns: {
+            label: 'テストSNS',
+            manual: true,
+            publish: false,
+            credentialFieldKeys: ['identifier'],
+          },
+        },
+      }),
+    );
+
+    expect(text).toContain(NO_PLUGIN_BADGE);
+  });
+
+  it('#69 draft の行には警告を付けない', () => {
+    // 予約していないものは配信されなくて当たり前。
+    const text = textOf(
+      render({
+        initialPosts: [post({ socialAccountId: OTHER_ACCOUNT_ID, status: 'draft' })],
+      }),
+    );
+
+    expect(text).not.toContain(NO_PLUGIN_BADGE);
+  });
+
+  it('#69 manual の行には警告を付けない', () => {
+    // 手動投稿はジョブを通らない（設計 §7.3 は auto の行だけを見る）。
+    const text = textOf(
+      render({
+        initialPosts: [post({ socialAccountId: OTHER_ACCOUNT_ID, deliveryMode: 'manual' })],
+      }),
+    );
+
+    expect(text).not.toContain(NO_PLUGIN_BADGE);
+  });
+
+  it('#69 一覧の上に警告の Alert を件数つきで出す', () => {
+    const text = textOf(
+      render({
+        initialPosts: [
+          post({ socialAccountId: OTHER_ACCOUNT_ID }),
+          post({ id: 'p2', socialAccountId: OTHER_ACCOUNT_ID }),
+        ],
+        total: 2,
+      }),
+    );
+
+    expect(text).toMatch(/配信の支度ができていない予約投稿が\s*2\s*件あります/);
+  });
+
+  it('#69 Alert に「配信されません」の説明を添える', () => {
+    const text = textOf(render({ initialPosts: [post({ socialAccountId: OTHER_ACCOUNT_ID })] }));
+
+    expect(text).toContain('配信されません');
+  });
+
+  it('#69 対象が無ければ Alert を出さない', () => {
+    expect(textOf(render())).not.toContain('配信の支度ができていない予約投稿');
+  });
+});
+
+describe('状態列の補足', () => {
+  it('#69 scheduled で failureReason があれば「再試行待ち・2 回目」を出す', () => {
+    // N は `attemptCount + 1`（設計 §7.3）。
+    const text = textOf(
+      render({
+        initialPosts: [post({ failureReason: '受け手が 503 を返した', attemptCount: 1 })],
+      }),
+    );
+
+    expect(text).toMatch(/再試行待ち・2\s*回目/);
+  });
+
+  it('#69 failureReason が無ければ再試行待ちと出さない', () => {
+    expect(textOf(render())).not.toContain('再試行待ち');
+  });
+
+  it('#69 published で externalUrl があれば「投稿を見る」リンクを出す', () => {
+    const html = render({
+      initialPosts: [
+        post({
+          status: 'published',
+          publishedAt: '2026-09-22T10:01:00.000Z',
+          externalUrl: 'https://x.com/torifune/status/1',
+        }),
+      ],
+    });
+
+    expect(textOf(html)).toContain('投稿を見る');
+    expect(html).toContain('href="https://x.com/torifune/status/1"');
+  });
+
+  it('#69 「投稿を見る」は rel="noopener noreferrer" の別タブで開く', () => {
+    const html = render({
+      initialPosts: [
+        post({
+          status: 'published',
+          publishedAt: '2026-09-22T10:01:00.000Z',
+          externalUrl: 'https://x.com/torifune/status/1',
+        }),
+      ],
+    });
+
+    expect(html).toMatch(/rel="noopener noreferrer"/);
+    expect(html).toContain('target="_blank"');
+  });
+
+  it('#69 externalUrl が無ければ「投稿を見る」を出さない', () => {
+    const text = textOf(
+      render({
+        initialPosts: [post({ status: 'published', publishedAt: '2026-09-22T10:01:00.000Z' })],
+      }),
+    );
+
+    expect(text).not.toContain('投稿を見る');
+  });
+});

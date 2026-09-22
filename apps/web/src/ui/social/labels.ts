@@ -6,7 +6,7 @@
  * 国際化はこの計画ではやらないが、差し替える場所を1つにはしておく。
  */
 
-import type { AccountStatus, PostStatus } from '@/domain/social/social';
+import type { AccountStatus, DeliveryMode, PostStatus } from '@/domain/social/social';
 
 export const POST_STATUS_LABEL: Record<PostStatus, string> = {
   draft: '下書き',
@@ -20,3 +20,49 @@ export const ACCOUNT_STATUS_LABEL: Record<AccountStatus, string> = {
   disconnected: '未接続',
   error: 'エラー',
 };
+
+/** 配信方法（035-social-publishing 設計 §7.3）。 */
+export const DELIVERY_MODE_LABEL: Record<DeliveryMode, string> = {
+  auto: '自動',
+  manual: '手動',
+};
+
+// ---------------------------------------------------------------------------
+// 手動投稿待ち（035-social-publishing 設計 §7.1）
+// ---------------------------------------------------------------------------
+
+export const MANUAL_PENDING_LABEL = '手動投稿待ち';
+
+/** ダッシュボードから飛んで来る先（設計 §7.6）。 */
+export const MANUAL_PENDING_ANCHOR = 'manual-pending';
+
+export const MANUAL_PENDING_OPEN_LABEL = '投稿画面を開く';
+export const MANUAL_PENDING_FALLBACK_LABEL = '別のタブで開く';
+export const MANUAL_PENDING_DONE_LABEL = '投稿した';
+export const MANUAL_PENDING_CANCEL_LABEL = '取りやめ';
+
+export const MANUAL_PENDING_GUIDE =
+  '予約時刻を過ぎた手動投稿です。「投稿画面を開く」で投稿内容が入った画面が開きます。投稿し終えたら「投稿した」を押してください。';
+
+/**
+ * 投稿画面を開けない理由（設計 §7.1）。
+ *
+ * **Plugin の例外の中身は出さない。** 運用者が原因へ辿る経路はログにある。
+ */
+export const MANUAL_HANDOFF_REASON_LABEL = {
+  unsupported: 'この SNS の Plugin が無効です',
+  invalid_url: 'Plugin が返した URL を開けません',
+  plugin_error: 'Plugin でエラーが起きました',
+} as const satisfies Record<string, string>;
+
+/** 配信の支度ができていない予約への注意（設計 §7.3、要件 §4 裁定 #8）。 */
+export const NO_PUBLISHER_BADGE = '配信 Plugin なし';
+export const NO_CREDENTIAL_BADGE = '資格情報 未設定';
+
+/**
+ * 投稿フォームの配信の説明（設計 §7.4）。
+ *
+ * **前半は変えない。** 「実際の配信は、連携プラグインが行います」は E2E が見ている。
+ */
+export const POST_FORM_DELIVERY_NOTE =
+  'ここで登録するのは投稿の内容と予定です。実際の配信は、連携プラグインが行います。自動配信は予約日時に Torifune が行い、手動投稿は予約日時を過ぎると「手動投稿待ち」に並びます。';

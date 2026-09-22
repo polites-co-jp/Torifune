@@ -470,6 +470,37 @@ export const socialRepository: SocialRepository = {
     return Number(result.numDeletedRows) > 0;
   },
 
+  async listManualPending(connection: Connection, limit: number): Promise<SocialPostPage> {
+    // 既存の `(status, scheduled_at)` 索引に乗る条件（設計 §6.6）。
+    const conditions = (eb: ExpressionBuilder<Schema, 'social_posts'>): Expression<SqlBool>[] => [
+      eb('status', '=', 'scheduled'),
+      // 自動配信はジョブが送る。人が押す列には並べない。
+      eb('delivery_mode', '=', 'manual'),
+      // 022 より前に作られた「予約日時の無い予約」は、これまでどおり誰も取り出さない。
+      eb('scheduled_at', 'is not', null),
+      eb('scheduled_at', '<=', sql<Date>`now()`),
+    ];
+
+    const rows = await connection.db
+      .selectFrom('social_posts')
+      .select(POST_COLUMNS)
+      .where((eb) => eb.and(conditions(eb)))
+      .orderBy('scheduled_at', 'asc')
+      // 並び順が同値のとき順序が揺れないよう、最後に id を足す。
+      .orderBy('id', 'asc')
+      .limit(limit)
+      .execute();
+
+    // **`total` は打ち切る前の全件数。** ダッシュボードは `limit: 1` でこれだけを取る（設計 §7.6）。
+    const counted = await connection.db
+      .selectFrom('social_posts')
+      .select((eb) => eb.fn.countAll<string>().as('count'))
+      .where((eb) => eb.and(conditions(eb)))
+      .executeTakeFirstOrThrow();
+
+    return { items: rows.map((row) => toPost(row as PostRow)), total: Number(counted.count) };
+  },
+
   async failInterrupted(
     connection: Connection,
     reason: string,

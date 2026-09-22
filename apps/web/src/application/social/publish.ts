@@ -3,13 +3,15 @@ import type {
   PublishInput,
   PublishResult,
   PublisherRegistration,
-  SocialAccountView,
-  SocialPostView,
 } from '@torifune/plugin-api';
 import { recordSystemAudit } from '@/application/audit';
 import { emit } from '@/application/events';
 import { findPublisher, type RegisteredPublisher } from '@/application/social/publisher-registry';
-import { normalizeFailureReason } from '@/application/social/social-use-cases';
+import {
+  normalizeFailureReason,
+  toAccountView,
+  toPostView,
+} from '@/application/social/social-use-cases';
 import type { Connection } from '@/database/provider';
 import {
   CREDENTIAL_MAX_LENGTH,
@@ -105,37 +107,6 @@ type CredentialResolution =
  */
 function credentialFieldsOf(registration: PublisherRegistration): readonly CredentialField[] {
   return registration.credentialFields.map((field) => ({ key: field.key, kind: field.kind }));
-}
-
-function toPostView(post: SocialPost): SocialPostView {
-  return {
-    id: post.id,
-    socialAccountId: post.socialAccountId,
-    body: post.body,
-    scheduledAt: post.scheduledAt?.toISOString() ?? null,
-    status: post.status,
-    publishedAt: post.publishedAt?.toISOString() ?? null,
-    failureReason: post.failureReason,
-    deliveryMode: post.deliveryMode,
-    media: post.media.map((item) => ({ url: item.url, alt: item.alt })),
-    link: post.link,
-    providerOptions: post.providerOptions,
-    externalRef: post.externalRef,
-    externalId: post.externalId,
-    externalUrl: post.externalUrl,
-    failedAt: post.failedAt?.toISOString() ?? null,
-  };
-}
-
-function toAccountView(account: SocialAccount): SocialAccountView {
-  return {
-    id: account.id,
-    provider: account.provider,
-    displayName: account.displayName,
-    handle: account.handle,
-    status: account.status,
-    credentialConfigured: account.credentialConfigured,
-  };
 }
 
 /**
