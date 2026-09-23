@@ -490,9 +490,19 @@ describe('#11 README', () => {
     it.each(['同時', '入れ替え', '手動投稿', '約24時間'])('#11 「%s」が現れる', (word) => {
       expect(readme(id)).toContain(word);
     });
+
+    // 2026-09-23 に追記（設計 §9.8 / §7 の注。検証の Security 低-1）：画面にアカウントの編集は無く、
+    // 既存のアカウントには API で入れる。sns-x-manual の間に出る汎用の欄は空のままにする。
+    it.each(['PATCH /api/v1/social/accounts/', '空のまま'])('#11 「%s」が現れる', (word) => {
+      expect(readme(id)).toContain(word);
+    });
+
+    it('#11 資格情報の入力欄が「無い」「出ない」と書かない（Core の汎用の欄は出る。設計 §7）', () => {
+      expect(readme(id)).not.toMatch(/入力欄(は|が)(ありません|無い|ない|出ません|出ない)/);
+    });
   });
 
-  it.each(['従量課金', 'Read and write', 'OAuth 2.0', '5MB', 'GIF', 'alt', 'URL'])(
+  it.each(['従量課金', 'Read and write', 'OAuth 2.0', '5MB', 'GIF', 'alt', 'URL', 'Authorization'])(
     '#11 sns-x-api の README に「%s」が現れる',
     (word) => {
       expect(readme('sns-x-api')).toContain(word);
