@@ -20,10 +20,10 @@ import {
   type ToastMessage,
 } from '@/ui/components';
 import {
-  clearCredentialBody,
-  createCredentialBody,
+  buildClearCredentialRequest,
+  buildCreateAccountRequest,
+  buildSetCredentialRequest,
   credentialInputOf,
-  setCredentialBody,
   type CredentialInput,
 } from '@/ui/social/credential-form';
 import {
@@ -203,15 +203,17 @@ export function SocialAccounts(props: SocialAccountsProps) {
     const form = new FormData(event.currentTarget);
     // 入力の形ごとの本文（039 設計 §7.2）。**`credential` と `credentials` の両方は送れない**
     // （API が 422 にする。035 設計 §6.4）。資格情報を使わない provider には何も送らない。
+    // 入力の形の判断は `buildCreateAccountRequest` が `providers` から行う（039 設計 §7.7.1）。
+    // 平文はここでだけ扱う。応答には含まれない。
     const result = await apiRequest<AccountRow>('/api/v1/social/accounts', {
       method: 'POST',
-      body: {
+      body: buildCreateAccountRequest(props.providers, {
         provider: String(form.get('provider') ?? provider),
         displayName: String(form.get('displayName') ?? ''),
         handle: String(form.get('handle') ?? ''),
-        // 平文はここでだけ扱う。応答には含まれない。
-        ...createCredentialBody(createInput, credentialFields, credentialValues, credential),
-      },
+        values: credentialValues,
+        credential,
+      }),
     });
 
     if (!result.ok) {
@@ -284,7 +286,7 @@ export function SocialAccounts(props: SocialAccountsProps) {
     setEditError(null);
 
     // 画面での確かめは UX のため。正はサーバ（`06` §33）。
-    const built = setCredentialBody(editInput, editFields, editValues, editCredential);
+    const built = buildSetCredentialRequest(props.providers, target, editValues, editCredential);
     if (!built.ok) {
       setEditError(built.message);
       return;
@@ -315,7 +317,7 @@ export function SocialAccounts(props: SocialAccountsProps) {
 
     const result = await apiRequest<AccountRow>(`/api/v1/social/accounts/${target.id}`, {
       method: 'PATCH',
-      body: clearCredentialBody(editInput),
+      body: buildClearCredentialRequest(props.providers, target),
     });
 
     if (!result.ok) {

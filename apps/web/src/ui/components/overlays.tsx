@@ -272,13 +272,14 @@ export function SecretField({
 
   if (description === undefined || description === '') {
     // 現行の形（`<label>` の中に入力を入れ子にする）。既存の呼び出し元の見た目を変えない。
+    // password の欄は `off` を無視するブラウザがあるので `new-password`（039 設計 §7.1.3）。
     return (
       <div style={{ marginBottom: 'var(--tf-space-4)' }}>
         <label style={{ display: 'block', marginBottom: 'var(--tf-space-1)' }}>
           {label}
           <input
             type="password"
-            autoComplete="off"
+            autoComplete="new-password"
             placeholder={placeholder}
             onChange={(event) => onChange(event.currentTarget.value)}
             style={inputStyle}
@@ -308,7 +309,7 @@ export function SecretField({
       <input
         id={id}
         type="password"
-        autoComplete="off"
+        autoComplete="new-password"
         placeholder={placeholder}
         aria-describedby={descriptionId}
         onChange={(event) => onChange(event.currentTarget.value)}

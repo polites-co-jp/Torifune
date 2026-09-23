@@ -131,3 +131,76 @@ export function clearCredentialBody(input: CredentialInput): ClearCredentialRequ
   }
   return { credentials: {}, status: 'disconnected' };
 }
+
+/* -------------------------------------------------------------------------- */
+/* 部品が送る本文（providers・対象・入力値 → 本文。設計 §7.7.1）                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * provider の入力の形と、その形で使う項目。
+ *
+ * **入力の形を決めるところから本文までを 1 つの純関数にまとめる**（設計 §7.7.1）。
+ * 部品で入力の形を決めると、`none` を `free` 扱いにする変異がどの層でも固定されない。
+ * 選択肢に無い provider は `free`（設計 §7.1）。
+ */
+function credentialShapeOf(
+  providers: readonly ProviderOption[],
+  provider: string,
+): { readonly input: CredentialInput; readonly fields: readonly ProviderCredentialField[] } {
+  const option = providers.find((candidate) => candidate.value === provider);
+  const input = credentialInputOf(option);
+  return {
+    input,
+    fields: input === 'fields' && option !== undefined ? option.credentialFields : [],
+  };
+}
+
+/** アカウント追加の要求の本文（`POST /api/v1/social/accounts`）。 */
+export interface CreateAccountRequest extends CreateCredentialRequest {
+  readonly provider: string;
+  readonly displayName: string;
+  readonly handle: string;
+}
+
+/**
+ * アカウント追加の要求の本文（設計 §7.2 / §7.7.1）。選んだ provider の入力の形を `providers` から決める。
+ *
+ * `displayName` / `handle` は加工しない（整えるのはサーバの UseCase）。
+ */
+export function buildCreateAccountRequest(
+  providers: readonly ProviderOption[],
+  input: {
+    readonly provider: string;
+    readonly displayName: string;
+    readonly handle: string;
+    readonly values: Readonly<Record<string, string>>;
+    readonly credential: string;
+  },
+): CreateAccountRequest {
+  const shape = credentialShapeOf(providers, input.provider);
+  return {
+    provider: input.provider,
+    displayName: input.displayName,
+    handle: input.handle,
+    ...createCredentialBody(shape.input, shape.fields, input.values, input.credential),
+  };
+}
+
+/** 入れ直しの要求（`PATCH`。設計 §6・§7.3.3・§7.7.1）。`account.provider` の入力の形を `providers` から決める。 */
+export function buildSetCredentialRequest(
+  providers: readonly ProviderOption[],
+  account: { readonly provider: string },
+  values: Readonly<Record<string, string>>,
+  credential: string,
+): SetCredentialResult {
+  const shape = credentialShapeOf(providers, account.provider);
+  return setCredentialBody(shape.input, shape.fields, values, credential);
+}
+
+/** 消去の要求（`PATCH`。設計 §6・§7.4・§7.7.1）。 */
+export function buildClearCredentialRequest(
+  providers: readonly ProviderOption[],
+  account: { readonly provider: string },
+): ClearCredentialRequest {
+  return clearCredentialBody(credentialShapeOf(providers, account.provider).input);
+}
