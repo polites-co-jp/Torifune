@@ -148,7 +148,7 @@ function useFakeGraph(routes: Partial<Record<RequestKind, Route>> = {}): GraphCa
       url: url.href,
       authorization: new Headers(init.headers).get('authorization'),
     });
-    return toResponse((routes[kind] ?? DEFAULT_ROUTES[kind])());
+    return toResponse((routes[kind] ?? DEFAULT_ROUTES[kind])(), init.signal);
   }) as typeof globalThis.fetch;
 
   return calls;
@@ -831,16 +831,24 @@ describe('#88 手動投稿は登録できない（Core の g）', () => {
     expect(await postCount()).toBe(0);
   });
 
-  it('#88 manual・media ありも 422（登録されない）', async () => {
+  it('#88 manual・media あり・status: scheduled も 422 で登録されず、details.media（Core の f が g より先）', async () => {
     // **media があるときの 422 は Core の f（手動投稿は媒体を持てない）が g より先に返す**ので、
-    // details のキーは media になる（設計 #88 の「details.deliveryMode」は media なしの場合だけ成り立つ）。
+    // details のキーは media になる（設計 #88。f は予約の検査（checkSchedulable）を掛けるときだけ効く）。
     useFakeGraph();
     await activate();
     const accountId = await accountFor();
 
-    const result = await createViaApi(accountId, { deliveryMode: 'manual' });
+    const result = await createViaApi(accountId, {
+      deliveryMode: 'manual',
+      status: 'scheduled',
+      media: [{ url: IMAGE_URL, alt: null }],
+    });
 
     expect(result.status).toBe(422);
+    expect(result.details['media']).toContain(
+      '手動投稿には媒体を添付できません（投稿画面で添付してください）。',
+    );
+    expect(result.details['deliveryMode']).toBeUndefined();
     expect(await postCount()).toBe(0);
   });
 });

@@ -747,6 +747,11 @@ async function publishPost(
     return await afterPublish(session, published.value.mediaId, credential, log);
   } catch {
     // 送っていなければ `true`、送っていれば・分からなければ `false`（設計 §6.11）。
+    //
+    // **`publishSent === true` の側は防御的なコード**であり、現状のコードでは到達する経路が無い。
+    // R4 を送った後に呼ぶのは `publishContainer`（`sendGraphRequest` が例外を投げずに分類する）・
+    // `fail`・`afterPublish`（R5 / R6 の例外を自分で握る）だけで、どれもここへ例外を落とさない。
+    // 後から R4 の後に処理を足しても二重投稿へ倒れないよう、分岐は残す。**テストで到達を確かめたものではない。**
     logger.error('instagram publish unexpected', {
       ...base,
       phase: publishSent ? 'publish' : 'prepare',

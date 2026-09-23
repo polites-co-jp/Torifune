@@ -181,10 +181,85 @@ export function serializeExample(example: GraphResponseExample): {
   };
 }
 
-/** 偽の `fetch` が返す `Response`。 */
-export function toResponse(example: GraphResponseExample): Response {
+/**
+ * 本体を要求の `signal` と結びつけた stream にする。
+ *
+ * **本物の `fetch` と揃える**（conformance「ヘッダ受信後の abort」。Node v24.16.0 で実測）：
+ * 本物はヘッダを返した後で `signal` が発火すると、本体を全部受信済みでも、まだ読み終えていない
+ * （`done` を返していない）`reader.read()` を **`signal.reason` で reject** する。
+ * `new Response(文字列)` の本体は `signal` と無関係に最後まで読めるので、そのままでは本物と食い違う。
+ *
+ * - `highWaterMark: 0`：読まれるまで次を用意しない。本物と同じく、最後の塊を読んだ後の
+ *   「終わり」の読み込みも abort で reject する
+ * - `done` を返した後の abort は何もしない（本物も読み終えた本体は覆さない）
+ */
+function abortableBody(text: string, signal: AbortSignal): ReadableStream<Uint8Array> {
+  const bytes = new TextEncoder().encode(text);
+  let enqueued = false;
+  let settled = false;
+  let onAbort: (() => void) | undefined;
+  return new ReadableStream<Uint8Array>(
+    {
+      start(controller) {
+        if (signal.aborted) {
+          settled = true;
+          controller.error(signal.reason);
+          return;
+        }
+        onAbort = (): void => {
+          if (!settled) {
+            settled = true;
+            controller.error(signal.reason);
+          }
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+      },
+      pull(controller) {
+        if (settled) {
+          return;
+        }
+        if (!enqueued && bytes.byteLength > 0) {
+          enqueued = true;
+          controller.enqueue(bytes);
+          return;
+        }
+        settled = true;
+        if (onAbort !== undefined) {
+          signal.removeEventListener('abort', onAbort);
+        }
+        controller.close();
+      },
+      cancel() {
+        settled = true;
+        if (onAbort !== undefined) {
+          signal.removeEventListener('abort', onAbort);
+        }
+      },
+    },
+    { highWaterMark: 0 },
+  );
+}
+
+/**
+ * 偽の `fetch` が返す `Response`。
+ *
+ * `signal`（偽の `fetch` が受け取った `init.signal`）を渡すと、本体の読み込みがその signal と結びつく
+ * （`abortableBody`）。**偽の `fetch` は必ず渡す。** 渡さないのは、応答例そのものを比べるとき（#69）だけ。
+ */
+export function toResponse(example: GraphResponseExample, signal?: AbortSignal | null): Response {
   const { status, headers, body } = serializeExample(example);
   // 1xx / 204 / 205 / 304 は本体を持てない。
   const bodyless = status === 204 || status === 205 || status === 304;
-  return new Response(bodyless ? null : body, { status, headers });
+  if (bodyless) {
+    return new Response(null, { status, headers });
+  }
+  if (signal === undefined || signal === null) {
+    return new Response(body, { status, headers });
+  }
+  // 文字列の本体なら `new Response()` が補う `content-type` を、stream でも同じく補う（#69 の注記と揃える）。
+  const withType = new Headers(headers);
+  if (!withType.has('content-type')) {
+    withType.set('content-type', 'text/plain;charset=UTF-8');
+  }
+  return new Response(abortableBody(body, signal), { status, headers: withType });
 }

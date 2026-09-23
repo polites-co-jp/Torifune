@@ -216,7 +216,7 @@ function createFakeGraph(options: FakeGraphOptions = {}): FakeGraph {
       Promise.resolve(route === undefined ? defaultRoute(kind, context) : route(context)),
       rejectOnAbort(call.signal),
     ]);
-    return reply instanceof Response ? reply : toResponse(reply);
+    return reply instanceof Response ? reply : toResponse(reply, call.signal);
   };
 
   return {

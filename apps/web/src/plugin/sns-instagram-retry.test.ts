@@ -36,7 +36,9 @@ import {
   PREPARE_BUDGET_MS,
   PUBLISH_TOTAL_BUDGET_MS,
   REFRESH_TIMEOUT_MS,
+  RESPONSE_BODY_MAX_BYTES,
   STATUS_TIMEOUT_MS,
+  sendGraphRequest,
 } from '../../../../plugins/sns-instagram/graph';
 import { createInstagramPublisher } from '../../../../plugins/sns-instagram/social';
 
@@ -207,7 +209,7 @@ function createFakeGraph(options: FakeGraphOptions = {}): FakeGraph {
       Promise.resolve(route === undefined ? defaultRoute(kind, context) : route(context)),
       rejectOnAbort(call.signal),
     ]);
-    return reply instanceof Response ? reply : toResponse(reply);
+    return reply instanceof Response ? reply : toResponse(reply, call.signal);
   };
 
   return {
@@ -1134,10 +1136,16 @@ describe('例外を投げない（§6.11）', () => {
     expect(fake.of('R4')).toHaveLength(0);
   });
 
-  it('#49 R4 を送った後の予期しない応答（Response でない値）は retryable: false', async () => {
+  it('#49 R4 の fetch が Response を返せずに投げても、接続断として分類され retryable: false（例外を外へ出さない）', async () => {
+    // 偽の fetch が `toResponse(null)` で TypeError を投げる。`sendGraphRequest` がそれを握って
+    // `network` に分類し、P4 の通常の経路で `false` になる。**外側の catch（`publishSent`）には届かない**
+    // （現状のコードでは届く経路が無い。`social.ts` の catch のコメント）。
     const { result } = await run(withRoutes({ R4: (() => null) as unknown as Route }));
 
+    expect(result.ok).toBe(false);
     expect(retryableOf(result)).toBe(false);
+    // 通常の経路（P4 の接続断）の文言であり、「予期しない問題」の文言ではない。
+    expect(reasonOf(result)).not.toContain('予期しない');
   });
 
   it('#49 R4 の成功の後に時計が投げても ok: true を覆さない', async () => {
@@ -1751,6 +1759,29 @@ describe('制限時間の結線（§6.8 / §10.10）', () => {
     expect(fake.of('R5')).toHaveLength(0);
   });
 
+  it('#73 R4 の応答のヘッダを受け取った後、本体を読み切る前に合計の期限が発火すると retryable: false（二重投稿へ倒れない）', async () => {
+    // 本物の fetch は、ヘッダの後で signal が発火すると本体の読み込みを reject する
+    // （conformance「ヘッダ受信後の abort」）。偽物も本体を signal と結びつけて同じにしている。
+    // 200・id ありの応答でも本体が読めなければ、公開されたか分からない側（P4）へ倒れる。
+    const probe = probeTimeouts();
+    try {
+      const fake = createFakeGraph({
+        R4: () => {
+          probe.fire(PUBLISH_TOTAL_BUDGET_MS);
+          return mediaPublished();
+        },
+      });
+
+      const { result } = await run({ fake });
+
+      expect(retryableOf(result)).toBe(false);
+      expect(fake.of('R5')).toHaveLength(0);
+      expect(fake.of('R6')).toHaveLength(0);
+    } finally {
+      probe.restore();
+    }
+  });
+
   it('#73 R5 の最中なら ok: true のまま（externalUrl を付けない）', async () => {
     const { result } = await fireTotalDuring('R5');
 
@@ -1761,5 +1792,160 @@ describe('制限時間の結線（§6.8 / §10.10）', () => {
     const { result } = await fireTotalDuring('R6');
 
     expect(result).toEqual({ ok: true, externalId: MEDIA_ID, externalUrl: PERMALINK });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* 応答の本体は 64 KiB で打ち切る（§6.2）                                          */
+/* -------------------------------------------------------------------------- */
+
+describe('応答の本体は 64 KiB で打ち切る（§6.2）', () => {
+  const PATH = `/${GRAPH_API_VERSION}/${IG_USER_ID}/media`;
+
+  /** `{"id":"…","pad":"xxx…"}` を**ちょうど `bytes` バイト**にする（JSON として読める）。 */
+  function paddedJson(
+    bytes: number,
+    extra: Record<string, unknown> = { id: CONTAINER_ID },
+  ): string {
+    const head = JSON.stringify({ ...extra, pad: '' });
+    const padding = bytes - new TextEncoder().encode(head).byteLength;
+    if (padding < 0) {
+      throw new Error('小さすぎる');
+    }
+    return JSON.stringify({ ...extra, pad: 'x'.repeat(padding) });
+  }
+
+  /** 決まった応答を返す偽の fetch（本体は要求の signal と結びつける）。 */
+  function replying(example: GraphResponseExample): typeof globalThis.fetch {
+    return (async (_input: unknown, init: RequestInit = {}) =>
+      toResponse(example, init.signal)) as typeof globalThis.fetch;
+  }
+
+  function send(impl: typeof globalThis.fetch): ReturnType<typeof sendGraphRequest> {
+    return sendGraphRequest({
+      impl,
+      method: 'POST',
+      path: PATH,
+      form: { image_url: mediaUrl(0) },
+      bearerToken: ACCESS_TOKEN,
+      timeoutMs: CREATE_CONTAINER_TIMEOUT_MS,
+      signal: new AbortController().signal,
+    });
+  }
+
+  it('上限は 64 KiB（65536 バイト）', () => {
+    expect(RESPONSE_BODY_MAX_BYTES).toBe(64 * 1024);
+  });
+
+  it('ちょうど 64 KiB の 200 は JSON として読む（ok）', async () => {
+    const body = paddedJson(RESPONSE_BODY_MAX_BYTES);
+
+    const outcome = await send(replying({ status: 200, body }));
+
+    expect(outcome).toEqual({ kind: 'ok', status: 200, body: JSON.parse(body) });
+  });
+
+  it('64 KiB を 1 バイト超える 200 は、JSON として正しくても読まない（malformed）', async () => {
+    const outcome = await send(
+      replying({ status: 200, body: paddedJson(RESPONSE_BODY_MAX_BYTES + 1) }),
+    );
+
+    expect(outcome).toEqual({ kind: 'malformed', status: 200 });
+  });
+
+  it('上限は塊ごとではなく合計で数える（1 KiB ずつの塊で合計 65537 バイトは malformed）', async () => {
+    const body = paddedJson(RESPONSE_BODY_MAX_BYTES + 1);
+    const bytes = new TextEncoder().encode(body);
+    const impl = (async () => {
+      let offset = 0;
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (offset >= bytes.byteLength) {
+            controller.close();
+            return;
+          }
+          controller.enqueue(bytes.slice(offset, offset + 1024));
+          offset += 1024;
+        },
+      });
+      return new Response(stream, { status: 200 });
+    }) as typeof globalThis.fetch;
+
+    const outcome = await send(impl);
+
+    expect(outcome).toEqual({ kind: 'malformed', status: 200 });
+  });
+
+  it('上限を超えたら読むのをやめて stream を cancel する（1 MiB の本体を読み切らない）', async () => {
+    // 終わらない本体にすると、打ち切りが壊れたときにテストが落ちずにワーカーごと固まる。1 MiB で閉じる。
+    const TOTAL_CHUNKS = 1024;
+    let pulls = 0;
+    let cancelled = false;
+    const impl = (async () => {
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (pulls >= TOTAL_CHUNKS) {
+            controller.close();
+            return;
+          }
+          pulls += 1;
+          controller.enqueue(new Uint8Array(1024).fill(0x20));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      });
+      return new Response(stream, { status: 200 });
+    }) as typeof globalThis.fetch;
+
+    const outcome = await send(impl);
+
+    expect(outcome).toEqual({ kind: 'malformed', status: 200 });
+    expect(cancelled).toBe(true);
+    // 65 塊目で上限を超える。読み進めていない（先読みの 1〜2 塊を除く）。
+    expect(pulls).toBeLessThanOrEqual(RESPONSE_BODY_MAX_BYTES / 1024 + 3);
+  });
+
+  it('2xx 以外で 64 KiB を超える本体は読まない（code 4 でも rateLimit と分類しない）', async () => {
+    const body = paddedJson(RESPONSE_BODY_MAX_BYTES + 1, { error: { code: 4 } });
+
+    const outcome = await send(replying({ status: 400, body }));
+
+    expect(outcome.kind).toBe('http');
+    expect(outcome.kind === 'http' ? outcome.body : 'not-http').toBeUndefined();
+  });
+
+  it('2xx 以外でちょうど 64 KiB なら本体を読む（code を分類に使える）', async () => {
+    const body = paddedJson(RESPONSE_BODY_MAX_BYTES, { error: { code: 4 } });
+
+    const outcome = await send(replying({ status: 400, body }));
+
+    expect(outcome.kind === 'http' ? outcome.body : undefined).toEqual(JSON.parse(body));
+  });
+
+  it('R1 が 64 KiB を超える 200 を返したら、id があっても R3 を送らず retryable: true（P1 の形が読めない）', async () => {
+    const { result, fake } = await run(
+      withRoutes({
+        R1: () => ({ status: 200, body: paddedJson(RESPONSE_BODY_MAX_BYTES + 1) }),
+      }),
+    );
+
+    expect(retryableOf(result)).toBe(true);
+    expect(fake.of('R3')).toHaveLength(0);
+    expect(fake.of('R4')).toHaveLength(0);
+  });
+
+  it('R4 が 64 KiB を超える 200 を返したら、id があっても retryable: false（公開されたか分からない）', async () => {
+    const { result, fake } = await run(
+      withRoutes({
+        R4: () => ({
+          status: 200,
+          body: paddedJson(RESPONSE_BODY_MAX_BYTES + 1, { id: MEDIA_ID }),
+        }),
+      }),
+    );
+
+    expect(retryableOf(result)).toBe(false);
+    expect(fake.of('R5')).toHaveLength(0);
   });
 });

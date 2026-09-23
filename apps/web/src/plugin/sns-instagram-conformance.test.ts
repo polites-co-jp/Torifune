@@ -231,7 +231,7 @@ function fakeFetch(respond: Responder = defaultResponder): FakeFetch {
     if (reply === 'hang') {
       return await rejectOnAbort(init.signal);
     }
-    return toResponse(reply);
+    return toResponse(reply, init.signal);
   };
   return { fetch: impl as typeof globalThis.fetch, received: log };
 }
@@ -563,6 +563,148 @@ describe('#67 本物の fetch が abort されたときの error.name', () => {
     expect(new DOMException('The operation was aborted due to timeout', 'TimeoutError').name).toBe(
       'TimeoutError',
     );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* ヘッダ受信後の abort（本体の読み込み）                                          */
+/* -------------------------------------------------------------------------- */
+
+describe('ヘッダ受信後の abort で本体の読み込みが reject する（本物と偽物）', () => {
+  const URL_R4 = `${GRAPH_API_BASE_URL}${versioned(`${IG_USER_ID}/media_publish`)}`;
+
+  /** 本体を全部受け取るだけの時間を置く（ループバックなので十分）。 */
+  function settle(): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  async function readError(read: () => Promise<unknown>): Promise<unknown> {
+    try {
+      await read();
+    } catch (error) {
+      return error;
+    }
+    return null;
+  }
+
+  it('本物：本体を受信済みでも、ヘッダの後に abort() すると text() が signal.reason（AbortError）で reject する', async () => {
+    // 実測（Node v24.16.0）。本体が小さく、abort の時点で受信は終わっている。
+    const controller = new AbortController();
+    const response = await loopbackFetch().fetch(URL_R4, {
+      method: 'POST',
+      signal: controller.signal,
+    });
+    await settle();
+    controller.abort();
+
+    const error = await readError(() => response.text());
+
+    expect(error).toBe(controller.signal.reason);
+    expect((error as { readonly name?: unknown }).name).toBe('AbortError');
+  });
+
+  it('本物：最初の塊を読んだ後に abort() すると、次の read()（終わりの通知）も reject する', async () => {
+    const controller = new AbortController();
+    const response = await loopbackFetch().fetch(URL_R4, {
+      method: 'POST',
+      signal: controller.signal,
+    });
+    const reader = (response.body as ReadableStream<Uint8Array>).getReader();
+    const first = await reader.read();
+    controller.abort();
+
+    const error = await readError(() => reader.read());
+
+    expect(first.done).toBe(false);
+    expect(error).toBe(controller.signal.reason);
+  });
+
+  it('本物：AbortSignal.timeout が発火したときは TimeoutError で reject する', async () => {
+    const signal = AbortSignal.timeout(20);
+    const response = await loopbackFetch().fetch(URL_R4, { method: 'POST', signal });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    const error = await readError(() => response.text());
+
+    expect((error as { readonly name?: unknown }).name).toBe('TimeoutError');
+  });
+
+  it('本物：読み終えた後の abort() は、読んだ本体を覆さない', async () => {
+    const controller = new AbortController();
+    const response = await loopbackFetch().fetch(URL_R4, {
+      method: 'POST',
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    controller.abort();
+
+    expect(JSON.parse(text)).toEqual({ id: MEDIA_ID });
+  });
+
+  it('偽物も同じ：ヘッダの後に abort() すると text() が signal.reason で reject する', async () => {
+    const controller = new AbortController();
+    const response = await fakeFetch().fetch(URL_R4, { method: 'POST', signal: controller.signal });
+    await settle();
+    controller.abort();
+
+    const error = await readError(() => response.text());
+
+    expect(error).toBe(controller.signal.reason);
+  });
+
+  it('偽物も同じ：最初の塊を読んだ後に abort() すると、次の read() も reject する', async () => {
+    const controller = new AbortController();
+    const response = await fakeFetch().fetch(URL_R4, { method: 'POST', signal: controller.signal });
+    const reader = (response.body as ReadableStream<Uint8Array>).getReader();
+    const first = await reader.read();
+    controller.abort();
+
+    const error = await readError(() => reader.read());
+
+    expect(first.done).toBe(false);
+    expect(error).toBe(controller.signal.reason);
+  });
+
+  it('偽物も同じ：読み終えた後の abort() は、読んだ本体を覆さない', async () => {
+    const controller = new AbortController();
+    const response = await fakeFetch().fetch(URL_R4, { method: 'POST', signal: controller.signal });
+    const text = await response.text();
+    controller.abort();
+
+    expect(JSON.parse(text)).toEqual({ id: MEDIA_ID });
+  });
+
+  it('本物と偽物で、sendGraphRequest の外側の signal がヘッダの後に発火したときの分類が同じ（aborted）', async () => {
+    // fetch が解決した直後（本体を読む前）に外側の signal を発火させるラッパ。
+    function abortAfterHeaders(
+      impl: typeof globalThis.fetch,
+      controller: AbortController,
+    ): typeof globalThis.fetch {
+      return (async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+        const response = await impl(input, init);
+        controller.abort();
+        return response;
+      }) as typeof globalThis.fetch;
+    }
+    const real = new AbortController();
+    const fake = new AbortController();
+    const request = (impl: typeof globalThis.fetch, signal: AbortSignal) =>
+      sendGraphRequest({
+        impl,
+        method: 'POST',
+        path: versioned(`${IG_USER_ID}/media_publish`),
+        form: { creation_id: CONTAINER_ID },
+        bearerToken: ACCESS_TOKEN,
+        timeoutMs: STATUS_TIMEOUT_MS,
+        signal,
+      });
+
+    const outcomes = [
+      await request(abortAfterHeaders(loopbackFetch().fetch, real), real.signal),
+      await request(abortAfterHeaders(fakeFetch().fetch, fake), fake.signal),
+    ];
+
+    expect(outcomes).toEqual([{ kind: 'aborted' }, { kind: 'aborted' }]);
   });
 });
 
