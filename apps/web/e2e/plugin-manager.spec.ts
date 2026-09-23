@@ -66,6 +66,30 @@ test('検出済みに「Instagram配信」が導入前から並び、SNS配信�
 });
 
 /**
+ * 037 X 配信 Plugin 受け入れ条件 #87。
+ *
+ * 2 つの Plugin（無料版と有料版）が導入前から別々の行で並び、どちらも「SNS配信」だけを握ると読める。
+ * **2 つの Manifest の `name` は「X配信」を共有する**ので、行は `name` の全体（括弧は全角）で絞り、
+ * 各ロケータが 1 件だけに当たることを確かめる（strict mode に触れない。`.first()` で黙って解決しない）。
+ * spec に Plugin ID を書かない（#85）。**ここでは導入も有効化もしない。**
+ */
+for (const name of ['X配信（手動投稿）', 'X配信（X API）']) {
+  test(`検出済みに「${name}」が導入前から並び、SNS配信だけを握ると読める`, async ({ page }) => {
+    await page.goto('/plugins');
+
+    const detected = page.locator('section[aria-labelledby="detected-heading"]');
+    const heading = detected.getByRole('heading', { name });
+    await expect(heading).toHaveCount(1);
+    await expect(heading).toBeVisible();
+
+    const card = detected.locator('section').filter({ hasText: name });
+    await expect(card).toHaveCount(1);
+    await expect(card.getByText('SNS配信（SNSアカウントの資格情報を受け取ります）')).toBeVisible();
+    await expect(card.getByText('画面の拡張')).toHaveCount(0);
+  });
+}
+
+/**
  * Registry タブ（020-plugin-registry 設計 §2.7）。
  *
  * E2E の環境では Registry を設定していない。
