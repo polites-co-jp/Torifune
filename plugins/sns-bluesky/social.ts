@@ -1,13 +1,30 @@
 import type {
   ManualHandoff,
   ManualInput,
+  PluginLogger,
   PluginStore,
+  PublishInput,
+  PublishResult,
   PublisherRegistration,
   PublisherValidationProblem,
   SocialAccountView,
   SocialPostDraftView,
+  SocialPostView,
 } from '@torifune/plugin-api';
-import { graphemeCount, utf8ByteLength } from './text';
+import {
+  ACCOUNT_STATE_ERROR_CODES,
+  type AtprotoFailure,
+  type FetchImpl,
+  MEDIA_TOTAL_BUDGET_MS,
+  createRecord,
+  createSession,
+  fetchMedia,
+  resolveFetch,
+  uploadBlob,
+} from './atproto';
+import type { PdsUrlResolution } from './settings';
+import { resolvePdsUrl } from './settings';
+import { detectLinkFacets, graphemeCount, utf8ByteLength } from './text';
 
 /**
  * Bluesky（AT Protocol）の publisher（036-sns-bluesky 設計 §9）。
@@ -50,9 +67,23 @@ const MANUAL_NOTE =
   'Bluesky の投稿画面が開きます。内容を確かめて投稿してください。' +
   '画像を添える場合はその画面で添付してください。';
 
+/** 配信済みの投稿を見に行く先。**`bsky.app` 固定**（設計 §6.4 / §11 #3）。 */
+const APP_VIEW_URL = 'https://bsky.app';
+
+/** `app.bsky.feed.post` のレコード種別。 */
+const POST_COLLECTION = 'app.bsky.feed.post';
+
 export interface BlueskyPublisherOptions {
   /** `pds-url` を読むためだけに使う。**資格情報はここへ写さない**（設計 §6.5）。 */
   readonly store: PluginStore;
+  /**
+   * 外部への HTTP。既定は Node の標準実装（`atproto.ts` の `resolveFetch()` が解決する）。
+   *
+   * **テストはここを差し替える**（設計 §10.1）。`index.ts` は与えない。
+   */
+  readonly fetch?: FetchImpl;
+  /** `createdAt` に使う時刻。既定は `() => new Date()`（設計 §10.1）。 */
+  readonly now?: () => Date;
 }
 
 /** `deliveryMode: 'manual'` で実際に投稿画面へ渡す文字列。 */
@@ -156,12 +187,337 @@ function validateDraft(post: SocialPostDraftView): readonly PublisherValidationP
   return problems;
 }
 
+/* -------------------------------------------------------------------------- */
+/* publish()：失敗したときの文言（設計 §6.11）                                   */
+/* -------------------------------------------------------------------------- */
+
+const ABORTED_REASON = 'Bluesky への配信が打ち切られました。';
+
+const STORE_REASON = 'Plugin の設定を読み出せませんでした。時間をおいて再試行します。';
+
+const UNEXPECTED_REASON =
+  'Bluesky への配信で予期しない問題が起きました。二重投稿を避けるため再試行しません。' +
+  'Bluesky 側で投稿を確認してから、必要なら予約し直してください。';
+
+const EMBED_CONFLICT_REASON =
+  'Bluesky は画像とリンクカードを同時に付けられません。どちらかを外して登録し直してください。';
+
+function configReason(problem: string): string {
+  return `PDS の URL の設定が正しくありません（${problem}）。Plugin の設定画面で直してください。`;
+}
+
+/**
+ * `reason` に載せる応答の素性。
+ *
+ * **HTTP の status と、既知の `error` コードだけ。** PDS が返した `message`（自由文）は
+ * 載せない。Core の伏せ字は4文字以上の完全一致しか消せないので、**伏せ字を当てにしない**（設計 §6.11）。
+ */
+function detailOf(failure: AtprotoFailure): string {
+  if (failure.status === undefined) {
+    return '';
+  }
+  return failure.code === undefined
+    ? `（${failure.status}）`
+    : `（${failure.status} ${failure.code}）`;
+}
+
+function sessionReason(failure: AtprotoFailure, detail: string): string {
+  if (failure.kind === 'network' || failure.kind === 'timeout') {
+    return 'Bluesky（PDS）へ接続できませんでした。時間をおいて再試行します。';
+  }
+  if (failure.kind === 'shape') {
+    return 'Bluesky（PDS）の応答を解釈できませんでした。時間をおいて再試行します。';
+  }
+
+  const code = failure.code;
+  const status = failure.status ?? 0;
+  if (code !== undefined && ACCOUNT_STATE_ERROR_CODES.has(code)) {
+    return `Bluesky のアカウントが利用できません${detail}。Bluesky 側でアカウントの状態を確認してください。`;
+  }
+  if (status === 429) {
+    return `Bluesky へのログインが集中しています${detail}。時間をおいて再試行します。`;
+  }
+  if (status === 401 || code === 'AuthFactorTokenRequired') {
+    return (
+      `Bluesky へのログインに失敗しました${detail}。App Password を確認してください` +
+      '（ログイン用のパスワードでは配信できません）。'
+    );
+  }
+  if (status >= 500) {
+    return `Bluesky（PDS）が応答できませんでした${detail}。時間をおいて再試行します。`;
+  }
+  return `Bluesky へのログインを断られました${detail}。PDS の URL と App Password を確認してください。`;
+}
+
+function mediaReason(failure: AtprotoFailure, detail: string): string {
+  switch (failure.kind) {
+    case 'redirect':
+      return `画像の URL が転送されています${detail}。転送先の URL を直接指定してください。`;
+    case 'contentType':
+      return '画像ではないファイルが返されました。画像の URL を指定してください。';
+    case 'tooLarge':
+      return '画像が大きすぎます（1MB まで）。小さい画像を指定してください。';
+    case 'budget':
+      return '画像の取得に時間がかかりすぎました。時間をおいて再試行します。';
+    case 'http':
+      return failure.retryable
+        ? `画像を取得できませんでした${detail}。時間をおいて再試行します。`
+        : `画像を取得できませんでした${detail}。画像の URL が公開されているか確認してください。`;
+    default:
+      return '画像を取得できませんでした。時間をおいて再試行します。';
+  }
+}
+
+function uploadReason(failure: AtprotoFailure, detail: string): string {
+  if (failure.kind !== 'http') {
+    return 'Bluesky へ画像をアップロードできませんでした。時間をおいて再試行します。';
+  }
+  const status = failure.status ?? 0;
+  if (status === 401) {
+    return `Bluesky が画像のアップロードを断りました${detail}。App Password を確認してください。`;
+  }
+  if (status === 429 || status >= 500) {
+    return `Bluesky へ画像をアップロードできませんでした${detail}。時間をおいて再試行します。`;
+  }
+  return `Bluesky が画像を受け付けませんでした${detail}。画像の大きさ（1MB まで）と形式を確認してください。`;
+}
+
+function recordReason(failure: AtprotoFailure, detail: string): string {
+  const status = failure.status ?? 0;
+  if (status === 429) {
+    return `Bluesky への投稿が集中しています${detail}。時間をおいて再試行します。`;
+  }
+  if (status === 401) {
+    return (
+      `Bluesky の認証が配信の途中で切れました${detail}。` +
+      '二重投稿を避けるため再試行しません。Bluesky 側で投稿を確認してから、必要なら予約し直してください。'
+    );
+  }
+  return (
+    `Bluesky へ投稿が届いたかを確認できませんでした${detail}。` +
+    '二重投稿を避けるため再試行しません。Bluesky 側で投稿を確認してから、必要なら予約し直してください。'
+  );
+}
+
+/** **運用者が次に何をすればよいかが読める日本語**にする（設計 §6.11）。 */
+function reasonFor(failure: AtprotoFailure): string {
+  switch (failure.phase) {
+    case 'createSession':
+      return sessionReason(failure, detailOf(failure));
+    case 'media':
+      return mediaReason(failure, detailOf(failure));
+    case 'uploadBlob':
+      return uploadReason(failure, detailOf(failure));
+    case 'createRecord':
+      return recordReason(failure, detailOf(failure));
+    default:
+      return `Bluesky への配信に失敗しました${detailOf(failure)}。`;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* publish()：record の組み立て（設計 §6.3 / §6.7 / §6.8）                       */
+/* -------------------------------------------------------------------------- */
+
+/** 本文に添える URL。空文字は「無し」と同じに扱う。 */
+function linkOf(post: SocialPostView): string | null {
+  return typeof post.link === 'string' && post.link !== '' ? post.link : null;
+}
+
+/** リンクカードの見出し。**OGP を取りに行かない**（設計 §6.8）。 */
+function hostnameOf(link: string): string {
+  try {
+    return new URL(link).hostname;
+  } catch {
+    return '';
+  }
+}
+
+/** `record.langs` に入れる値。無ければ `null`（キーごと入れない）。 */
+function langsOf(post: SocialPostView): readonly string[] | null {
+  const options: unknown = post.providerOptions;
+  if (typeof options !== 'object' || options === null) {
+    return null;
+  }
+  const value: unknown = (options as Record<string, unknown>)[LANGS_KEY];
+  if (!isValidLangs(value) || (value as readonly string[]).length === 0) {
+    return null;
+  }
+  return value as readonly string[];
+}
+
+/* -------------------------------------------------------------------------- */
+/* publish()（設計 §6）                                                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 1回配信する。
+ *
+ * **例外を投げない。** 投げると Core は常に「結果不明」として `failed` にし、再試行しない。
+ * `createRecord` より前の失敗まで `failed` になるのは損である（設計 §6.11）。
+ *
+ * **`logger` へ渡すのは `postId` / `attempt` / フェーズ名 / HTTP status / 媒体の件数だけ。**
+ * `credential`・`accessJwt`・`post.body`・`handle` を渡さない。
+ */
+async function publishPost(
+  options: BlueskyPublisherOptions,
+  input: PublishInput,
+): Promise<PublishResult> {
+  const { post, credential, attempt, signal, logger } = input;
+
+  try {
+    if (signal.aborted) {
+      // Core は既に「結果不明」として確定させている。何を返しても記録されない（設計 §6.6）。
+      return { ok: false, reason: ABORTED_REASON, retryable: false };
+    }
+
+    const media = post.media;
+    logger.info('Bluesky へ配信する', { postId: post.id, attempt, mediaCount: media.length });
+
+    const fail = (failure: AtprotoFailure): PublishResult => {
+      logger.warn('Bluesky への配信に失敗した', {
+        postId: post.id,
+        attempt,
+        phase: failure.phase,
+        status: failure.status,
+        mediaCount: media.length,
+      });
+      const result = {
+        ok: false as const,
+        reason: reasonFor(failure),
+        retryable: failure.retryable,
+      };
+      return failure.retryAfterMs === undefined
+        ? result
+        : { ...result, retryAfterMs: failure.retryAfterMs };
+    };
+
+    // **毎回読む。** `activate()` の時点で閉じ込めると、設定を変えても再起動するまで効かない。
+    let resolution: PdsUrlResolution;
+    try {
+      resolution = await resolvePdsUrl(options.store);
+    } catch {
+      // まだ何も送っていない（設計 §6.9 の P0）。
+      logger.warn('Plugin の設定を読み出せなかった', { postId: post.id, attempt, phase: 'config' });
+      return { ok: false, reason: STORE_REASON, retryable: true };
+    }
+    if (!resolution.ok) {
+      // 人が設定を直すまで直らない。**`fetch` を1度も呼ばない。**
+      logger.warn('PDS の URL の設定が不正', { postId: post.id, attempt, phase: 'config' });
+      return { ok: false, reason: configReason(resolution.reason), retryable: false };
+    }
+    const pdsUrl = resolution.url;
+
+    // **`embed` は1つしか持てない。** 片方を黙って捨てない（設計 §6.8）。
+    const link = linkOf(post);
+    if (media.length > 0 && link !== null) {
+      return { ok: false, reason: EMBED_CONFLICT_REASON, retryable: false };
+    }
+
+    const impl = resolveFetch(options.fetch);
+
+    // **`publish()` 1回につき `createSession` 1回。`refreshJwt` は捨てる**（設計 §6.5）。
+    const session = await createSession({
+      impl,
+      pdsUrl,
+      identifier: credential['identifier'] ?? '',
+      password: credential['appPassword'] ?? '',
+      signal,
+    });
+    if (!session.ok) {
+      return fail(session.failure);
+    }
+    const { did, handle, accessJwt } = session.value;
+
+    // **媒体は1件ずつ順に処理する。** 並行に取りに行くと相手側の Rate Limit を自分で踏む（設計 §6.6）。
+    const images: { readonly image: unknown; readonly alt: string }[] = [];
+    const mediaDeadline = Date.now() + MEDIA_TOTAL_BUDGET_MS;
+    for (const item of media) {
+      if (Date.now() > mediaDeadline) {
+        // まだ `createRecord` を呼んでいないので、諦めても投稿は作られていない。
+        return fail({ phase: 'media', kind: 'budget', retryable: true });
+      }
+      const fetched = await fetchMedia({ impl, url: item.url, signal });
+      if (!fetched.ok) {
+        return fail(fetched.failure);
+      }
+      const uploaded = await uploadBlob({ impl, pdsUrl, accessJwt, media: fetched.value, signal });
+      if (!uploaded.ok) {
+        return fail(uploaded.failure);
+      }
+      images.push({ image: uploaded.value, alt: item.alt ?? '' });
+    }
+
+    const record: Record<string, unknown> = {
+      $type: POST_COLLECTION,
+      text: post.body,
+      // **実際に送った時刻。** `post.scheduledAt` は使わない（設計 §6.3）。
+      createdAt: (options.now ?? (() => new Date()))().toISOString(),
+    };
+
+    const langs = langsOf(post);
+    if (langs !== null) {
+      record['langs'] = langs;
+    }
+
+    // **Bluesky は本文の URL を自動ではリンクにしない**（設計 §6.7）。見つからなければ付けない。
+    const facets = detectLinkFacets(post.body);
+    if (facets.length > 0) {
+      record['facets'] = facets;
+    }
+
+    if (images.length > 0) {
+      record['embed'] = { $type: 'app.bsky.embed.images', images };
+    } else if (link !== null) {
+      record['embed'] = {
+        $type: 'app.bsky.embed.external',
+        external: { uri: link, title: hostnameOf(link), description: '' },
+      };
+    }
+
+    const created = await createRecord({
+      impl,
+      pdsUrl,
+      accessJwt,
+      body: { repo: did, collection: POST_COLLECTION, record },
+      signal,
+    });
+    if (!created.ok) {
+      return fail(created.failure);
+    }
+
+    logger.info('Bluesky へ配信した', { postId: post.id, attempt, mediaCount: media.length });
+
+    const rkey = created.value.rkey;
+    return {
+      ok: true,
+      externalId: rkey,
+      // **外から来た文字列をそのまま URL へ差し込まない**（設計 §6.4）。
+      externalUrl: `${APP_VIEW_URL}/profile/${encodeURIComponent(handle)}/post/${encodeURIComponent(rkey)}`,
+      // **`rotatedCredential` は返さない。** App Password は固定である（設計 §6.5）。
+    };
+  } catch {
+    // **分類できなければ `false`**（設計 §6.9 の「どこでも」）。
+    safeError(logger, post.id, attempt);
+    return { ok: false, reason: UNEXPECTED_REASON, retryable: false };
+  }
+}
+
+/** 失敗の記録そのもので `publish()` が投げないようにする。 */
+function safeError(logger: PluginLogger, postId: string, attempt: number): void {
+  try {
+    logger.error('Bluesky への配信で予期しない問題が起きた', { postId, attempt });
+  } catch {
+    // ログが出せないことを理由に例外を投げない。
+  }
+}
+
 /**
  * Bluesky の publisher を組み立てる。
  *
  * `store` は `pds-url` を読むためだけに渡す（設計 §10.1）。
  */
-export function createBlueskyPublisher(_options: BlueskyPublisherOptions): PublisherRegistration {
+export function createBlueskyPublisher(options: BlueskyPublisherOptions): PublisherRegistration {
   return {
     provider: BLUESKY_PROVIDER,
     label: 'Bluesky',
@@ -205,6 +561,11 @@ export function createBlueskyPublisher(_options: BlueskyPublisherOptions): Publi
     }): readonly PublisherValidationProblem[] {
       // **同期で返す。** Promise を返すと 5 秒の打ち切りに近づくだけで得が無い。
       return validateDraft(input.post);
+    },
+
+    async publish(input: PublishInput): Promise<PublishResult> {
+      // **例外を投げない。** すべての経路を `try` で包み、`PublishResult` として返す（設計 §6.11）。
+      return await publishPost(options, input);
     },
 
     manual(input: ManualInput): ManualHandoff {
