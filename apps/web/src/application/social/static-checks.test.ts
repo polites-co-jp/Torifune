@@ -4,6 +4,12 @@ import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { SOCIAL_PUBLISH_JOB } from '@/application/jobs/definitions';
 import { JOB_NAMES } from '@/domain/jobs/job';
+import {
+  MANUAL_TIMEOUT_MS,
+  PUBLISH_MAX_SKIPS,
+  VALIDATE_TIMEOUT_MS,
+  skipFailureReason,
+} from '@/domain/social/publishing';
 import { JOB_LABEL } from '@/ui/analytics/labels';
 
 /**
@@ -173,6 +179,7 @@ describe('#18 SNS 配信の公開契約の境界', () => {
 describe('#81 ドキュメントの改訂', () => {
   const guide = readFileSync(join(DOCS_DIR, 'Plugin開発ガイド.md'), 'utf8');
   const eventReference = readFileSync(join(DOCS_DIR, 'Eventリファレンス.md'), 'utf8');
+  const externalManual = readFileSync(join(DOCS_DIR, 'マニュアル', 'SNS投稿の外部連携.md'), 'utf8');
 
   it('#81 Plugin開発ガイドに「Core は Plugin へ資格情報を渡さない」が無い', () => {
     // 035 で方針を改めた（設計 §12）。残っていると公開ガイドが実装と食い違う。
@@ -283,6 +290,137 @@ describe('#81 ドキュメントの改訂', () => {
     ]) {
       expect(manual, `${token} の説明が無い`).toContain(token);
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // 2026-09-23 の改訂（設計 §12 の末尾 4 行）。
+  //
+  // 裁定 #10（検証レポート A-1）・検証レポート L-4・裁定 #9 を、
+  // **読み手が事故を避けられる文言として**文書に固定する。実装は変えていないので、
+  // これらの文が消えると文書だけが実装より甘くなる。
+  // -------------------------------------------------------------------------
+
+  /**
+   * 裁定 #10 / 検証レポート A-1。**トークンは名前空間であって分離境界ではない**（設計 §8.1）。
+   *
+   * 「トークン 1 本 = 外部アプリ 1 つ」とだけ書かれたマニュアルを読んだ運用者が
+   * 第三者のアプリへトークンを配ると、その第三者が他のアプリの投稿を書き換え、
+   * 他のアカウントの資格情報を上書きできる。**この一文が消えることが事故の入口である。**
+   */
+  it('#81 マニュアルが「トークンは名前空間であって分離境界ではない」と書いている', () => {
+    expect(externalManual).toMatch(/トークンは名前空間であって、分離境界ではない/);
+    expect(externalManual).toContain('トークンを分けても、データは分かれない');
+  });
+
+  it.each([
+    ['他のアプリの投稿が読めること', '本文ごと全件返る'],
+    ['他のアプリの投稿を書き換えられること', 'B の SNS アカウントで任意の文章を公開できる'],
+    ['他のアプリの投稿を取り消せること', 'DELETE /api/v1/social/posts/{B の投稿の id}'],
+    ['他のアカウントの資格情報を上書きできること', 'B が登録した資格情報を上書き・削除できる'],
+  ])('#81 マニュアルが %s を具体的に書いている', (_label, token) => {
+    expect(externalManual).toContain(token);
+  });
+
+  it('#81 マニュアルが「信頼できない第三者のアプリへ渡さない」と書いている', () => {
+    // 裁定 #10 が「マニュアルに書く」と決めた文そのもの。
+    expect(externalManual).toContain('信頼できない第三者のアプリへ渡さない');
+    expect(externalManual).toContain('他のアプリが登録した投稿の閲覧・書き換え・取り消し');
+    expect(externalManual).toContain('他のアカウントの資格情報の上書きができる');
+  });
+
+  /**
+   * 検証レポート L-4。冪等キーは `(created_by_token_id, external_ref)` なので、
+   * **トークンを差し替えると名前空間が黙って変わる。**
+   */
+  it('#81 マニュアルがトークンの差し替えで冪等キーの名前空間が変わると書いている', () => {
+    expect(externalManual).toContain('冪等キーの名前空間が黙って変わる');
+    expect(externalManual).toContain('SNS には同じ内容が 2 回出る');
+  });
+
+  it('#81 マニュアルが「未確定の登録が無い時点で差し替える」と書いている', () => {
+    expect(externalManual).toContain('未確定の登録が無い時点で差し替える');
+  });
+
+  /**
+   * 裁定 #9。**支度が整わない予約は約 24 時間で `failed`。**
+   * `failureReason` は Domain が組み立てた文字列がそのまま外部アプリへ出るので、
+   * **実装の文言と突き合わせる**（どちらかだけ直すと案内が嘘になる）。
+   */
+  it('#81 マニュアルが「支度が整わない予約は約 24 時間で取りやめ」と書いている', () => {
+    expect(externalManual).toContain('待つのは約 24 時間まで');
+    expect(externalManual).toContain('3 回飛ばした時点で取りやめ');
+  });
+
+  it.each([
+    ['配信 Plugin が無いとき', 'no_publisher' as const],
+    ['資格情報が未設定のとき', 'credential_missing' as const],
+  ])('#81 マニュアルに %s の failureReason が実装どおり載っている', (_label, reason) => {
+    expect(externalManual).toContain(skipFailureReason(reason));
+  });
+
+  it('#81 マニュアルが「failed は終端。新しい投稿として登録し直す」と書いている', () => {
+    expect(externalManual).toContain('`failed` は終端。支度が整っても自動では戻らない');
+    expect(externalManual).toContain('新しい投稿として登録し直す');
+  });
+
+  it('#81 マニュアルの「状態の読み方」に支度待ちの行がある', () => {
+    const line = externalManual.split('\n').find((row) => row.startsWith('| **支度待ち** |'));
+
+    expect(line, '「支度待ち」の行が無い').toBeDefined();
+    // 再試行待ちとの見分けは `failureReason` が空かどうか（skipCount は API に出ない）。
+    expect(line).toContain('failureReason');
+  });
+
+  /**
+   * 検証レポート L-1 の始末。**伏せ字は機構であって契約ではない。**
+   * 「完全一致の 4 文字以上しか消せない」を落とすと、
+   * Plugin 作者が伏せ字を当てにして値を渡す。
+   */
+  it('#81 Plugin開発ガイドが logger の伏せ字の限界（4 文字以上の完全一致）を書いている', () => {
+    expect(guide).toContain('4 文字以上の値');
+    expect(guide).toContain('そのままの形で');
+    expect(guide).toContain('伏せる仕掛けを当てにせず、値を渡さない');
+  });
+
+  /**
+   * 検証レポート L-3。`validate()` / `manual()` の制限時間（設計 §6.6）。
+   *
+   * **「呼ばれる場面と制限時間」の表だけを見る。** 同じ `| \`validate\` |` で始まる行は
+   * 直前の「役割」の表にもあり、文書全体から探すと常にそちらが先に当たってしまう。
+   */
+  it.each([
+    ['validate', VALIDATE_TIMEOUT_MS],
+    ['manual', MANUAL_TIMEOUT_MS],
+  ])('#81 Plugin開発ガイドの制限時間の表で %s の上限が実装と合っている', (name, timeoutMs) => {
+    const start = guide.search(/^#### 呼ばれる場面と制限時間$/m);
+    expect(start, '「呼ばれる場面と制限時間」の節が無い').toBeGreaterThanOrEqual(0);
+    const rest = guide.slice(start + 1);
+    const end = rest.search(/^#### /m);
+    const section = end === -1 ? rest : rest.slice(0, end);
+
+    const line = section.split('\n').find((row) => row.startsWith(`| \`${name}\` |`));
+
+    expect(line, `${name} の行が無い`).toBeDefined();
+    expect(line).toContain(`**${timeoutMs / 1000} 秒**`);
+  });
+
+  /** 検証レポート S-2。publisher が無い間に登録された投稿は配信直前が唯一の判定機会。 */
+  it('#81 Plugin開発ガイドが「limits / validate は配信直前にも掛かる」と書いている', () => {
+    expect(guide).toContain('配信直前にももう一度掛かる');
+    expect(guide).toContain('配信直前が唯一の判定機会');
+  });
+
+  /** 裁定 #9 を Plugin 作者の側からも読めるようにする。 */
+  it('#81 Plugin開発ガイドが「支度が整わない予約は約 24 時間で failed」と書いている', () => {
+    expect(guide).toContain('待つのは約 24 時間まで');
+    expect(guide).toMatch(/予約時刻からおよそ 24 時間で `failed`/);
+    expect(guide).toContain(`同じ理由で ${PUBLISH_MAX_SKIPS} 回飛ばした時点`);
+  });
+
+  /** 設計 §7.9。**宣言が導入前に見えるところまでが 035 の責任。** */
+  it('#81 Plugin開発ガイドが extensions は導入前の Plugin マネージャに出ると書いている', () => {
+    expect(guide).toContain('導入前の Plugin マネージャ');
+    expect(guide).toContain('SNS配信（SNSアカウントの資格情報を受け取ります）');
   });
 });
 
