@@ -30,6 +30,25 @@ test('Plugin が無ければ、追加への導線が出る', async ({ page }) =>
 });
 
 /**
+ * 036 Bluesky 配信 Plugin 受け入れ条件 #72（035 #103 / #104 と同じ場所）。
+ *
+ * **導入前に読めることが要点。** 資格情報を受け取る拡張点を握る Plugin かどうかは、
+ * 入れてしまった後に分かるのでは遅い。
+ *
+ * **ここでは導入も有効化もしない。** 外部への通信を1本も出さない（#73）。
+ */
+test('検出済みに「Bluesky配信」が導入前から並び、握る拡張点が読める', async ({ page }) => {
+  await page.goto('/plugins');
+
+  const detected = page.locator('section[aria-labelledby="detected-heading"]');
+  await expect(detected.getByRole('heading', { name: /Bluesky配信/ })).toBeVisible();
+
+  const card = detected.locator('section').filter({ hasText: 'Bluesky配信' });
+  await expect(card.getByText('SNS配信（SNSアカウントの資格情報を受け取ります）')).toBeVisible();
+  await expect(card.getByText('画面の拡張')).toBeVisible();
+});
+
+/**
  * Registry タブ（020-plugin-registry 設計 §2.7）。
  *
  * E2E の環境では Registry を設定していない。
