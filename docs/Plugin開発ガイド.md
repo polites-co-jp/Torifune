@@ -507,7 +507,7 @@ Plugin を入れる側が「どの Plugin が資格情報を受け取るか」�
 
 | 項目 | 役割 |
 | --- | --- |
-| `credentialFields` | **資格情報の形の宣言だけ。** 入力欄の描画・形式検証・暗号化・保存・再表示しないことは Torifune が持つ。`kind: 'secret'` は打ち込むときに伏せる項目という意味で、保存はどの項目も暗号化される。空なら資格情報なしで `publish()` が呼ばれる（`credential` は `{}`） |
+| `credentialFields` | **資格情報の形の宣言だけ。** 入力欄の描画・形式検証・暗号化・保存・再表示しないことは Torifune が持つ。`kind: 'secret'` は打ち込むときに伏せる項目という意味で、保存はどの項目も暗号化される。空なら資格情報なしで `publish()` が呼ばれる（`credential` は `{}`）。**空なら `/social` に資格情報の欄を出さない**（アカウント追加にも、行の「資格情報を設定」にも出ない）。各項目の `description` は `/social` の欄の下に説明として出る（入力の時点で読ませたいこと、たとえばどこで・どの権限で発行するかを書く） |
 | `limits` | `bodyMaxLength` / `mediaRequired` / `mediaMax`。**適用するのは Torifune**（投稿の登録時に 422 で弾く）。文字数の数え方は SNS ごとに違うので、ここは早く弾くための粗い上限 |
 | `validate` | 事前検査。`field` は要求のフィールド名（`body` / `media` / `link` / `providerOptions.<key>`）。返した文言がそのまま 422 の `details` と投稿フォームに出る |
 | `publish` | 自動配信。**1 回送るだけ。** 再試行の回数・間隔・打ち切りは Torifune が決める |
