@@ -1138,17 +1138,29 @@ test.describe('#108 編集画面の配信方法', () => {
  * > 条件が指しているのは「導入前に見える一覧」という場所であり、ここではその実物を開く。
  */
 test.describe('#104 Plugin マネージャの拡張点', () => {
+  /**
+   * **サンプル Plugin の行に絞る。**
+   *
+   * もとは `page.getByText(/SNS配信/)` とページ全体を見ていたが、
+   * **`036` が 2 つ目の `social` Plugin を足した時点で strict mode に触れて落ちた**。
+   * テスト名は「サンプル Plugin の**行に**」と言っているのに、ロケータがそれを守っていなかった
+   * （Plugin が 1 つしか無いあいだだけ通っていた）。**絞るのは弱めることではなく、名前どおりにすること。**
+   */
+  function examplePluginCard(page: Page) {
+    return page.locator('section').filter({ hasText: 'サンプルPlugin' }).last();
+  }
+
   test('#104 サンプル Plugin の行に「SNS配信」が出る', async ({ page }) => {
     await page.goto('/plugins');
 
     await expect(page.getByText('サンプルPlugin  1.0.0')).toBeVisible();
-    await expect(page.getByText(/SNS配信/)).toBeVisible();
+    await expect(examplePluginCard(page).getByText(/SNS配信/)).toBeVisible();
   });
 
   test('#104 何を握るかが読める文言になっている', async ({ page }) => {
     await page.goto('/plugins');
 
-    await expect(page.getByText(/資格情報を受け取ります/)).toBeVisible();
+    await expect(examplePluginCard(page).getByText(/資格情報を受け取ります/)).toBeVisible();
   });
 
   test('#104 有効化した後は登録済みの provider として example が出る', async ({ page }) => {
