@@ -307,15 +307,16 @@ curl -H "Authorization: Bearer $TORIFUNE_TOKEN" \
 | --- | --- |
 | 配信待ち | `status: "scheduled"` で `attemptCount: 0`、`nextAttemptAt: null` |
 | 再試行待ち | `status: "scheduled"` で `nextAttemptAt` が入っている（`failureReason` に前回の理由） |
-| **支度待ち** | `status: "scheduled"` で `nextAttemptAt` が入っているのに **`failureReason` が空**。配信の支度がまだ整っていない（下記） |
+| **支度待ち** | `status: "scheduled"` で `nextAttemptAt` が入っているのに **`failureReason` が空**。配信の支度がまだ整っていない（下記）。`skipCount` が 1 以上になる |
 | 配信済み | `status: "published"`。`publishedAt` と、Plugin が返せば `externalId` / `externalUrl` |
 | 失敗 | `status: "failed"`。`failedAt` と `failureReason` |
 
 **「再試行待ち」と「支度待ち」は `failureReason` で見分ける。**
 一度でも配信を試みていれば理由が入り、まだ試みていなければ空のままになる
-（`attemptCount` も 0 のまま）。
+（`attemptCount` も 0 のまま）。**`skipCount` でも見分けられる**（支度待ちだけが 1 以上になる）。
 
 * `attemptCount` は**着手した回数**。再試行は 1 → 2 → 4 → 8 分の間隔で、**最大 5 回**で打ち切る
+* `skipCount` は**飛ばされた回数**。着手していないので `attemptCount` とは別に数える（下記）
 * `externalUrl` は https のときだけ記録される。手動投稿（§6）では人が貼るとは限らないので空になりうる
 
 ### 失敗の理由（`failureReason`）
@@ -389,9 +390,50 @@ Torifune が付けた理由が入る。資格情報が混じらないよう、�
 > **新しい投稿として登録し直す**（`externalRef` も新しい値にする。
 > 同じ値では既存の `failed` の投稿が 200 で返るため）。
 
-運用者側にも気づく手段がある（管理画面 `/social` に「配信 Plugin なし」「資格情報が未設定」の警告が出る。
+運用者側にも気づく手段がある（管理画面 `/social` に「配信 Plugin なし」「資格情報が未設定」の警告と
+「支度待ち・あと n 回で取りやめ」の補足が出る。
 飛ばした件数は配信の実行結果の `skipped` / `skipFailed`。§7）ので、
 **外部アプリから `scheduled` のまま動かない投稿が見えたら、取りやめになる前に運用者へ確認してもらう。**
+
+#### 飛ばされた回数を見る
+
+**飛ばされた回数は応答の `skipCount` に出る。** 予約し直しても減らない（すぐ上の枠）ので、
+**予約し直す前に残り回数を確かめる**こと。あと 1 回しかないなら、日時を直す前に支度を整える。
+
+```json
+{ "data": { "id": "…", "status": "scheduled",
+            "skipCount": 2, "skipReason": "no_publisher",
+            "attemptCount": 0, "failureReason": null,
+            "nextAttemptAt": "2026-10-02T08:00:00.000Z", … } }
+```
+
+| 項目 | 意味 |
+| --- | --- |
+| `skipCount` | **同じ理由で続けて飛ばされた回数。** 理由が変われば 1 から数え直す。配信に着手できた時点で 0 に戻る |
+| `skipReason` | **飛ばした理由。** 飛ばされていなければ `null` |
+
+`skipReason` に入る値は次の 3 つ。
+
+| 値 | 何が足りないか |
+| --- | --- |
+| `no_publisher` | その provider の配信 Plugin が入っていない（または配信を実装していない） |
+| `credential_missing` | そのアカウントの資格情報がまだ登録されていない |
+| `account_missing` | 投稿の指しているアカウントが見つからない |
+
+**上限は 3 回**で、**残りは `3 - skipCount` 回**である
+（`skipCount: 2` なら次に飛ばされた時点で取りやめ）。
+`attemptCount`（配信に着手した回数）とは別に数えているので、両方を見ること。
+
+> **3 回目に達した投稿は `failed` の終端で、予約へは戻せない。**
+> 支度を整えても、その投稿が予約に戻ることはない。できるのは
+> **新しい投稿として作り直す**こと（`externalRef` も新しい値にする。
+> 同じ値では既存の `failed` の投稿が 200 で返るため）だけである。
+> **`skipCount` を見るのは、取りやめが来る前に支度を整えるため**であって、
+> 取りやめた後に戻すためではない。
+
+> **回数と間隔は Torifune の版で変わりうる。** `skipCount` は「残りを数えるための目安」として読み、
+> **分岐の条件を `skipCount` の具体的な値に固定しない。** 配信されたかどうかは
+> `status` と `failureReason` が答える（上の「状態の読み方」）。
 
 ### イベント・Webhook で受け取る
 
