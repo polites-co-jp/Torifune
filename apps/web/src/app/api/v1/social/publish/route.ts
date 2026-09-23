@@ -51,6 +51,7 @@ export const POST = defineRoute({
       interrupted: Number(summary['interrupted'] ?? 0),
       due: Number(summary['due'] ?? 0),
       skipped: Number(summary['skipped'] ?? 0),
+      skipFailed: Number(summary['skipFailed'] ?? 0),
       attempted: Number(summary['attempted'] ?? 0),
       published: Number(summary['published'] ?? 0),
       retried: Number(summary['retried'] ?? 0),

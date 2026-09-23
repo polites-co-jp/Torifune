@@ -231,6 +231,11 @@ export interface SocialPostsTable {
   attempt_count: Generated<number>;
   /** 再試行の予定。NULL なら `scheduled_at` で判定する。 */
   next_attempt_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  // ここから 023_social_publish_skip.sql（035-social-publishing 設計 §5.1.1）。
+  /** 同じ理由で続けて飛ばした回数。**`attempt_count` とは別**（あれは publish() を呼んだ回数）。 */
+  skip_count: Generated<number>;
+  /** どの理由で飛ばしたか。NULL なら飛ばされていない。 */
+  skip_reason: string | null;
 }
 
 export interface PluginsTable {

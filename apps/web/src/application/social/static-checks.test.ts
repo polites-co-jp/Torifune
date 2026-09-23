@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -18,6 +19,7 @@ const SRC_DIR = join(import.meta.dirname, '..', '..');
 /** apps/web/src → リポジトリルート */
 const REPO_ROOT = join(SRC_DIR, '..', '..', '..');
 const DOCS_DIR = join(REPO_ROOT, 'docs');
+const MIGRATIONS_DIR = join(REPO_ROOT, 'migrations');
 
 function withoutComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
@@ -415,6 +417,84 @@ describe('#84 Plugin 由来の自由文の秘匿', () => {
     );
 
     expect(source).toMatch(/reason:/);
+  });
+});
+
+/**
+ * #85 の (E)。**マイグレーションと Domain の列挙が食い違わないこと**（設計 §5.1.1）。
+ *
+ * `skip_reason` は DB の CHECK と Domain の `SkipReason` の 2 か所に書かれる。
+ * 片方だけ増やすと、書けない値を Application が作るか、Domain の知らない値が
+ * DB に入る。**どちらも静的に検出できる。**
+ *
+ * `022` は適用済みなので、内容が変わっていないことも併せて固定する
+ * （前進のみのランナーは、適用済みのファイルを書き換えても当て直さない）。
+ */
+describe('#85 023 のマイグレーションと Domain の列挙', () => {
+  /** リポジトリのマイグレーションを読む（改行コードの違いを吸収する）。 */
+  function migrationSource(name: string): string {
+    const path = join(MIGRATIONS_DIR, name);
+    expect(existsSync(path), `migrations/${name} が無い`).toBe(true);
+    return readFileSync(path, 'utf8').replaceAll('\r\n', '\n');
+  }
+
+  /**
+   * `022_social_publishing.sql` の内容（改行を LF にそろえたもの）の SHA-256。
+   *
+   * 2026-09-23 に裁定 #9 を入れる前の版。**適用済みなので書き換えない。**
+   * 足りない列は `023` で足す。
+   */
+  const SHA256_OF_022 = '71ce89e8c855bdb2df3e370f84f67e4b61e913c6fbf325e826b12eef75dede01';
+
+  it('#85 022_social_publishing.sql のファイル内容が変わっていない', () => {
+    const digest = createHash('sha256')
+      .update(migrationSource('022_social_publishing.sql'), 'utf8')
+      .digest('hex');
+
+    expect(
+      digest,
+      '022 は適用済み。足りない列は 023_social_publish_skip.sql で足す（設計 §5.1.1）',
+    ).toBe(SHA256_OF_022);
+  });
+
+  it('#85 023_social_publish_skip.sql がある', () => {
+    expect(existsSync(join(MIGRATIONS_DIR, '023_social_publish_skip.sql'))).toBe(true);
+  });
+
+  it('#85 SKIP_REASONS の値の集合が 023 の CHECK に書かれた値と一致する', async () => {
+    // **静的 import にしない。** 未実装の段階でこのファイル全体が読めなくなると、
+    // 既存の静的検査（#59 / #81〜#84）まで一緒に落ちて、何が壊れたのか読めなくなる。
+    const domain = (await import('@/domain/social/publishing')) as {
+      readonly SKIP_REASONS?: readonly string[];
+    };
+    const source = migrationSource('023_social_publish_skip.sql');
+    const clause = /skip_reason\s+IN\s*\(([^)]*)\)/i.exec(source);
+
+    expect(clause, '023 に skip_reason の CHECK が無い').not.toBeNull();
+    const inSql = [...(clause?.[1] ?? '').matchAll(/'([^']*)'/g)].map((match) => match[1]).sort();
+
+    expect(inSql.length, 'CHECK から値を読み取れない').toBeGreaterThan(0);
+    expect([...(domain.SKIP_REASONS ?? [])].sort()).toEqual(inSql);
+  });
+});
+
+/**
+ * #87 の (E)。**判定の二重実装が無いこと**（設計 §5.6.2 / §6.1.2 の枠）。
+ *
+ * `limits` の判定を登録時と配信直前で別々に書くと、片方だけ直したときに
+ * 「登録では弾かれるのに配信では通る」が黙って生まれる。**同じ 1 つの関数を使う。**
+ */
+describe('#87 limits の判定を 1 か所に持つ', () => {
+  it.each([
+    [
+      'application/social/social-use-cases.ts',
+      join(SRC_DIR, 'application', 'social', 'social-use-cases.ts'),
+    ],
+    ['application/social/publish.ts', join(SRC_DIR, 'application', 'social', 'publish.ts')],
+  ])('#87 %s が checkPublisherLimits を使っている', (_label, path) => {
+    const source = withoutComments(readFileSync(path, 'utf8'));
+
+    expect(source).toContain('checkPublisherLimits');
   });
 });
 

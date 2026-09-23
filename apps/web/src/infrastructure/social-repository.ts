@@ -10,7 +10,8 @@ import type {
   SocialAccountWithCredential,
   SocialPost,
 } from '../domain/social/social';
-import type { PublishVerdict } from '../domain/social/publishing';
+import type { PublishVerdict, SkipReason, SkipVerdict } from '../domain/social/publishing';
+import { isSkipReason } from '../domain/social/publishing';
 import type {
   InterruptedPost,
   NewSocialAccount,
@@ -89,6 +90,18 @@ interface PostRow {
   publish_started_at: Date | null;
   attempt_count: number;
   next_attempt_at: Date | null;
+  skip_count: number;
+  skip_reason: string | null;
+}
+
+/**
+ * 飛ばした理由を Domain の列挙へ落とす。
+ *
+ * DB の CHECK と `SKIP_REASONS` は 1 対 1（静的検査で固定）だが、
+ * 古い行や手で書き換えられた値を型の嘘にしない。知らない値は「飛ばされていない」に倒す。
+ */
+function toSkipReason(value: string | null): SkipReason | null {
+  return value !== null && isSkipReason(value) ? value : null;
 }
 
 function toPost(row: PostRow): SocialPost {
@@ -115,6 +128,8 @@ function toPost(row: PostRow): SocialPost {
     // integer の列だが、ドライバの設定によっては文字列で返りうる。
     attemptCount: Number(row.attempt_count),
     nextAttemptAt: row.next_attempt_at,
+    skipCount: Number(row.skip_count),
+    skipReason: toSkipReason(row.skip_reason),
   };
 }
 
@@ -140,6 +155,8 @@ const POST_COLUMNS = [
   'publish_started_at',
   'attempt_count',
   'next_attempt_at',
+  'skip_count',
+  'skip_reason',
 ] as const;
 
 /**
@@ -450,6 +467,9 @@ export const socialRepository: SocialRepository = {
     }
     if (patch.externalId !== undefined) values['external_id'] = patch.externalId;
     if (patch.externalUrl !== undefined) values['external_url'] = patch.externalUrl;
+    if (patch.nextAttemptAt !== undefined) values['next_attempt_at'] = patch.nextAttemptAt;
+    if (patch.skipCount !== undefined) values['skip_count'] = patch.skipCount;
+    if (patch.skipReason !== undefined) values['skip_reason'] = patch.skipReason;
 
     const row = await connection.db
       .updateTable('social_posts')
@@ -549,6 +569,40 @@ export const socialRepository: SocialRepository = {
     return rows.map((row) => toPost(row as PostRow));
   },
 
+  async deferSkipped(connection: Connection, id: string, verdict: SkipVerdict): Promise<number> {
+    if (!UUID_PATTERN.test(id)) return 0;
+
+    const values: Record<string, unknown> = {
+      skip_count: verdict.skipCount,
+      skip_reason: verdict.reason,
+      updated_at: sql<Date>`now()`,
+    };
+
+    if (verdict.kind === 'deferred') {
+      // **後ろへ送るだけ。** `status` / `attempt_count` / `publish_started_at` /
+      // `failure_reason` は触らない（飛ばしたことを失敗として記録しない）。
+      values['next_attempt_at'] = verdict.nextAttemptAt;
+    } else {
+      values['status'] = 'failed';
+      values['failed_at'] = sql<Date>`now()`;
+      values['failure_reason'] = verdict.failureReason;
+      values['next_attempt_at'] = null;
+    }
+
+    const result = await connection.transaction(async (tx) =>
+      tx.db
+        .updateTable('social_posts')
+        .set(values as never)
+        .where('id', '=', id)
+        // **着手印を書く前の行だけ。** その間に誰かが触っていたら何もしない。
+        .where('status', '=', 'scheduled')
+        .where('publish_started_at', 'is', null)
+        .executeTakeFirst(),
+    );
+
+    return Number(result.numUpdatedRows);
+  },
+
   async claimForPublish(connection: Connection, id: string): Promise<SocialPost | null> {
     if (!UUID_PATTERN.test(id)) return null;
 
@@ -560,6 +614,10 @@ export const socialRepository: SocialRepository = {
           publish_started_at: sql<Date>`now()`,
           attempt_count: sql<number>`attempt_count + 1`,
           next_attempt_at: null,
+          // **着手できた時点で数え直しを消す**（設計 §5.1.1）。
+          // 一度でも publish() まで進めた行に、飛ばした履歴を残す意味は無い。
+          skip_count: 0,
+          skip_reason: null,
           updated_at: sql<Date>`now()`,
         } as never)
         .where('id', '=', id)

@@ -242,12 +242,16 @@ export const postPageSchema = pageEnvelope(postResponseSchema);
  * 配信の手動実行の応答（035-social-publishing 設計 §6.5.9 / §6.5.7）。
  *
  * **固定キーの数だけ。** 自由文は載せない（資格情報が混じりうる）。
- * `job_runs.summary` と同じ 8 キーで、監視から件数を読める。
+ * `job_runs.summary` と同じ 9 キーで、監視から件数を読める。
+ *
+ * `skipped`（後ろへ送った）と `skipFailed`（3 回飛ばして諦めた）を**1 つにまとめない**。
+ * まとめると「待っているだけ」と「諦めた」の区別がつかなくなる（裁定 #9）。
  */
 export const publishSummarySchema = z.object({
   interrupted: z.number(),
   due: z.number(),
   skipped: z.number(),
+  skipFailed: z.number(),
   attempted: z.number(),
   published: z.number(),
   retried: z.number(),

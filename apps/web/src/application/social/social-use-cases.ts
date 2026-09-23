@@ -11,6 +11,7 @@ import {
   validateCredentialAgainstFields,
   type CredentialField,
 } from '@/domain/social/credential';
+import { checkPublisherLimits } from '@/domain/social/publishing';
 import {
   canTransition,
   DELIVERED_STATUSES,
@@ -518,34 +519,21 @@ async function assertPostIsDeliverable(
   }
 
   const { registration } = publisher;
-  const label = registration.label;
-  const limits = registration.limits ?? {};
 
   // j〜l: publisher が宣言した上限。**`status` を問わず掛ける**（下書きの段階で分かるほうがよい）。
-  if (limits.bodyMaxLength !== undefined && subject.body.length > limits.bodyMaxLength) {
-    throw new ValidationError(
-      'SocialPost',
-      'body',
-      `本文は${limits.bodyMaxLength}文字以内にしてください（${label}）。`,
-    );
-  }
-  if (limits.mediaMax !== undefined && subject.media.length > limits.mediaMax) {
-    throw new ValidationError(
-      'SocialPost',
-      'media',
-      `媒体は${limits.mediaMax}件以内にしてください（${label}）。`,
-    );
-  }
-  if (
-    limits.mediaRequired === true &&
-    subject.deliveryMode === 'auto' &&
-    subject.media.length === 0
-  ) {
-    throw new ValidationError(
-      'SocialPost',
-      'media',
-      `${label} への配信には画像または動画が必要です。`,
-    );
+  //
+  // 判定は Domain の `checkPublisherLimits` が持つ。**配信直前の再検査（設計 §6.5.2.2）と
+  // 同じ 1 つの関数を使う。** 別々に書くと、片方だけ直したときに
+  // 「登録では弾かれるのに配信では通る」が黙って生まれる。
+  // ここでは**先頭 1 件**を `ValidationError` にする（現行の順序・文言は変えない）。
+  const limitProblems = checkPublisherLimits(
+    subject,
+    registration.limits ?? {},
+    registration.label,
+  );
+  const firstLimit = limitProblems[0];
+  if (firstLimit !== undefined) {
+    throw new ValidationError('SocialPost', firstLimit.field, firstLimit.message);
   }
 
   // m: publisher 自身の検査。複数のフィールドを一度に返せる。
@@ -858,6 +846,11 @@ export const updateSocialPost = defineUseCase<UpdatePostInput, SocialPost>({
         ...(input.providerOptions === undefined ? {} : { providerOptions: input.providerOptions }),
         ...(input.externalId === undefined ? {} : { externalId: input.externalId }),
         ...(input.externalUrl === undefined ? {} : { externalUrl: input.externalUrl }),
+        // **予約し直したら数え直しを消す**（035-social-publishing 設計 §5.1.1）。
+        // 戻さないと、後ろへ送られた予定を引きずったまま再予約され、指定した時刻に出ない。
+        ...(input.status === 'scheduled' && current.status !== 'scheduled'
+          ? { skipCount: 0, skipReason: null, nextAttemptAt: null }
+          : {}),
       }),
     );
 

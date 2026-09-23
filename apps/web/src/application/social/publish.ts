@@ -3,6 +3,8 @@ import type {
   PublishInput,
   PublishResult,
   PublisherRegistration,
+  SocialAccountView,
+  SocialPostView,
 } from '@torifune/plugin-api';
 import { recordSystemAudit } from '@/application/audit';
 import { emit } from '@/application/events';
@@ -20,16 +22,22 @@ import {
   type CredentialField,
 } from '@/domain/social/credential';
 import {
+  checkPublisherLimits,
   credentialMismatchReason,
   CREDENTIAL_MISSING_REASON,
   CREDENTIAL_UNREADABLE_REASON,
   decidePublishOutcome,
+  decideSkipOutcome,
   INTERRUPTED_REASON,
   PUBLISH_BATCH_SIZE,
   PUBLISH_TIMEOUT_MS,
+  publisherRejectedReason,
   redactCredentialValues,
+  VALIDATE_TIMEOUT_MS,
+  validateErrorReason,
   type PublishAttemptResult,
   type PublishVerdict,
+  type SkipReason,
 } from '@/domain/social/publishing';
 import type { SocialAccount, SocialPost } from '@/domain/social/social';
 import { encryptSecret } from '@/infrastructure/crypto/cipher';
@@ -50,8 +58,11 @@ import { socialRepository } from '@/infrastructure/social-repository';
  *   次の実行が同じ投稿をもう一度送る。SNS の投稿は取り消せない
  * * **`publish()` は直列に呼ぶ**（§6.5.2）。同じ provider の API を同時に叩くと
  *   Rate Limit を自分で踏む
- * * **「配信の支度ができていない」投稿は触らずに飛ばす**（要件 §4 裁定 #8）。
- *   配信 Plugin が無い・資格情報が未設定は失敗ではない。支度が整えば次の周期で配信される
+ * * **「配信の支度ができていない」投稿は後ろへ送る**（要件 §4 裁定 #8・#9）。
+ *   配信 Plugin が無い・資格情報が未設定は失敗ではない。支度が整えば次の周期で配信される。
+ *   ただし**行に痕跡を残さないと、その行が取り出しの先頭に居座り続けて
+ *   他のアカウントの配信まで止まる**ので、`next_attempt_at` を置いて後ろへ送り、
+ *   同じ理由で 3 回飛ばされたら `failed` にして順番待ちから外す（§6.5.2.1）
  * * **資格情報の平文を外へ出さない**（§6.5.5）。`Secret.expose()` を呼ぶのはこのファイルだけ
  */
 
@@ -61,8 +72,15 @@ export type PublishSummary = {
   readonly interrupted: number;
   /** 取り出した件数（≤ `PUBLISH_BATCH_SIZE`）。 */
   readonly due: number;
-  /** 配信の支度ができておらず**触らなかった**件数。 */
+  /** 配信の支度ができておらず**後ろへ送った**件数（`scheduled` のまま残る）。 */
   readonly skipped: number;
+  /**
+   * 同じ理由で 3 回飛ばされ、**諦めて `failed` にした**件数。
+   *
+   * **`failed` と混ぜない。** あちらは `publish()` を呼んだうえでの失敗で、
+   * 運用者が次にすべきことが違う。
+   */
+  readonly skipFailed: number;
   /** 着手して結果まで進んだ件数（= published + retried + failed + unrecorded）。 */
   readonly attempted: number;
   readonly published: number;
@@ -79,6 +97,12 @@ export interface PublishDueOptions {
    * **ジョブ定義は渡さない**（実装プラン §8 の 2）。結合テストが実時間で待たないための口。
    */
   readonly timeoutMs?: number;
+  /**
+   * 配信直前の `validate()` 1 回の上限（ミリ秒）。省略すると `VALIDATE_TIMEOUT_MS`。
+   *
+   * `timeoutMs` と同じく、結合テストが実時間で待たないための口。
+   */
+  readonly validateTimeoutMs?: number;
 }
 
 type PublishFn = NonNullable<PublisherRegistration['publish']>;
@@ -110,18 +134,48 @@ function credentialFieldsOf(registration: PublisherRegistration): readonly Crede
 }
 
 /**
+ * 自由文の中の資格情報を伏せる（文字列だけを置き換え、構造は壊さない）。
+ *
+ * Plugin が `logger.info('x', { pw: credential.appPassword })` と書いても、
+ * `maskSecrets` はキー名しか見ないので値が残る。**値まで機構で落とす**（設計 §6.5.5、L-1）。
+ */
+function redactDeep(value: unknown, values: readonly string[], depth = 0): unknown {
+  if (typeof value === 'string') {
+    return redactCredentialValues(value, values);
+  }
+  if (depth >= 5 || value === null || typeof value !== 'object') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => redactDeep(item, values, depth + 1));
+  }
+  const result: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    result[key] = redactDeep(item, values, depth + 1);
+  }
+  return result;
+}
+
+/**
  * publisher へ渡すログの口。
  *
  * **`plugin/logger.ts` を使わない。** Application から `plugin/` を import しない
  * （設計 §4.1、受け入れ条件 #82）。出力の直前で機密キーを落とすのは `log` が行う。
+ *
+ * それに加えて、**`message` と `fields` の文字列値へその行の資格情報の伏せ字を掛ける**
+ * （設計 §6.5.5、検証レポート L-1）。契約でなく機構で守れるものは機構で守る。
+ * **握りつぶさない。** 伏せたうえで Plugin のログ自体は残す。
  */
-function publisherLogger(pluginId: string): PluginLogger {
+function publisherLogger(pluginId: string, secretValues: readonly string[]): PluginLogger {
   const write = (
     level: 'debug' | 'info' | 'warn' | 'error',
     message: string,
     detail?: Record<string, unknown>,
   ): void => {
-    log[level](message, { pluginId, ...(detail === undefined ? {} : { detail }) });
+    log[level](redactCredentialValues(message, secretValues), {
+      pluginId,
+      ...(detail === undefined ? {} : { detail: redactDeep(detail, secretValues) }),
+    });
   };
 
   return {
@@ -352,6 +406,117 @@ interface PublishOneInput {
   readonly fields: readonly CredentialField[];
   readonly attempt: number;
   readonly timeoutMs: number;
+  readonly validateTimeoutMs: number;
+}
+
+/** 配信直前の `validate()` の結果。例外も制限時間超過も同じ「エラー」に畳む。 */
+type ValidateOutcome =
+  | { readonly type: 'ok'; readonly problems: readonly { field: string; message: string }[] }
+  | { readonly type: 'error'; readonly message: string };
+
+/**
+ * 配信直前の `validate()` を制限時間つきで 1 回呼ぶ（設計 §6.5.2.2）。
+ *
+ * `publish()` と同じく、**解決しない Promise に実行を止めさせない**。
+ * 放置された Promise は握って `unhandledRejection` にしない。
+ */
+async function callValidate(
+  validate: NonNullable<PublisherRegistration['validate']>,
+  input: { readonly post: SocialPostView; readonly account: SocialAccountView },
+  timeoutMs: number,
+): Promise<ValidateOutcome> {
+  const failed = (error: unknown): ValidateOutcome => ({
+    type: 'error',
+    message: messageOf(error),
+  });
+
+  let running: Promise<ValidateOutcome>;
+  try {
+    running = Promise.resolve(validate(input)).then(
+      (problems) => ({ type: 'ok', problems: [...problems] }) satisfies ValidateOutcome,
+      failed,
+    );
+  } catch (error) {
+    // 同期で投げる publisher。
+    running = Promise.resolve(failed(error));
+  }
+  void running.catch(() => undefined);
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<ValidateOutcome>((resolve) => {
+    timer = setTimeout(() => {
+      resolve({ type: 'error', message: '検査が制限時間内に終わりませんでした。' });
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([running, timedOut]);
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+/**
+ * 配信直前の再検査（設計 §6.5.2.2、検証レポート S-2）。
+ *
+ * **publisher が無い間に登録された投稿は `limits` も `validate()` も一度も通っていない。**
+ * 裁定 #8 で「配信 Plugin が無くても予約できる」ことにした以上、
+ * その投稿にとって**配信時が唯一の判定機会**である。
+ *
+ * 通らなければ `publish()` を呼ばずに `failed`。**再試行しない**
+ * （宣言に合わない投稿は、時間が経っても合うようにはならない）。
+ * 理由は「未送信」と読める文言にし、「結果不明」と混ぜない。
+ *
+ * この時点では資格情報をまだ復号していないので、伏せるのは `redactSecrets` だけ。
+ */
+async function precheck(input: PublishOneInput): Promise<PublishVerdict | null> {
+  const { registration } = input.publisher;
+
+  // 1: publisher が宣言した上限。**§6.1.2 の j〜l と同じ関数**を使う。
+  const limitProblems = checkPublisherLimits(
+    input.post,
+    registration.limits ?? {},
+    registration.label,
+  );
+  if (limitProblems.length > 0) {
+    return { kind: 'failed', reason: publisherRejectedReason(limitProblems) };
+  }
+
+  if (registration.validate === undefined) {
+    return null;
+  }
+
+  // 2・3: publisher 自身の検査。例外・制限時間超過も**未送信**として扱う。
+  const outcome = await callValidate(
+    registration.validate,
+    { post: toPostView(input.post), account: toAccountView(input.account) },
+    input.validateTimeoutMs,
+  );
+
+  if (outcome.type === 'error') {
+    log.warn('social publisher validate failed before publish', {
+      postId: input.post.id,
+      accountId: input.account.id,
+      provider: input.account.provider,
+      pluginId: input.publisher.pluginId,
+    });
+    return { kind: 'failed', reason: validateErrorReason(redactSecrets(outcome.message)) };
+  }
+  if (outcome.problems.length === 0) {
+    return null;
+  }
+
+  return {
+    kind: 'failed',
+    reason: publisherRejectedReason(
+      outcome.problems.map((problem) => ({
+        field: redactSecrets(problem.field),
+        message: redactSecrets(problem.message),
+      })),
+    ),
+  };
 }
 
 /** 結果を書き戻し、ログとイベントを出す（設計 §6.5.2 の f・g）。 */
@@ -409,6 +574,12 @@ async function recordAndReport(
 async function publishOne(input: PublishOneInput): Promise<RowOutcome> {
   const { connection, post, account, publisher, fields, attempt } = input;
 
+  // b2: 配信直前の再検査。**`publish()` を呼ぶ前に、着手した行の内容へ掛ける。**
+  const rejected = await precheck(input);
+  if (rejected !== null) {
+    return recordAndReport(input, rejected, 0);
+  }
+
   // c: 資格情報。
   const resolved = await resolveCredential(connection, account, fields);
   if (!resolved.ok) {
@@ -443,7 +614,7 @@ async function publishOne(input: PublishOneInput): Promise<RowOutcome> {
     credential,
     attempt,
     signal: controller.signal,
-    logger: publisherLogger(publisher.pluginId),
+    logger: publisherLogger(publisher.pluginId, secretValues),
   };
   const outcome = await callPublish(input.publish, publishInput, controller, input.timeoutMs);
   const durationMs = Date.now() - beganAt;
@@ -515,10 +686,12 @@ export async function publishDuePosts(
   options: PublishDueOptions = {},
 ): Promise<PublishSummary> {
   const timeoutMs = options.timeoutMs ?? PUBLISH_TIMEOUT_MS;
+  const validateTimeoutMs = options.validateTimeoutMs ?? VALIDATE_TIMEOUT_MS;
   const counters = {
     interrupted: 0,
     due: 0,
     skipped: 0,
+    skipFailed: 0,
     attempted: 0,
     published: 0,
     retried: 0,
@@ -546,25 +719,59 @@ export async function publishDuePosts(
   warnMissingPublishers(due, accounts);
   const warnedAccounts = new Set<string>();
 
+  /**
+   * 飛ばす行を後ろへ送る（設計 §6.5.2.1）。
+   *
+   * **着手印は書かない**ので `attempt_count` は 0 のまま。
+   * 同じ理由で 3 回飛ばされたら `failed` にして順番待ちから外す。
+   */
+  const defer = async (post: SocialPost, reason: SkipReason): Promise<void> => {
+    const verdict = decideSkipOutcome(post, reason, new Date());
+    const updated = await socialRepository.deferSkipped(connection, post.id, verdict);
+    if (updated === 0) {
+      // その間に人が触った。次の周期で判定し直す。
+      return;
+    }
+
+    if (verdict.kind === 'deferred') {
+      counters.skipped += 1;
+      return;
+    }
+
+    counters.skipFailed += 1;
+    log.error('social post skipped too many times', {
+      postId: post.id,
+      provider: accounts.get(post.socialAccountId)?.provider ?? null,
+      reason: verdict.reason,
+      skipCount: verdict.skipCount,
+    });
+    await emit('social.post.failed', {
+      postId: post.id,
+      accountId: post.socialAccountId,
+      status: 'failed',
+    });
+  };
+
   // 3. 行ごとに。**直列。並列にしない**（設計 §6.5.2）。
   for (const post of due) {
     const account = accounts.get(post.socialAccountId);
     if (account === undefined) {
-      counters.skipped += 1;
+      // FK があるので通常は起きない防御。
+      await defer(post, 'account_missing');
       continue;
     }
 
-    // a: 配信の支度ができているか。**着手印を書く前に判定する**（要件 §4 裁定 #8）。
+    // a: 配信の支度ができているか。**着手印を書く前に判定する**（要件 §4 裁定 #8・#9）。
     const publisher = findPublisher(account.provider);
     const publish = publisher?.registration.publish;
     if (publisher === null || publish === undefined) {
-      counters.skipped += 1;
+      await defer(post, 'no_publisher');
       continue;
     }
 
     const fields = credentialFieldsOf(publisher.registration);
     if (fields.length > 0 && !account.credentialConfigured) {
-      // **「まだ設定していない」を `failed` にしない。** 支度が整えば次の周期で配信される。
+      // **「まだ設定していない」を その場で `failed` にしない。** 支度が整えば配信される。
       if (!warnedAccounts.has(account.id)) {
         warnedAccounts.add(account.id);
         log.warn('social account credential is not configured', {
@@ -572,7 +779,7 @@ export async function publishDuePosts(
           provider: account.provider,
         });
       }
-      counters.skipped += 1;
+      await defer(post, 'credential_missing');
       continue;
     }
 
@@ -595,6 +802,7 @@ export async function publishDuePosts(
         fields,
         attempt: claimed.attemptCount,
         timeoutMs,
+        validateTimeoutMs,
       });
     } catch (error) {
       log.error('social post publish aborted', {

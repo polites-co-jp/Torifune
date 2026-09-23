@@ -136,6 +136,9 @@ describe('#64 配信の手動実行の応答スキーマ（§6.5.9）', () => {
     interrupted: 0,
     due: 3,
     skipped: 1,
+    // **2026-09-23 に 8 → 9 キーへ（裁定 #9）。** 「後ろへ送った」（`skipped`）と
+    // 「諦めた」（`skipFailed`）を 1 つのキーにまとめない（設計 §6.5.7）。
+    skipFailed: 0,
     attempted: 2,
     published: 1,
     retried: 1,
@@ -143,7 +146,7 @@ describe('#64 配信の手動実行の応答スキーマ（§6.5.9）', () => {
     unrecorded: 0,
   } as const;
 
-  it('#64 publishSummarySchema が §6.5.7 の 8 キーを通す', () => {
+  it('#64 publishSummarySchema が §6.5.7 の 9 キーを通す', () => {
     expect(publishSummarySchema.parse({ ...SUMMARY })).toEqual({ ...SUMMARY });
   });
 
@@ -151,6 +154,7 @@ describe('#64 配信の手動実行の応答スキーマ（§6.5.9）', () => {
     'interrupted',
     'due',
     'skipped',
+    'skipFailed',
     'attempted',
     'published',
     'retried',

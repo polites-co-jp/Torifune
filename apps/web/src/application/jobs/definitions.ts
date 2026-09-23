@@ -17,7 +17,7 @@ import { jobRunRepository } from '@/infrastructure/job-run-repository';
  * | `analytics.rollup` | 15 分 | `{ from, to, days, points }` |
  * | `webhook.deliver` | 1 分 | `{ attempted, delivered, failed }` |
  * | `analytics.timezoneRebuild` | **周期なし** | `{ timeZone, previousTimeZone, from, to, completedThrough, days, points, deletedDays, deletedCoreRows, deletedPluginRows }` |
- * | `social.publish` | 1 分 | `{ interrupted, due, skipped, attempted, published, retried, failed, unrecorded }` |
+ * | `social.publish` | 1 分 | `{ interrupted, due, skipped, skipFailed, attempted, published, retried, failed, unrecorded }` |
  *
  * `intervalMs` は既定値。環境変数での上書きは `bootScheduler` が行う（§6.1.2）。
  * **Plugin からのジョブ登録は無い**（§9 / §11）。
@@ -105,8 +105,8 @@ export const WEBHOOK_JOB = {
  * （Webhook と同じ）。**`lockName` は省略する**（`social.publish` 自身の鍵を取り、
  * ロールアップ・Webhook と並行して走ってよい）。
  *
- * **publisher を登録する Plugin が無ければ何もしない。** 期限の来た投稿は
- * `skipped` のまま次の周期を待つ（要件 §4 裁定 #8）。
+ * **publisher を登録する Plugin が無ければ配信しない。** 期限の来た投稿は後ろへ送られ
+ * （`skipped`）、支度が整うのを待つ。同じ理由で 3 回飛ばされたら `failed`（要件 §4 裁定 #8・#9）。
  */
 export const SOCIAL_PUBLISH_JOB = {
   name: 'social.publish',

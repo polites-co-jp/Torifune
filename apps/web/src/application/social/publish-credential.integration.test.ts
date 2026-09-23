@@ -153,6 +153,48 @@ async function postRow(id: string): Promise<PostRow> {
   return row as PostRow;
 }
 
+/**
+ * 後ろへ送った痕跡（`023_social_publish_skip.sql`。設計 §5.1.1）。
+ *
+ * `postRow` とは分けておく。**既存の条件を見るテストに新しい列を混ぜない**ため。
+ */
+interface SkipRow {
+  readonly skip_count: number;
+  readonly skip_reason: string | null;
+  readonly next_attempt_at: Date | null;
+}
+
+async function skipRow(id: string): Promise<SkipRow> {
+  const row = await withConnection(async (connection) =>
+    connection.db
+      .selectFrom('social_posts')
+      .select(['skip_count', 'skip_reason', 'next_attempt_at'])
+      .where('id', '=', id)
+      .executeTakeFirst(),
+  );
+  if (row === undefined) throw new Error(`投稿が無い: ${id}`);
+  return row as SkipRow;
+}
+
+/** 後ろへ送られた予定を過去へ戻す（実時間で待たないため）。 */
+async function rewindNextAttempt(id: string): Promise<void> {
+  await withConnection(async (connection) => {
+    await connection.db
+      .updateTable('social_posts')
+      .set({ next_attempt_at: new Date(Date.now() - 1_000) })
+      .where('id', '=', id)
+      .execute();
+  });
+}
+
+/** 予約時刻が「今から delayMs 後」であること（±5 秒）。 */
+function expectDelay(nextAttemptAt: Date | null, delayMs: number): void {
+  expect(nextAttemptAt).toBeInstanceOf(Date);
+  const diff = (nextAttemptAt?.getTime() ?? 0) - Date.now();
+  expect(diff, `次の予約が ${delayMs}ms 後ではない（${diff}ms）`).toBeGreaterThan(delayMs - 5_000);
+  expect(diff, `次の予約が ${delayMs}ms 後ではない（${diff}ms）`).toBeLessThan(delayMs + 5_000);
+}
+
 async function storedCredential(accountId: string): Promise<string | null> {
   const row = await withConnection(async (connection) =>
     connection.db
@@ -217,14 +259,21 @@ afterEach(async () => {
 });
 
 /**
- * #27(B) / #52 の前半。**資格情報がまだ設定されていない投稿は飛ばす**
- * （要件 §4 裁定 #8、設計 §6.5.2 の a）。
+ * #27(B) / #52 の前半。**資格情報がまだ設定されていない投稿は後ろへ送って待つ**
+ * （要件 §4 裁定 #8・#9、設計 §6.5.2 の a / §6.5.2.1）。
  *
  * 予約の時点では断らない（#27 の C）。断らずに受けた以上、配信の支度が
- * 整うまで**待たせる**のが筋で、`failed` にして捨てるのは裁定に反する。
- * 着手印を書く前に判定するので、飛ばした行には痕跡が残らない。
+ * 整うまで**待たせる**のが筋で、その場で `failed` にして捨てるのは裁定に反する。
+ * **着手印は書かない**ので `attempt_count` は 0 のままになる。
+ *
+ * > **2026-09-23 に書き直した（裁定 #9）。** もとの条件は「**行に触らない**」だった。
+ * > 触らないと、飛ばした行が取り出しの先頭に居座り続けて他のアカウントの配信まで止まる
+ * > （検証レポート S-1）。「触らない」を「**後ろへ送る**」に改める。
+ * > **`attempt_count = 0`・着手印なし・`failure_reason` を書かない・
+ * > 支度が整えば配信される、という保証はすべて残す。**
+ * > 同じ理由で 3 回飛ばされたら `failed` になることは #90 が見る。
  */
-describe('#27(B) #52 資格情報が未設定の投稿は飛ばして待つ', () => {
+describe('#27(B) #52 資格情報が未設定の投稿は後ろへ送って待つ', () => {
   async function unconfigured(): Promise<{
     readonly accountId: string;
     readonly postId: string;
@@ -259,10 +308,32 @@ describe('#27(B) #52 資格情報が未設定の投稿は飛ばして待つ', ()
     expect((await postRow(postId)).publish_started_at).toBeNull();
   });
 
-  it('#27(B) summary の skipped が 1 で failed は 0', async () => {
+  it('#27(B) summary の skipped が 1 で failed も skipFailed も 0', async () => {
     const { summary } = await unconfigured();
 
-    expect(summary).toMatchObject({ due: 1, skipped: 1, attempted: 0, failed: 0 });
+    expect(summary).toMatchObject({
+      due: 1,
+      skipped: 1,
+      skipFailed: 0,
+      attempted: 0,
+      failed: 0,
+    });
+  });
+
+  it('#27(B) skip_count = 1 / skip_reason = credential_missing が書かれる', async () => {
+    // **「まだ用意していない」を理由として記録する。** `attempt_count` に混ぜない
+    // （あれは `publish()` を呼んだ回数。裁定 #9 の細目）。
+    const { postId } = await unconfigured();
+    const row = await skipRow(postId);
+
+    expect(row.skip_count).toBe(1);
+    expect(row.skip_reason).toBe('credential_missing');
+  });
+
+  it('#27(B) next_attempt_at がおよそ 1 時間後になる（後ろへ送る）', async () => {
+    const { postId } = await unconfigured();
+
+    expectDelay((await skipRow(postId)).next_attempt_at, 60 * 60_000);
   });
 
   it('#52 publish() は呼ばれない', async () => {
@@ -285,26 +356,43 @@ describe('#27(B) #52 資格情報が未設定の投稿は飛ばして待つ', ()
   });
 
   it('#27(B) 資格情報を設定して再実行すると published になる', async () => {
-    // **裁定 #8 の要。** 飛ばした投稿は、支度が整えばそのまま配信される。
+    // **裁定 #8 の要。** 後ろへ送った投稿は、支度が整えばそのまま配信される。
     const { accountId, postId, publish } = await unconfigured();
 
     await updateSocialAccount(admin, {
       id: accountId,
       credentials: { identifier: 'id-a1b2', appPassword: 'pw-c3d4' },
     });
+    await rewindNextAttempt(postId);
     await run();
 
     expect((await postRow(postId)).status).toBe('published');
     expect(publish).toHaveBeenCalledTimes(1);
   });
 
-  it('#27(B) 設定後の publish() は登録した資格情報を受け取る', async () => {
-    const { accountId, publish } = await unconfigured();
+  it('#27(B) 配信できた投稿は skip_count が 0・skip_reason が NULL に戻る', async () => {
+    const { accountId, postId } = await unconfigured();
 
     await updateSocialAccount(admin, {
       id: accountId,
       credentials: { identifier: 'id-a1b2', appPassword: 'pw-c3d4' },
     });
+    await rewindNextAttempt(postId);
+    await run();
+
+    const row = await skipRow(postId);
+    expect(row.skip_count).toBe(0);
+    expect(row.skip_reason).toBeNull();
+  });
+
+  it('#27(B) 設定後の publish() は登録した資格情報を受け取る', async () => {
+    const { accountId, postId, publish } = await unconfigured();
+
+    await updateSocialAccount(admin, {
+      id: accountId,
+      credentials: { identifier: 'id-a1b2', appPassword: 'pw-c3d4' },
+    });
+    await rewindNextAttempt(postId);
     await run();
 
     expect(publish.mock.calls[0]?.[0].credential).toEqual({
@@ -594,5 +682,53 @@ describe('#55 資格情報と本文がどこにも出ない', () => {
     const text = JSON.stringify(rows);
     expect(text).not.toContain(APP_PASSWORD);
     expect(text).not.toContain(IDENTIFIER);
+  });
+
+  /**
+   * #55。**Plugin へ渡す `logger` も伏せ字を通す**（設計 §6.5.5、検証レポート L-1）。
+   *
+   * もとは `maskSecrets`（キー名 `credential` / `token` / `secret` を落とす）しか
+   * 通しておらず、Plugin が値を**文字列に埋める**と平文がそのまま出ていた。
+   * `publishOne` はその行の資格情報の値を既に持っている。
+   * **契約でなく機構で守れるものは機構で守る。**
+   */
+  async function loggingPublisherRun(): Promise<LogRecord[]> {
+    const { records } = capture();
+    usePublisher(async (input) => {
+      input.logger.info('leak', { note: APP_PASSWORD });
+      input.logger.warn(`${APP_PASSWORD} です`);
+      return { ok: true };
+    });
+    const accountId = await accountFor({
+      credentials: { identifier: IDENTIFIER, appPassword: APP_PASSWORD },
+    });
+    await makePost(accountId, BODY);
+
+    await run();
+    return records;
+  }
+
+  it('#55 Plugin が logger の fields に資格情報を入れても平文が出ない', async () => {
+    const records = await loggingPublisherRun();
+
+    expect(JSON.stringify(records)).not.toContain(APP_PASSWORD);
+  });
+
+  it('#55 Plugin が logger の message に資格情報を埋めても平文が出ない', async () => {
+    const records = await loggingPublisherRun();
+    const warned = records.find(
+      (record) => record.level === 'warn' && record.message.endsWith(' です'),
+    );
+
+    expect(warned, 'Plugin の warn が記録されていない').toBeDefined();
+    expect(warned?.message ?? '').not.toContain(APP_PASSWORD);
+    expect(warned?.message ?? '').toContain('***');
+  });
+
+  it('#55 伏せたうえで Plugin のログ自体は残る（握りつぶさない）', async () => {
+    // 伏せ字は「出さない」ためのもので、Plugin のログを消すためのものではない。
+    const records = await loggingPublisherRun();
+
+    expect(records.some((record) => JSON.stringify(record).includes('leak'))).toBe(true);
   });
 });

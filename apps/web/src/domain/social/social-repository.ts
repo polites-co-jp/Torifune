@@ -1,5 +1,5 @@
 import type { Connection } from '../../database/provider';
-import type { PublishVerdict } from './publishing';
+import type { PublishVerdict, SkipVerdict } from './publishing';
 import type {
   AccountStatus,
   DeliveryMode,
@@ -70,6 +70,14 @@ export interface SocialPostUpdate {
   readonly providerOptions?: Readonly<Record<string, unknown>> | undefined;
   readonly externalId?: string | null | undefined;
   readonly externalUrl?: string | null | undefined;
+  /**
+   * 再試行・後ろへ送った予定（035-social-publishing 設計 §5.1.1）。
+   *
+   * 予約し直したときに引きずらせないため、UseCase から NULL へ戻せるようにする。
+   */
+  readonly nextAttemptAt?: Date | null | undefined;
+  readonly skipCount?: number | undefined;
+  readonly skipReason?: string | null | undefined;
 }
 
 export interface SocialPostListQuery {
@@ -186,6 +194,17 @@ export interface SocialRepository {
 
   /** 期限の来た自動配信の投稿を `scheduled_at` の古い順に引く（§6.5.3）。 */
   listDue(connection: Connection, limit: number): Promise<readonly SocialPost[]>;
+
+  /**
+   * 配信できない予約を後ろへ送る（§6.5.2.1）。
+   *
+   * **着手印は書かない。** `attempt_count` も触らない（あれは `publish()` を呼んだ回数で、
+   * 飛ばした行では 0 のままという約束がある）。`deferred` なら `next_attempt_at` を置いて
+   * 次に見る時刻まで候補から外し、`failed` なら順番待ちから外す。
+   *
+   * **更新できた行数を返す。** 0 ならその間に人が触っているので、次の周期で判定し直す。
+   */
+  deferSkipped(connection: Connection, id: string, verdict: SkipVerdict): Promise<number>;
 
   /**
    * 着手印を立てる（§6.5.4）。

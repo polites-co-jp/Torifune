@@ -173,6 +173,48 @@ async function postRow(id: string): Promise<PostRow> {
   return row as PostRow;
 }
 
+/**
+ * 後ろへ送った痕跡（`023_social_publish_skip.sql`。設計 §5.1.1）。
+ *
+ * `postRow` とは分けておく。**既存の条件を見るテストに新しい列を混ぜない**ため。
+ */
+interface SkipRow {
+  readonly attempt_count: number;
+  readonly skip_count: number;
+  readonly skip_reason: string | null;
+}
+
+async function skipRow(id: string): Promise<SkipRow> {
+  const row = await withConnection(async (connection) =>
+    connection.db
+      .selectFrom('social_posts')
+      .select(['attempt_count', 'skip_count', 'skip_reason'])
+      .where('id', '=', id)
+      .executeTakeFirst(),
+  );
+  if (row === undefined) throw new Error(`投稿が無い: ${id}`);
+  return row as SkipRow;
+}
+
+/** 後ろへ送られた予定を過去へ戻す（実時間で待たないため）。 */
+async function rewindNextAttempt(id: string): Promise<void> {
+  await withConnection(async (connection) => {
+    await connection.db
+      .updateTable('social_posts')
+      .set({ next_attempt_at: new Date(Date.now() - 1_000) })
+      .where('id', '=', id)
+      .execute();
+  });
+}
+
+/** 予約時刻が「今から delayMs 後」であること（±5 秒）。 */
+function expectDelay(nextAttemptAt: Date | null, delayMs: number): void {
+  expect(nextAttemptAt).toBeInstanceOf(Date);
+  const diff = (nextAttemptAt?.getTime() ?? 0) - Date.now();
+  expect(diff, `次の予約が ${delayMs}ms 後ではない（${diff}ms）`).toBeGreaterThan(delayMs - 5_000);
+  expect(diff, `次の予約が ${delayMs}ms 後ではない（${diff}ms）`).toBeLessThan(delayMs + 5_000);
+}
+
 async function auditRows(action: string): Promise<
   {
     readonly actor_user_id: string | null;
@@ -285,13 +327,17 @@ describe('#42 配信に成功したとき', () => {
     expect(row.next_attempt_at).toBeNull();
   });
 
-  it('#42 summary が §6.5.7 の 8 キーの値になる', async () => {
+  it('#42 summary が §6.5.7 の 9 キーの値になる', async () => {
+    // **2026-09-23 に 8 → 9 へ（裁定 #9）。** 「後ろへ送った」（`skipped`）と
+    // 「諦めた」（`skipFailed`）を 1 つのキーにまとめない。まとめると、
+    // 設定画面「定期実行」の数字から運用者が次にすべきことを読めなくなる。
     const { summary } = await publishOne();
 
     expect(summary).toEqual({
       interrupted: 0,
       due: 1,
       skipped: 0,
+      skipFailed: 0,
       attempted: 1,
       published: 1,
       retried: 0,
@@ -438,12 +484,21 @@ describe('#43 着手印が publish() より先にコミットされている', (
 });
 
 /**
- * #49。**配信 Plugin が無い投稿は、行に触らずに飛ばす**（要件 §4 裁定 #8、設計 §6.5.2 の a）。
+ * #49。**配信 Plugin が無い投稿は `failed` にせず、後ろへ送って待つ**
+ * （要件 §4 裁定 #8・#9、設計 §6.5.2 の a / §6.5.2.1）。
  *
  * 失敗にすると、Plugin を入れる前に予約した投稿が全部 `failed` になり、
  * あとから Plugin を入れても配信されない。
+ *
+ * > **2026-09-23 に書き直した（裁定 #9）。** もとは「**飛ばしたことが行に痕跡を残さない**」
+ * > ことを条件にしていた。痕跡を残さないと同じ 20 件が次の周期も
+ * > `ORDER BY scheduled_at ASC LIMIT 20` の先頭に並び、**他のアカウントの配信まで止まる**
+ * > （検証レポート S-1）。**痕跡を残して後ろへ送る**に改める。
+ * > **`attempt_count = 0`（着手印を書かない）と「支度が整えば配信される」保証はそのまま残す。**
+ * > 3 回で `failed` になることは #90、列が次の取り出しから外れることは #88、
+ * > 他のアカウントが止まらないことは #89 が見る（`publish-skip.integration.test.ts`）。
  */
-describe('#49 publisher が無い provider は飛ばす', () => {
+describe('#49 publisher が無い provider は後ろへ送る', () => {
   it('#49 実行後も scheduled のまま', async () => {
     const accountId = await accountFor('nopublisher');
     const postId = await makePost({ accountId });
@@ -463,6 +518,8 @@ describe('#49 publisher が無い provider は飛ばす', () => {
   });
 
   it('#49 attempt_count が 0 のまま', async () => {
+    // **`attempt_count` は `publish()` を呼んだ回数**という意味を保つ（裁定 #9 の細目）。
+    // 飛ばした回数は `skip_count` が持つ。
     const accountId = await accountFor('nopublisher');
     const postId = await makePost({ accountId });
 
@@ -471,13 +528,42 @@ describe('#49 publisher が無い provider は飛ばす', () => {
     expect((await postRow(postId)).attempt_count).toBe(0);
   });
 
-  it('#49 summary が due: 1 / skipped: 1 / attempted: 0', async () => {
+  it('#49 skip_count = 1 / skip_reason = no_publisher が書かれる', async () => {
+    const accountId = await accountFor('nopublisher');
+    const postId = await makePost({ accountId });
+
+    await run();
+
+    const row = await skipRow(postId);
+    expect(row.skip_count).toBe(1);
+    expect(row.skip_reason).toBe('no_publisher');
+  });
+
+  it('#49 next_attempt_at がおよそ 1 時間後になる（後ろへ送る）', async () => {
+    const accountId = await accountFor('nopublisher');
+    const postId = await makePost({ accountId });
+
+    await run();
+
+    expectDelay((await postRow(postId)).next_attempt_at, 60 * 60_000);
+  });
+
+  it('#49 failure_reason は NULL のまま（失敗として記録しない）', async () => {
+    const accountId = await accountFor('nopublisher');
+    const postId = await makePost({ accountId });
+
+    await run();
+
+    expect((await postRow(postId)).failure_reason).toBeNull();
+  });
+
+  it('#49 summary が due: 1 / skipped: 1 / skipFailed: 0 / attempted: 0', async () => {
     const accountId = await accountFor('nopublisher');
     await makePost({ accountId });
 
     const summary = await run();
 
-    expect(summary).toMatchObject({ due: 1, skipped: 1, attempted: 0 });
+    expect(summary).toMatchObject({ due: 1, skipped: 1, skipFailed: 0, attempted: 0 });
   });
 
   it('#49 警告は provider ごとに 1 行だけ（同じ provider が 3 件でも 1 行）', async () => {
@@ -510,19 +596,35 @@ describe('#49 publisher が無い provider は飛ばす', () => {
   });
 
   it('#49 飛ばした投稿は publisher を登録した次の実行で published になる', async () => {
-    // **飛ばしたことが行に痕跡を残さない**ので、支度が整えばそのまま配信される。
+    // **裁定 #8 の要。** 後ろへ送っても、支度が整えばそのまま配信される。
     const accountId = await accountFor(PROVIDER);
     const postId = await makePost({ accountId });
     await run();
     expect((await postRow(postId)).status).toBe('scheduled');
 
     usePublisher(async () => ({ ok: true }));
+    await rewindNextAttempt(postId);
     await run();
 
     expect((await postRow(postId)).status).toBe('published');
   });
 
-  it('#49 publish が未実装の publisher も飛ばす（触らない）', async () => {
+  it('#49 配信できた投稿は skip_count が 0・skip_reason が NULL に戻る', async () => {
+    // 一度でも `publish()` まで進めた行に、飛ばした履歴を残す意味は無い（設計 §5.1.1）。
+    const accountId = await accountFor(PROVIDER);
+    const postId = await makePost({ accountId });
+    await run();
+
+    usePublisher(async () => ({ ok: true }));
+    await rewindNextAttempt(postId);
+    await run();
+
+    const row = await skipRow(postId);
+    expect(row.skip_count).toBe(0);
+    expect(row.skip_reason).toBeNull();
+  });
+
+  it('#49 publish が未実装の publisher も後ろへ送る（着手印は書かない）', async () => {
     registerPublisher(PLUGIN_ID, {
       provider: PROVIDER,
       label: 'テストSNS',
@@ -533,8 +635,10 @@ describe('#49 publisher が無い provider は飛ばす', () => {
 
     const summary = await run();
 
-    expect(summary).toMatchObject({ due: 1, skipped: 1, attempted: 0 });
-    expect((await postRow(postId)).attempt_count).toBe(0);
+    expect(summary).toMatchObject({ due: 1, skipped: 1, skipFailed: 0, attempted: 0 });
+    const row = await skipRow(postId);
+    expect(row.attempt_count).toBe(0);
+    expect(row.skip_reason).toBe('no_publisher');
   });
 });
 
@@ -824,7 +928,7 @@ describe('#57 runJob 経由の記録', () => {
     expect(rows[0]?.job_name).toBe('social.publish');
   });
 
-  it('#57 job_runs.summary が §6.5.7 の 8 キーを持つ', async () => {
+  it('#57 job_runs.summary が §6.5.7 の 9 キーを持つ', async () => {
     usePublisher(async () => ({ ok: true }));
     const accountId = await accountFor(PROVIDER);
     await makePost({ accountId });
@@ -844,6 +948,7 @@ describe('#57 runJob 経由の記録', () => {
       'interrupted',
       'published',
       'retried',
+      'skipFailed',
       'skipped',
       'unrecorded',
     ]);

@@ -1,4 +1,5 @@
 import type { Secret } from '../secret';
+import type { SkipReason } from './publishing';
 
 /**
  * SNSアカウントと投稿。
@@ -149,6 +150,14 @@ export interface SocialPost {
   readonly attemptCount: number;
   /** 再試行の予定。null なら `scheduledAt` で期限を判定する。 */
   readonly nextAttemptAt: Date | null;
+  /**
+   * 同じ理由で続けて飛ばした回数（035-social-publishing 設計 §5.1.1）。
+   *
+   * **`attemptCount` とは別。** あれは `publish()` を呼んだ回数で、飛ばした行では 0 のまま。
+   */
+  readonly skipCount: number;
+  /** どの理由で飛ばしたか。null なら飛ばされていない。 */
+  readonly skipReason: SkipReason | null;
 }
 
 /**
