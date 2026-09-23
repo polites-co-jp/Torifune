@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { PUBLISH_TIMEOUT_MS } from '@/domain/social/publishing';
 import {
   ACCESS_TOKEN,
+  CAROUSEL_CONTAINER_ID,
   CONTAINER_ID,
   IG_USER_ID,
   MEDIA_ID,
@@ -25,11 +26,17 @@ import {
   type GraphResponseExample,
 } from '@/test-support/instagram-graph';
 import {
+  CREATE_CONTAINER_TIMEOUT_MS,
+  GRAPH_API_BASE_URL,
+  GRAPH_API_VERSION,
   MEDIA_PUBLISH_TIMEOUT_MS,
   PERMALINK_TIMEOUT_MS,
+  POLL_INTERVAL_MS,
   POLL_MAX_ROUNDS,
   PREPARE_BUDGET_MS,
   PUBLISH_TOTAL_BUDGET_MS,
+  REFRESH_TIMEOUT_MS,
+  STATUS_TIMEOUT_MS,
 } from '../../../../plugins/sns-instagram/graph';
 import { createInstagramPublisher } from '../../../../plugins/sns-instagram/social';
 
@@ -1426,5 +1433,333 @@ describe('reason と logger（§6.11 / §10.8）', () => {
     const { result } = await run(options);
 
     expect(reasonOf(result)).toContain('上限');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* §10.10 制限時間の結線（#70 / #71 / #73）                                        */
+/* -------------------------------------------------------------------------- */
+
+interface ProbedTimeout {
+  readonly ms: number;
+  readonly controller: AbortController;
+}
+
+/**
+ * `AbortSignal.timeout` を差し替え、**作られた順に ms と controller を記録する**。
+ *
+ * 返す signal は実時間では発火しない（テストが controller で手動で発火させる）。
+ * **必ず `restore()` を `finally` で呼ぶ**（戻し忘れると後続のテストが道連れになる。実装プラン T18）。
+ */
+interface TimeoutProbe {
+  readonly created: ProbedTimeout[];
+  /** 最後に作られたもの（要求ごとの制限時間は `impl()` の直前に同期で作られる）。 */
+  latest(): ProbedTimeout | undefined;
+  /** 指定の ms で最初に作られたものを `TimeoutError` で発火させる。 */
+  fire(ms: number): void;
+  restore(): void;
+}
+
+function probeTimeouts(): TimeoutProbe {
+  const original = AbortSignal.timeout.bind(AbortSignal);
+  const created: ProbedTimeout[] = [];
+  AbortSignal.timeout = ((ms: number): AbortSignal => {
+    const controller = new AbortController();
+    created.push({ ms, controller });
+    return controller.signal;
+  }) as typeof AbortSignal.timeout;
+  return {
+    created,
+    latest: () => created[created.length - 1],
+    fire: (ms) => {
+      const entry = created.find((candidate) => candidate.ms === ms);
+      if (entry === undefined) {
+        throw new Error(`${ms}ms の AbortSignal.timeout が作られていない`);
+      }
+      entry.controller.abort(
+        new DOMException('The operation was aborted due to timeout', 'TimeoutError'),
+      );
+    },
+    restore: () => {
+      AbortSignal.timeout = original as typeof AbortSignal.timeout;
+    },
+  };
+}
+
+interface WiredPair {
+  readonly url: string;
+  readonly timeoutMs: number | undefined;
+  readonly controller: AbortController | undefined;
+  readonly signal: AbortSignal | undefined;
+}
+
+describe('制限時間の結線（§6.8 / §10.10）', () => {
+  const graph = (path: string): string => `${GRAPH_API_BASE_URL}/${GRAPH_API_VERSION}/${path}`;
+
+  /**
+   * #70 の配信：画像 2 枚の carousel、延長あり（期限 10 日後）、子の最初の R3 だけ IN_PROGRESS。
+   * 要求ごとに「その直前に作られた `AbortSignal.timeout` の ms と controller」を組にする。
+   */
+  async function wiredCarousel(): Promise<{
+    readonly probe: TimeoutProbe;
+    readonly pairs: WiredPair[];
+    readonly waits: number[];
+    readonly result: PublishResult;
+  }> {
+    const probe = probeTimeouts();
+    const pairs: WiredPair[] = [];
+    try {
+      const fake = createFakeGraph({
+        R3: ({ index, targetId }) =>
+          containerStatus(index === 0 ? 'IN_PROGRESS' : 'FINISHED', targetId),
+      });
+      const watched = (async (input: unknown, init: RequestInit = {}): Promise<Response> => {
+        // **呼ばれた瞬間の「直前に作られた ms」**。`await` を挟まずに作られていれば、この要求のもの。
+        const latest = probe.latest();
+        pairs.push({
+          url: String(input),
+          timeoutMs: latest?.ms,
+          controller: latest?.controller,
+          signal: init.signal ?? undefined,
+        });
+        return await fake.fetch(String(input), init);
+      }) as typeof globalThis.fetch;
+      const clock = createClock();
+      const wait = createFakeWait(clock);
+
+      const { result } = await run({
+        fake: { ...fake, fetch: watched },
+        clock,
+        wait,
+        post: postView({ media: mediaOf(2) }),
+        credential: credentialOf({ accessTokenExpiresAt: isoDaysFrom(START, 10) }),
+      });
+      return { probe, pairs, waits: wait.calls, result };
+    } finally {
+      probe.restore();
+    }
+  }
+
+  it('#70 画像 2 枚の carousel（延長あり）が最後まで通る', async () => {
+    const { result } = await wiredCarousel();
+
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.rotatedCredential !== undefined).toBe(true);
+  });
+
+  it('#70 要求の URL と渡った ms の組が、R1・R3・R2・R4・R5・R6 ごとに決めた定数と一致する', async () => {
+    const { pairs } = await wiredCarousel();
+
+    expect(pairs.map(({ url, timeoutMs }) => ({ url, timeoutMs }))).toEqual([
+      // 子 R1 × 2（並行）
+      { url: graph(`${IG_USER_ID}/media`), timeoutMs: CREATE_CONTAINER_TIMEOUT_MS },
+      { url: graph(`${IG_USER_ID}/media`), timeoutMs: CREATE_CONTAINER_TIMEOUT_MS },
+      // 子の R3（round 1：子 0 は IN_PROGRESS）
+      { url: graph(`${childContainerId(0)}?fields=status_code`), timeoutMs: STATUS_TIMEOUT_MS },
+      { url: graph(`${childContainerId(1)}?fields=status_code`), timeoutMs: STATUS_TIMEOUT_MS },
+      // 子の R3（round 2：子 0 だけ）
+      { url: graph(`${childContainerId(0)}?fields=status_code`), timeoutMs: STATUS_TIMEOUT_MS },
+      // 親 R2
+      { url: graph(`${IG_USER_ID}/media`), timeoutMs: CREATE_CONTAINER_TIMEOUT_MS },
+      // 親の R3
+      { url: graph(`${CAROUSEL_CONTAINER_ID}?fields=status_code`), timeoutMs: STATUS_TIMEOUT_MS },
+      // R4
+      { url: graph(`${IG_USER_ID}/media_publish`), timeoutMs: MEDIA_PUBLISH_TIMEOUT_MS },
+      // R5
+      { url: graph(`${MEDIA_ID}?fields=permalink`), timeoutMs: PERMALINK_TIMEOUT_MS },
+      // R6（版の付かないパス）
+      {
+        url: `${GRAPH_API_BASE_URL}/refresh_access_token?${new URLSearchParams({
+          grant_type: 'ig_refresh_token',
+          access_token: ACCESS_TOKEN,
+        }).toString()}`,
+        timeoutMs: REFRESH_TIMEOUT_MS,
+      },
+    ]);
+  });
+
+  it('#70 組にした制限時間は、実際にその要求の signal に混ぜられている', async () => {
+    // 「直前に作られた」だけでなく、**その controller を発火させるとその要求の signal が止まる**ことを見る。
+    const { pairs } = await wiredCarousel();
+
+    for (const pair of pairs) {
+      expect(pair.signal?.aborted, pair.url).toBe(false);
+      pair.controller?.abort(new DOMException('', 'TimeoutError'));
+      expect(pair.signal?.aborted, pair.url).toBe(true);
+    }
+  });
+
+  it('#70 publish() 全体に PUBLISH_TOTAL_BUDGET_MS、準備に PREPARE_BUDGET_MS が、どの要求よりも先に 1 度ずつ掛かる', async () => {
+    const { probe, pairs } = await wiredCarousel();
+
+    expect(probe.created.slice(0, 2).map((entry) => entry.ms)).toEqual([
+      PUBLISH_TOTAL_BUDGET_MS,
+      PREPARE_BUDGET_MS,
+    ]);
+    // 残りはすべて要求ごと（要求 1 本につき 1 つ）。
+    expect(probe.created).toHaveLength(2 + pairs.length);
+  });
+
+  it('#70 wait に渡る値は POLL_INTERVAL_MS', async () => {
+    const { waits } = await wiredCarousel();
+
+    expect(waits).toEqual([POLL_INTERVAL_MS]);
+  });
+
+  it('#71 R4 の要求中に準備の期限（PREPARE_BUDGET_MS）が発火しても、R4 の signal は aborted にならない', async () => {
+    const probe = probeTimeouts();
+    let r4Aborted: boolean | undefined;
+    try {
+      const fake = createFakeGraph({
+        R4: ({ call }) => {
+          probe.fire(PREPARE_BUDGET_MS);
+          r4Aborted = call.signal?.aborted;
+          return mediaPublished();
+        },
+      });
+
+      const { result } = await run({ fake });
+
+      expect(r4Aborted).toBe(false);
+      expect(result).toEqual({ ok: true, externalId: MEDIA_ID, externalUrl: PERMALINK });
+      // 発火そのものは効いている：準備の signal の下にあった R1 / R3 の signal は止まっている。
+      expect(fake.of('R1')[0]?.signal?.aborted).toBe(true);
+      expect(fake.of('R3')[0]?.signal?.aborted).toBe(true);
+    } finally {
+      probe.restore();
+    }
+  });
+
+  it('#71 R4 の要求中に合計の期限が発火すれば、R4 の signal は aborted になる（対の条件）', async () => {
+    // R4 が外側の signal の下にあることの裏付け。上の #71 が「signal を渡していない」で通らないようにする。
+    const probe = probeTimeouts();
+    let r4Aborted: boolean | undefined;
+    try {
+      const fake = createFakeGraph({
+        R4: ({ call }) => {
+          probe.fire(PUBLISH_TOTAL_BUDGET_MS);
+          r4Aborted = call.signal?.aborted;
+          return mediaPublished();
+        },
+      });
+
+      await run({ fake });
+
+      expect(r4Aborted).toBe(true);
+    } finally {
+      probe.restore();
+    }
+  });
+
+  type Phase = 'R1' | 'R3' | 'wait' | 'R4' | 'R5' | 'R6';
+
+  /**
+   * #73。指定のフェーズの要求（または待ち）を解決させず、飛んでいる最中に
+   * **合計の期限（`PUBLISH_TOTAL_BUDGET_MS` の `AbortSignal.timeout`）を手で発火させる。**
+   */
+  async function fireTotalDuring(phase: Phase): Promise<{
+    readonly result: PublishResult;
+    readonly inflight: readonly (AbortSignal | undefined)[];
+    readonly fake: FakeGraph;
+  }> {
+    const probe = probeTimeouts();
+    const fireLater = (): void => {
+      setTimeout(() => probe.fire(PUBLISH_TOTAL_BUDGET_MS), 0);
+    };
+    const hangAndFire =
+      (fireAtIndex = 0): Route =>
+      ({ index }) => {
+        if (index === fireAtIndex) {
+          fireLater();
+        }
+        return hang();
+      };
+    const waitSignals: AbortSignal[] = [];
+
+    try {
+      const routes: FakeGraphOptions =
+        phase === 'R1'
+          ? // carousel の子 2 本が両方飛んでいるところで発火させる。
+            { R1: hangAndFire(1) }
+          : phase === 'wait'
+            ? { R3: status('IN_PROGRESS') }
+            : { [phase]: hangAndFire() };
+      const fake = createFakeGraph(routes);
+      const clock = createClock();
+      const wait: FakeWait = {
+        calls: [],
+        wait: async (ms, signal) => {
+          wait.calls.push(ms);
+          waitSignals.push(signal);
+          fireLater();
+          await rejectOnAbort(signal);
+        },
+      };
+
+      const { result } = await run({
+        fake,
+        clock,
+        wait,
+        ...(phase === 'R1' ? { post: postView({ media: mediaOf(2) }) } : {}),
+        ...(phase === 'R6'
+          ? { credential: credentialOf({ accessTokenExpiresAt: isoDaysFrom(START, 10) }) }
+          : {}),
+      });
+
+      const inflight = phase === 'wait' ? waitSignals : fake.of(phase).map((call) => call.signal);
+      return { result, inflight, fake };
+    } finally {
+      probe.restore();
+    }
+  }
+
+  it.each(['R1', 'R3', 'wait', 'R4', 'R5', 'R6'] as const)(
+    '#73 %s の最中に合計の期限が発火すると、飛んでいる要求の signal がすべて aborted になり publish() が戻る',
+    async (phase) => {
+      const { inflight } = await fireTotalDuring(phase);
+
+      expect(inflight.length).toBeGreaterThan(0);
+      for (const signal of inflight) {
+        expect(signal?.aborted).toBe(true);
+      }
+    },
+  );
+
+  it('#73 R1 の最中なら carousel の子 2 本がどちらも止まり、retryable: true（R4 を送っていない）', async () => {
+    const { result, inflight, fake } = await fireTotalDuring('R1');
+
+    expect(inflight).toHaveLength(2);
+    expect(retryableOf(result)).toBe(true);
+    expect(fake.of('R2')).toHaveLength(0);
+    expect(fake.of('R4')).toHaveLength(0);
+  });
+
+  it.each(['R3', 'wait'] as const)(
+    '#73 %s の最中なら retryable: true で、R4 を送らない',
+    async (phase) => {
+      const { result, fake } = await fireTotalDuring(phase);
+
+      expect(retryableOf(result)).toBe(true);
+      expect(fake.of('R4')).toHaveLength(0);
+    },
+  );
+
+  it('#73 R4 の最中なら retryable: false（届いたか分からない）', async () => {
+    const { result, fake } = await fireTotalDuring('R4');
+
+    expect(retryableOf(result)).toBe(false);
+    expect(fake.of('R5')).toHaveLength(0);
+  });
+
+  it('#73 R5 の最中なら ok: true のまま（externalUrl を付けない）', async () => {
+    const { result } = await fireTotalDuring('R5');
+
+    expect(result).toEqual({ ok: true, externalId: MEDIA_ID });
+  });
+
+  it('#73 R6 の最中なら ok: true のまま（rotatedCredential を付けない）', async () => {
+    const { result } = await fireTotalDuring('R6');
+
+    expect(result).toEqual({ ok: true, externalId: MEDIA_ID, externalUrl: PERMALINK });
   });
 });
