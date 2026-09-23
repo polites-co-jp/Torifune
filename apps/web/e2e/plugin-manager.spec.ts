@@ -49,6 +49,23 @@ test('検出済みに「Bluesky配信」が導入前から並び、握る拡張�
 });
 
 /**
+ * 038 Instagram 配信 Plugin 受け入れ条件 #95。
+ *
+ * **画面の拡張点を宣言しない**ので、握る拡張点は「SNS配信」だけが読める。
+ * 行は Manifest の `name`（「Instagram配信」）で絞る。**ここでは導入も有効化もしない**（#93）。
+ */
+test('検出済みに「Instagram配信」が導入前から並び、SNS配信だけを握ると読める', async ({ page }) => {
+  await page.goto('/plugins');
+
+  const detected = page.locator('section[aria-labelledby="detected-heading"]');
+  await expect(detected.getByRole('heading', { name: /Instagram配信/ })).toBeVisible();
+
+  const card = detected.locator('section').filter({ hasText: 'Instagram配信' });
+  await expect(card.getByText('SNS配信（SNSアカウントの資格情報を受け取ります）')).toBeVisible();
+  await expect(card.getByText('画面の拡張')).toHaveCount(0);
+});
+
+/**
  * Registry タブ（020-plugin-registry 設計 §2.7）。
  *
  * E2E の環境では Registry を設定していない。
