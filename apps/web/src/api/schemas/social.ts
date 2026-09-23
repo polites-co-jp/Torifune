@@ -19,11 +19,20 @@ import {
   type SocialAccount,
   type SocialPost,
 } from '@/domain/social/social';
+import { SKIP_REASONS, type SkipReason } from '@/domain/social/publishing';
 import { dataEnvelope, pageEnvelope } from './envelope';
 
 /** SNS API の Zod スキーマ。 */
 
 export const deliveryModeSchema = z.enum(DELIVERY_MODES);
+
+/**
+ * 飛ばした理由（035-social-publishing 設計 §6.1.4。裁定 #15-a）。
+ *
+ * **Domain の `SKIP_REASONS` をそのまま列挙にする。** DB の CHECK と Domain の一致は
+ * 静的検査（#85）が見ているので、ここを Domain に繋げば DB → Domain → 応答が同じ集合になる。
+ */
+export const skipReasonSchema = z.enum(SKIP_REASONS);
 
 /**
  * 投稿に添える媒体（035-social-publishing 設計 §6.1.1）。
@@ -212,6 +221,12 @@ export function toAccountResponse(account: SocialAccount): AccountResponse {
  * **`publishStartedAt` と `createdByTokenId` は出さない**（035-social-publishing 設計 §6.1.4）。
  * 前者は内部の進行状態、後者は他の外部アプリの Token ID を `social.read` の誰にでも
  * 見せることになる。資格情報に関する項目は無い。
+ *
+ * **`skipCount` / `skipReason` は出す**（2026-09-23。裁定 #15-a）。
+ * 裁定 #9 は「内部の待ち行列を公開契約にしない」として出さないと決めていたが、
+ * 裁定 #14-a（予約し直しでは飛ばした回数を減らさない）の結果、
+ * **運用者が予約し直す前に「あと何回で取りやめか」を知る手段が無くなった**。
+ * 出さないと投稿を失う（設計 §11 #24）。**`SocialPostView`（Plugin）には足さない。**
  */
 export const postResponseSchema = z.object({
   id: z.string(),
@@ -233,6 +248,8 @@ export const postResponseSchema = z.object({
   externalUrl: z.string().nullable(),
   attemptCount: z.number(),
   nextAttemptAt: z.string().nullable(),
+  skipCount: z.number(),
+  skipReason: skipReasonSchema.nullable(),
 });
 
 export const postEnvelopeSchema = dataEnvelope(postResponseSchema);
@@ -281,6 +298,10 @@ export interface PostResponse {
   readonly externalUrl: string | null;
   readonly attemptCount: number;
   readonly nextAttemptAt: string | null;
+  /** 同じ理由で続けて飛ばした回数（設計 §6.1.4。裁定 #15-a）。 */
+  readonly skipCount: number;
+  /** どの理由で飛ばしたか。飛ばされていなければ null。 */
+  readonly skipReason: SkipReason | null;
 }
 
 export function toPostResponse(post: SocialPost): PostResponse {
@@ -304,5 +325,7 @@ export function toPostResponse(post: SocialPost): PostResponse {
     externalUrl: post.externalUrl,
     attemptCount: post.attemptCount,
     nextAttemptAt: post.nextAttemptAt?.toISOString() ?? null,
+    skipCount: post.skipCount,
+    skipReason: post.skipReason,
   };
 }

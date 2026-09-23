@@ -50,6 +50,8 @@ function post(overrides: Partial<PostRow> = {}): PostRow {
     failureReason: null,
     attemptCount: 0,
     externalUrl: null,
+    // **2026-09-23 に足した（裁定 #15-a、受け入れ条件 #119）。** 飛ばされた回数（設計 §7.3）。
+    skipCount: 0,
     ...overrides,
   };
 }
@@ -307,5 +309,105 @@ describe('状態列の補足', () => {
     );
 
     expect(text).not.toContain('投稿を見る');
+  });
+});
+
+/**
+ * #119（2026-09-23 に足した。裁定 #15-a、設計 §7.3）。
+ * **飛ばされた予約に「あと n 回で取りやめ」を出す。**
+ *
+ * 裁定 #14-a（予約し直しでは飛ばされた回数が減らない）の代償で、
+ * 2 回飛ばされた投稿は**日時を直しても次の 1 回で `failed`** になる（設計 §11 #24）。
+ * `failed` は終端なので予約に戻せない。**運用者が予約し直す前に残りを知れること**が
+ * この補足の目的で、`Badge`（何が足りないか）とは別の問いに答える。
+ *
+ * 置き場所は状態列の補足で、既存の「再試行待ち・N 回目」「手動投稿待ち」に揃える。
+ */
+describe('#119 残り回数の補足', () => {
+  /** `PUBLISH_MAX_SKIPS` は 3（設計 §5.6.2）。画面は `3 - skipCount` を出す。 */
+  it('#119 skipCount: 1 の予約に「あと 2 回で取りやめ」を出す', () => {
+    const text = textOf(render({ initialPosts: [post({ skipCount: 1 })] }));
+
+    expect(text).toMatch(/支度待ち・あと\s*2\s*回で取りやめ/);
+  });
+
+  it('#119 skipCount: 2 の予約は「あと 1 回で取りやめ」', () => {
+    const text = textOf(render({ initialPosts: [post({ skipCount: 2 })] }));
+
+    expect(text).toMatch(/支度待ち・あと\s*1\s*回で取りやめ/);
+  });
+
+  it('#119 skipCount: 0 の予約には出さない', () => {
+    // 飛ばされていない予約に残り回数は無い。
+    expect(textOf(render())).not.toMatch(/支度待ち・あと/);
+  });
+
+  it('#119 manual の行には出さない', () => {
+    // 手動投稿はジョブを通らないので飛ばされない（`Badge` と同じ）。
+    const text = textOf(render({ initialPosts: [post({ deliveryMode: 'manual', skipCount: 2 })] }));
+
+    expect(text).not.toMatch(/支度待ち・あと/);
+  });
+
+  it.each(['draft', 'published', 'failed'])('#119 %s の行には出さない', (status) => {
+    // 予約していないもの・終端のものに残り回数は無い。
+    // とくに `failed` は戻せないので、「あと 0 回」と書くと予約へ戻せるように読める。
+    const text = textOf(render({ initialPosts: [post({ status, skipCount: 3 })] }));
+
+    expect(text).not.toMatch(/支度待ち・あと/);
+  });
+
+  /**
+   * **`Badge` とは出る条件が違う。** `Badge` は「いま支度が整っていないか」、
+   * 補足は「これまでに何回飛ばされたか」。支度が整った直後の行は
+   * `Badge` が消えても補足は残る（0 に戻るのは配信に着手できたとき）。
+   */
+  it('#119 支度が整っている（Badge が出ない）行でも skipCount > 0 なら出す', () => {
+    const text = textOf(render({ initialPosts: [post({ skipCount: 1 })] }));
+
+    expect(text).not.toContain(NO_PLUGIN_BADGE);
+    expect(text).not.toContain(NO_CREDENTIAL_BADGE);
+    expect(text).toMatch(/支度待ち・あと\s*2\s*回で取りやめ/);
+  });
+
+  it('#119 配信 Plugin なしの行では Badge と補足の両方が出る', () => {
+    const text = textOf(
+      render({ initialPosts: [post({ socialAccountId: OTHER_ACCOUNT_ID, skipCount: 2 })] }),
+    );
+
+    expect(text).toContain(NO_PLUGIN_BADGE);
+    expect(text).toMatch(/支度待ち・あと\s*1\s*回で取りやめ/);
+  });
+
+  it('#119 再試行待ちの補足と同じ列に並ぶ', () => {
+    // 状態列の中（設計 §7.3）。行の中に両方が出る。
+    const body =
+      rows(
+        render({
+          initialPosts: [
+            post({ failureReason: '受け手が 503 を返した', attemptCount: 1, skipCount: 1 }),
+          ],
+        }),
+      )[1] ?? '';
+
+    expect(body).toMatch(/再試行待ち・2\s*回目/);
+    expect(body).toMatch(/支度待ち・あと\s*2\s*回で取りやめ/);
+  });
+
+  it('#119 上限に達していれば「あと 0 回」より下がらない', () => {
+    // 3 回目に達した投稿は `failed` になるので通常この行は出ないが、下限は 0。
+    const text = textOf(render({ initialPosts: [post({ skipCount: 5 })] }));
+
+    expect(text).toMatch(/支度待ち・あと\s*0\s*回で取りやめ/);
+  });
+
+  it('#119 既存の locator（見出し「投稿」・本文・編集・削除）を壊さない', () => {
+    const html = render({ initialPosts: [post({ skipCount: 2 })] });
+    const text = textOf(html);
+
+    expect(html).toMatch(/<h2[^>]*>投稿<\/h2>/);
+    expect(text).toContain('新製品のお知らせ');
+    expect(text).toContain('編集');
+    expect(text).toContain('削除');
   });
 });

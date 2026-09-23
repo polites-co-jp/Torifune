@@ -978,6 +978,64 @@ test.describe('#106 配信の支度ができていない予約の警告', () => 
 });
 
 /**
+ * #120（2026-09-23 に足した。裁定 #15-a）。**残り回数の配線**（設計 §6.1.4 / §7.3）。
+ *
+ * 裁定 #14-a の代償で、2 回飛ばされた投稿は**日時を直しても次の 1 回で `failed`** になる。
+ * `failed` は終端なので予約へ戻せない。**運用者が予約し直す前に残りを知れること**が
+ * 裁定 #15-a の目的で、応答（`skipCount` / `skipReason`）と画面の補足の両方が要る。
+ *
+ * 部品テスト（#119）は props を直接与えて描くので、**Server Component が
+ * `skipCount` を渡す経路は通らない**（#106 と同じ理由）。ここで配線まで固定する。
+ */
+test.describe('#120 飛ばされた予約の残り回数', () => {
+  test('#120 1 回飛ばすと応答に skipCount / skipReason が出て、一覧に「あと 2 回」が出る', async ({
+    page,
+    request,
+  }) => {
+    // provider `x` には publisher が無い（`example` にしかない）＝ `no_publisher` で飛ばされる。
+    const account = await postJson(request, '/api/v1/social/accounts', {
+      provider: 'x',
+      displayName: `E2E 残り回数 ${unique()}`,
+      handle: `@${unique()}`,
+      credential: 'e2e-credential',
+      status: 'connected',
+    });
+    expect(account.status(), await account.text()).toBe(201);
+    const accountId = ((await account.json()) as { data: { id: string } }).data.id;
+    createdAccountIds.push(accountId);
+
+    const body = `E2E残り回数${unique()}`;
+    const post = await createPost(request, accountId, {
+      body,
+      status: 'scheduled',
+      deliveryMode: 'auto',
+      scheduledAt: minutesAgo(1),
+    });
+
+    // 1 回走らせる（定期実行が先に拾っていても、待ち時刻が 1 時間先へ行くので結果は同じ）。
+    expect((await publish(request)).status()).toBe(200);
+
+    const got = await request.get(`/api/v1/social/posts/${post.id}`);
+    expect(got.status(), await got.text()).toBe(200);
+    const data = (
+      (await got.json()) as {
+        data: { status: string; skipCount: number; skipReason: string | null };
+      }
+    ).data;
+
+    // #118 の HTTP 版。**`status` は `scheduled` のまま**で、飛ばした履歴だけが増える。
+    expect(data.status).toBe('scheduled');
+    expect(data.skipCount).toBe(1);
+    expect(data.skipReason).toBe('no_publisher');
+
+    await page.goto('/social');
+
+    // 上限は 3 回なので、1 回飛ばされた時点で残りは 2 回（設計 §7.3）。
+    await expect(postListRow(page, body)).toContainText('あと 2 回で取りやめ');
+  });
+});
+
+/**
  * #107。投稿一覧の状態列に出る「手動投稿待ち」の補足（設計 §7.3）。
  *
  * **設計書に条件が無かったために未観測だった箇所**（検証レポート §4 の 2、

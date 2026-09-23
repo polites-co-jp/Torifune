@@ -6,6 +6,7 @@
  * 国際化はこの計画ではやらないが、差し替える場所を1つにはしておく。
  */
 
+import { PUBLISH_MAX_SKIPS } from '@/domain/social/publishing';
 import type { AccountStatus, DeliveryMode, PostStatus } from '@/domain/social/social';
 
 export const POST_STATUS_LABEL: Record<PostStatus, string> = {
@@ -58,6 +59,22 @@ export const MANUAL_HANDOFF_REASON_LABEL = {
 /** 配信の支度ができていない予約への注意（設計 §7.3、要件 §4 裁定 #8）。 */
 export const NO_PUBLISHER_BADGE = '配信 Plugin なし';
 export const NO_CREDENTIAL_BADGE = '資格情報 未設定';
+
+/**
+ * 飛ばされた予約に残っている回数（設計 §7.3。裁定 #15-a）。
+ *
+ * 裁定 #14-a（予約し直しでは飛ばされた回数が減らない）の代償で、
+ * **2 回飛ばされた投稿は日時を直しても次の 1 回で `failed`** になる（設計 §11 #24）。
+ * `failed` は終端なので予約へ戻せない。**運用者が予約し直す前に残りを知れるようにする。**
+ *
+ * `Badge`（「配信 Plugin なし」「資格情報 未設定」）が答えるのは「支度の何が足りないか」で、
+ * こちらが答えるのは「あと何回で取りやめか」。**別の問いなので別に出す。**
+ * 上限は画面に直書きせず `PUBLISH_MAX_SKIPS` から引く。
+ */
+export function remainingSkipsLabel(skipCount: number): string {
+  const remaining = Math.max(0, PUBLISH_MAX_SKIPS - skipCount);
+  return `（支度待ち・あと ${remaining} 回で取りやめ）`;
+}
 
 /**
  * 投稿フォームの配信の説明（設計 §7.4）。

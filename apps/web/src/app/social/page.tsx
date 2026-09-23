@@ -217,6 +217,8 @@ export default async function SocialPage({
           deliveryMode: post.deliveryMode,
           failureReason: post.failureReason,
           attemptCount: post.attemptCount,
+          // 飛ばされた回数（設計 §7.3。裁定 #15-a）。残りは画面が `PUBLISH_MAX_SKIPS` から引く。
+          skipCount: post.skipCount,
           externalUrl: post.externalUrl,
           // 「手動投稿待ち」かどうかも Server Component 側で判定する（設計 §7.1 の補足）。
           manualPending: isManualPending(post, now),

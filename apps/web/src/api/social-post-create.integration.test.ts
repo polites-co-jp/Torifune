@@ -265,6 +265,10 @@ describe('#19 追加項目を省略した作成', () => {
 
   it('#19 応答に publishStartedAt と createdByTokenId を出さない', async () => {
     // 前者は内部の進行状態、後者は他の外部アプリの Token ID（設計 §6.1.4）。
+    //
+    // **2026-09-23 に `skipCount` / `skipReason` が増えた**（裁定 #15-a、条件 #118）。
+    // 出さないと運用者が「あと何回で取りやめか」を知れないまま予約し直す（設計 §11 #24）。
+    // **増えただけで、出さないと決めた 2 つはそのまま出ない。**
     const result = await callCreate(minimalPost());
 
     expect(Object.keys(dataOf(result)).sort()).toEqual(
@@ -285,6 +289,8 @@ describe('#19 追加項目を省略した作成', () => {
         'providerOptions',
         'publishedAt',
         'scheduledAt',
+        'skipCount',
+        'skipReason',
         'socialAccountId',
         'status',
         'updatedAt',

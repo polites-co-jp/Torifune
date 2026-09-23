@@ -23,6 +23,7 @@ import {
   NO_CREDENTIAL_BADGE,
   NO_PUBLISHER_BADGE,
   POST_STATUS_LABEL,
+  remainingSkipsLabel,
 } from '@/ui/social/labels';
 import { AsyncState } from '@/ui/states/async-state';
 
@@ -47,6 +48,13 @@ export interface PostRow {
   /** 直近の失敗理由。`scheduled` のまま残っていれば再試行待ち（設計 §5.8）。 */
   readonly failureReason: string | null;
   readonly attemptCount: number;
+  /**
+   * 同じ理由で続けて飛ばされた回数（設計 §7.3。裁定 #15-a）。
+   *
+   * **`attemptCount` とは別。** あれは配信に着手した回数で、飛ばされた行では 0 のまま。
+   * 予約し直しでは減らない（裁定 #14-a）ので、**運用者が予約し直す前に残りを知る**のに要る。
+   */
+  readonly skipCount: number;
   /** 配信後の投稿の URL。 */
   readonly externalUrl: string | null;
   /**
@@ -228,6 +236,15 @@ export function SocialPosts(props: SocialPostsProps) {
               <span style={CAPTION_STYLE}>
                 <a href={`#${MANUAL_PENDING_ANCHOR}`}>{MANUAL_PENDING_LABEL}</a>
               </span>
+            )}
+            {/*
+              **残り回数は Badge とは別の問いに答える**（設計 §7.3、裁定 #15-a）。
+              Badge は「支度の何が足りないか」、こちらは「あと何回で取りやめか」。
+              支度が整った直後は Badge が消えても補足は残る（0 に戻るのは配信に着手できたとき）。
+              飛ばされるのは `scheduled` かつ `auto` の行だけ（手動投稿はジョブを通らない）。
+            */}
+            {post.status === 'scheduled' && post.deliveryMode === 'auto' && post.skipCount > 0 && (
+              <span style={CAPTION_STYLE}>{remainingSkipsLabel(post.skipCount)}</span>
             )}
             {unready !== null && (
               <span style={{ display: 'block', marginTop: 'var(--tf-space-1)' }}>

@@ -784,4 +784,21 @@ describe('SNS 投稿の View（035 T8）', () => {
       failedAt: FAILED_AT.toISOString(),
     });
   });
+
+  /**
+   * #118（2026-09-23 に足した。裁定 #15-a）。
+   * **裁定 #15-a が出すと決めたのは HTTP の応答と画面だけ。**
+   *
+   * `SocialPostView` は Plugin から見える形で、いったん出すと**後から外せない**
+   * （設計 §9.1 の後方互換）。今回の論点（運用者が予約し直す前に残り回数を知る）に
+   * Plugin は入っていないので、**足さない**（設計 §6.1.4）。
+   */
+  it('#118 SocialPostView に skipCount / skipReason が増えていない', async () => {
+    const id = await seedPost();
+
+    const post = await apiFor(['social.read']).socialPosts.get(id);
+
+    expect(Object.keys(post ?? {})).not.toContain('skipCount');
+    expect(Object.keys(post ?? {})).not.toContain('skipReason');
+  });
 });

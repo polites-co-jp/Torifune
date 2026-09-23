@@ -8,6 +8,7 @@ import { CORE_PERMISSIONS } from '@/domain/permission';
 import {
   MANUAL_TIMEOUT_MS,
   PUBLISH_MAX_SKIPS,
+  SKIP_REASONS,
   VALIDATE_TIMEOUT_MS,
   skipFailureReason,
 } from '@/domain/social/publishing';
@@ -30,6 +31,23 @@ const MIGRATIONS_DIR = join(REPO_ROOT, 'migrations');
 
 function withoutComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+}
+
+/**
+ * Markdown の見出しから、次の同じ深さ以上の見出しまでを切り出す。
+ *
+ * **文書全体から探すと、同じ表記が別の節にもあって先に当たる**ことがある
+ * （`#81` の制限時間の表と同じ事情）。節を限ってから見る。
+ */
+function sectionOf(markdown: string, heading: RegExp): string {
+  const start = markdown.search(heading);
+  expect(start, `${heading} の節が無い`).toBeGreaterThanOrEqual(0);
+  // **見出しの行ごと落としてから次の見出しを探す。** 残りの先頭から探すと、
+  // 自分自身の見出しに当たって空の節になる（`^` は文字列の先頭にも当たる）。
+  const lineEnd = markdown.indexOf('\n', start);
+  const rest = lineEnd === -1 ? '' : markdown.slice(lineEnd + 1);
+  const end = rest.search(/^#{1,4} /m);
+  return end === -1 ? rest : rest.slice(0, end);
 }
 
 /** ディレクトリ直下の `.ts` / `.tsx`（テストを除く）。 */
@@ -503,6 +521,82 @@ describe('#81 ドキュメントの改訂', () => {
   });
 
   /**
+   * #81（2026-09-23 に足した。裁定 #15-a）。
+   * **§12 の裁定 #15-a の行を固定する**（設計 §10 #81 の運用）。
+   *
+   * 裁定 #14-a が「予約し直しでは飛ばされた回数が減らない」と決めた結果、
+   * **運用者は予約し直す前に「あと何回で取りやめか」を知らなければならなくなった**。
+   * `skipCount` / `skipReason` を応答へ出す（#118）だけでは足りず、
+   * **マニュアルがその読み方を書いていなければ外部アプリは使えない。**
+   *
+   * ここで固定するのは、§12 が「文書へ書く」と決めた 4 点：
+   * (1) 2 つの項目が応答に出ること、(2) それぞれの意味、(3) 上限が 3 回で残りは `3 - skipCount`、
+   * (4) **3 回目に達した投稿は `failed` の終端で予約へは戻せない（作り直しになる）**。
+   */
+  describe('#81 マニュアルの裁定 #15-a（残り回数を出す）', () => {
+    it('#81 マニュアルが skipCount / skipReason が応答に出ると書いている', () => {
+      expect(externalManual).toContain('`skipCount`');
+      expect(externalManual).toContain('`skipReason`');
+      expect(externalManual).toContain('飛ばされた回数は応答の `skipCount` に出る');
+    });
+
+    it('#81 マニュアルが skipCount の意味を書いている', () => {
+      expect(externalManual).toContain('同じ理由で続けて飛ばされた回数');
+    });
+
+    it('#81 マニュアルが skipReason の意味を書いている', () => {
+      expect(externalManual).toContain('飛ばした理由');
+      expect(externalManual).toContain('飛ばされていなければ `null`');
+    });
+
+    /** **上限は実装と突き合わせる。** 片方だけ直すと案内が嘘になる。 */
+    it('#81 マニュアルの上限が PUBLISH_MAX_SKIPS と合っている', () => {
+      expect(externalManual).toContain(`上限は ${PUBLISH_MAX_SKIPS} 回`);
+      expect(externalManual).toContain(`残りは \`${PUBLISH_MAX_SKIPS} - skipCount\``);
+    });
+
+    /** `skipReason` の値はマニュアルが挙げた 3 つと実装の `SKIP_REASONS` で一致する。 */
+    it.each([...SKIP_REASONS])('#81 マニュアルが skipReason の値 %s を挙げている', (reason) => {
+      expect(externalManual).toContain(`\`${reason}\``);
+    });
+
+    it('#81 マニュアルが実装に無い skipReason を挙げていない', () => {
+      // `skipReason` の表に出てくる値がすべて `SKIP_REASONS` に実在する。
+      const section = sectionOf(externalManual, /^#### 飛ばされた回数を見る$/m);
+      const listed = [...section.matchAll(/\| `([a-z_]+)` \|/g)].map((match) => match[1] ?? '');
+
+      expect(listed.length, '`skipReason` の値の表が無い').toBeGreaterThan(0);
+      expect([...new Set(listed)].sort()).toEqual([...SKIP_REASONS].sort());
+    });
+
+    it('#81 マニュアルが「予約し直す前に残り回数を見る」と書いている', () => {
+      expect(externalManual).toContain('予約し直す前に残り回数を確かめる');
+    });
+
+    /**
+     * **裁定 #15-a は `failed` の終端を変えていない**（設計 §11 #24）。
+     * 見えるようになったのは「取りやめが来る前に支度を整える機会」であって、
+     * 取りやめた後に予約へ戻す道ではない。**ここを書かないと、残り回数を出したことが
+     * 「間に合わなくても直せる」と読まれる。**
+     */
+    it('#81 マニュアルが「3 回目に達した投稿は failed の終端で予約へ戻せない」と書いている', () => {
+      expect(externalManual).toContain(
+        `${PUBLISH_MAX_SKIPS} 回目に達した投稿は \`failed\` の終端で、予約へは戻せない`,
+      );
+      expect(externalManual).toContain('新しい投稿として作り直す');
+    });
+
+    /**
+     * §「状態の読み方」は「`skipCount` は API に出ない」を前提に
+     * `failureReason` での見分けだけを書いていた。**その前提は覆った**（裁定 #15-a）。
+     */
+    it('#81 マニュアルに「skipCount は API に出ない」と読める記述が残っていない', () => {
+      expect(externalManual).not.toMatch(/`?skipCount`?[^\n]*（?(?:API|応答)には?出ない/);
+      expect(externalManual).not.toContain('skipCount は出ない');
+    });
+  });
+
+  /**
    * 検証レポート L-4。冪等キーは `(created_by_token_id, external_ref)` なので、
    * **トークンを差し替えると名前空間が黙って変わる。**
    */
@@ -541,7 +635,9 @@ describe('#81 ドキュメントの改訂', () => {
     const line = externalManual.split('\n').find((row) => row.startsWith('| **支度待ち** |'));
 
     expect(line, '「支度待ち」の行が無い').toBeDefined();
-    // 再試行待ちとの見分けは `failureReason` が空かどうか（skipCount は API に出ない）。
+    // 再試行待ちとの見分けは `failureReason` が空かどうか。
+    // **2026-09-23（裁定 #15-a）以降は `skipCount` でも見分けられる**が、
+    // この行が固定するのは `failureReason` による見分けのほう。
     expect(line).toContain('failureReason');
   });
 
