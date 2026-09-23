@@ -577,34 +577,30 @@ interface PreflightOptions {
 }
 
 /**
- * 飛ばした履歴（`skip_count` / `skip_reason` / `next_attempt_at`）を消す更新か
- * （設計 §5.1.1 / §6.2。裁定 #12-a / #13-a）。
+ * 待ち時刻（`next_attempt_at`）を消す更新か（設計 §5.1.1 / §6.2。裁定 #14-a）。
  *
- * **条件は「先送りである」の 1 つだけ**：更新後が `scheduled` で、予約日時が
- * **現在時刻より未来**、かつ**更新前の予約日時より後ろ**。
+ * **条件は 1 つだけ**：更新後が `scheduled` で、予約日時が**現在時刻より未来**。
  * `current.status` は見ないので、`draft` → `scheduled`（取りやめ → 予約し直し）も、
- * `scheduled` のまま日時だけ直す更新も、同じ判定で戻る。
+ * `scheduled` のまま日時だけ直す更新も、同じ判定で消える。
  *
- * **差分で判定する**（裁定 #13-a）。更新後の状態だけを見ていると、
- * **未来を一度挟むだけで「過去日時では戻さない」を迂回できた**
- * （未来へ置いてリセットを得てから、過去へ戻す）。
- * 前へ引き戻す更新は、行き先が未来でもリセットしない。
- * `current.scheduledAt` が NULL（予約日時の無い行）なら、未来を指定した時点で先送りとして扱う。
+ * **消すのは `next_attempt_at` だけ。`skip_count` / `skip_reason` は触らない**（裁定 #14-a）。
+ * あれは「この投稿の支度が整っていないのを何回見つけたか」の履歴であって、予約日時の属性ではない。
+ * 予約し直しはその履歴を無かったことにする操作ではなく、**減らさないことで 3 回上限の回避路が閉じる**。
+ * 0 に戻るのは `claimForPublish`（着手できたとき）だけで、代償は設計 §11 #24。
+ *
+ * **差分（`next.scheduledAt > current.scheduledAt`）は見ない**（裁定 #14 で外した。#13-a で入れていた）。
+ * 差分は「過去 → 未来 → 過去」の 2 段階を塞ぐために入れたが、**1 つ目は先送りそのもの**で
+ * **受け入れ条件 #93 (a) が要求する正当な更新と見分けられず、塞がらなかった**。
+ * 消すのが待ち時刻だけなら、先送りでも引き戻しでも起きることは同じなので区別する理由が無い。
  *
  * **`attempt_count` は戻さない。** あれは `publish()` を呼んだ回数で、
  * 再試行の 5 回という上限は別の話である（設計 §6.5.6）。
  */
-function resetsSkipHistory(
-  current: Pick<PostSubject, 'scheduledAt'>,
-  next: Pick<PostSubject, 'status' | 'scheduledAt'>,
-): boolean {
+function clearsSkipWait(next: Pick<PostSubject, 'status' | 'scheduledAt'>): boolean {
   if (next.status !== 'scheduled' || next.scheduledAt === null) {
     return false;
   }
-  if (next.scheduledAt.getTime() <= Date.now()) {
-    return false;
-  }
-  return current.scheduledAt === null || next.scheduledAt.getTime() > current.scheduledAt.getTime();
+  return next.scheduledAt.getTime() > Date.now();
 }
 
 /** 作成では従来どおり全部掛ける（設計 §6.1.2）。 */
@@ -1042,22 +1038,19 @@ export const updateSocialPost = defineUseCase<UpdatePostInput, SocialPost>({
         ...(input.providerOptions === undefined ? {} : { providerOptions: input.providerOptions }),
         ...(input.externalId === undefined ? {} : { externalId: input.externalId }),
         ...(input.externalUrl === undefined ? {} : { externalUrl: input.externalUrl }),
-        // **予約を未来へ置き直したら数え直しを消す**（設計 §5.1.1 / §6.2。裁定 #12-a）。
-        // 戻さないと、後ろへ送られた予定を引きずったまま再予約され、指定した時刻に出ない。
+        // **予約を未来へ置き直したら待ち時刻を消す**（設計 §5.1.1 / §6.2。裁定 #14-a）。
+        // 消さないと、後ろへ送られた待ち時刻を引きずったまま再予約され、指定した時刻に出ない。
         //
         // **`current.status` は見ない**（検証レポート §9.2 の R-1）。編集フォームは常に
         // `status` を送るので、「予約中の投稿の日時を直す」という最も普通の操作も
         // `scheduled` のままこの経路に入る。`draft` を経由する形だけを見ていると素通りする。
         //
-        // **過去日時では戻さない**（R-2）。戻すと、過去日時のまま `draft` → `scheduled` を
-        // 繰り返して飛ばした回数を 0 に保ち、期限切れの行を列の先頭に置き続けられる。
+        // **過去日時では消さない**（設計 §11 #21）。「過去日時＝いますぐ」と解釈すると、
+        // `2000-01-01` の予約まで即時配信の要求として扱うことになる。
         //
-        // **判定は差分で行う**（裁定 #13-a）。更新後の状態だけを見ていると、
-        // **未来を一度挟むだけ**で上の 2 行が迂回できた（未来へ置いてリセットを得てから過去へ戻す）。
-        // 「予約を先送りする」更新だけがリセットを得る。
-        ...(resetsSkipHistory(current, next)
-          ? { skipCount: 0, skipReason: null, nextAttemptAt: null }
-          : {}),
+        // **`skip_count` / `skip_reason` は触らない**（裁定 #14-a）。飛ばした履歴を
+        // 予約し直しで減らさないことが、3 回上限の回避路を閉じている。
+        ...(clearsSkipWait(next) ? { nextAttemptAt: null } : {}),
       }),
     );
 
