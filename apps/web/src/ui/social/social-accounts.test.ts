@@ -1,7 +1,13 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { SocialAccounts, type SocialAccountsProps } from './social-accounts';
+
+// 039-social-credential-fields：部品が保存・消去の後に `router.refresh()` を呼ぶ（設計 §7.3.4）。
+// `useRouter` は App Router の外では例外を投げるので差し替える（設計 #42 が許す唯一の変更）。
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }),
+}));
 
 /**
  * SNS アカウントの追加（035-social-publishing 設計 §7.5、受け入れ条件 #71）。
