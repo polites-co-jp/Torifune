@@ -115,6 +115,16 @@ export interface InterruptedPost {
   readonly socialAccountId: string;
 }
 
+/**
+ * 取り出しの読み進め位置（035-social-publishing 設計 §6.5.3）。
+ *
+ * **`(scheduled_at, id)` のキーセット。** 直前に見た行の値をそのまま持つ。
+ */
+export interface DueCursor {
+  readonly scheduledAt: Date;
+  readonly id: string;
+}
+
 export interface SocialRepository {
   listAccounts(connection: Connection, query: SocialAccountListQuery): Promise<SocialAccountPage>;
   findAccountById(connection: Connection, id: string): Promise<SocialAccount | null>;
@@ -192,8 +202,21 @@ export interface SocialRepository {
    */
   failInterrupted(connection: Connection, reason: string): Promise<readonly InterruptedPost[]>;
 
-  /** 期限の来た自動配信の投稿を `scheduled_at` の古い順に引く（§6.5.3）。 */
-  listDue(connection: Connection, limit: number): Promise<readonly SocialPost[]>;
+  /**
+   * 期限の来た自動配信の投稿を `scheduled_at` の古い順に**1 ページぶん**引く（§6.5.3）。
+   *
+   * `after` を渡すと、その位置より後ろだけを読む（**キーセット**）。
+   * **`OFFSET` は使えない。** 走査中に、飛ばした行は `next_attempt_at` が付いて条件から外れ、
+   * 着手した行は `publish_started_at` が付いて条件から外れる。`OFFSET` だと
+   * 外れた行の数だけ後ろの行を読み飛ばす（見ていない行が静かに残る）。
+   *
+   * 並びは `ORDER BY scheduled_at ASC, id ASC` で一意に決まるので、キーセットで漏れなく読める。
+   */
+  listDue(
+    connection: Connection,
+    limit: number,
+    after?: DueCursor | null,
+  ): Promise<readonly SocialPost[]>;
 
   /**
    * 配信できない予約を後ろへ送る（§6.5.2.1）。

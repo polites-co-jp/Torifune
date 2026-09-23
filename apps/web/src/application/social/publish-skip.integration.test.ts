@@ -273,7 +273,18 @@ describe('#88 後ろへ送った行は次の取り出しに出ない', () => {
  * Plugin を入れ忘れた provider の期限切れ予約が 20 件溜まるだけで、
  * その installation の SNS 自動配信が全部止まる。悪意がなくても起きる。
  *
- * 止まるのは最大 1 周期（既定 1 分）にとどまること、をここで固定する。
+ * > **2026-09-23 に書き直した（検証レポート §9.2 の R-3、裁定 #12-b）。** もとは
+ * > 「1 回目 `attempted: 0` → **続けてもう一度実行すると** `due: 1` / `published: 1`」と、
+ * > **1 周期遅れること自体を固定していた**。飛ばした行が取り出し枠を食わなくなったので、
+ * > **同じ周期で送られる**のが正しい振る舞いになる（設計 §6.5.2.1 / §6.5.3）。
+ * >
+ * > **保証は弱めていない**（純増）。飛ばした 20 件の状態（`attempt_count = 0` /
+ * > `skip_count = 1` / `skip_reason` / `next_attempt_at`）と「2 回目に再び現れない」ことは
+ * > そのまま残し、「同じ周期で配信される」を足した。
+ *
+ * この条件は次のいずれでも落ちる：
+ * `deferSkipped` を消す／`listDue` の `next_attempt_at` 条件を外す／
+ * `claimForPublish` のリセットを外す／**読み進めをやめて 1 ページで打ち切る**。
  */
 describe('#89 配信できない 20 件が他のアカウントを止めない', () => {
   /** 飛ばされる 20 件（古い）と、配信できる 1 件（新しい）を入れる。 */
@@ -296,13 +307,31 @@ describe('#89 配信できない 20 件が他のアカウントを止めない',
     return { stuck, deliverable, publish };
   }
 
-  it('#89 1 回目は 20 件すべてを飛ばし、1 件も配信しない', async () => {
+  /**
+   * **ここが要**（裁定 #12-b）。飛ばした 20 件は**取り出し枠を食わない**ので、
+   * 1 回目の実行で配信可能な 1 件まで読み進んで送られる。
+   */
+  it('#89 1 回目の実行で配信可能な 1 件が送られる', async () => {
     const { publish } = await twentyPlusOne();
 
     const summary = await run();
 
-    expect(summary).toMatchObject({ due: 20, skipped: 20, skipFailed: 0, attempted: 0 });
-    expect(publish).not.toHaveBeenCalled();
+    expect(summary).toMatchObject({
+      due: 21,
+      skipped: 20,
+      skipFailed: 0,
+      attempted: 1,
+      published: 1,
+    });
+    expect(publish).toHaveBeenCalledTimes(1);
+  }, 60_000);
+
+  it('#89 1 回目で配信可能な投稿が published になる', async () => {
+    const { deliverable } = await twentyPlusOne();
+
+    await run();
+
+    expect((await skipRow(deliverable)).status).toBe('published');
   }, 60_000);
 
   it('#89 飛ばした 20 件は scheduled のまま attempt_count が 0', async () => {
@@ -335,16 +364,20 @@ describe('#89 配信できない 20 件が他のアカウントを止めない',
     }
   }, 60_000);
 
-  /** **ここが要。** 修正前はこの 2 回目も `due: 20 / attempted: 0` を返し続けた。 */
-  it('#89 続けてもう一度実行すると配信可能な 1 件が送られる', async () => {
-    const { deliverable, publish } = await twentyPlusOne();
+  /**
+   * #89。**2 回目に再び現れない**（元の条件から残している保証）。
+   *
+   * 飛ばした 20 件は `next_attempt_at` で候補から外れ、送った 1 件は `scheduled` ではない。
+   */
+  it('#89 続けてもう一度実行すると due が 0', async () => {
+    const { publish } = await twentyPlusOne();
     await run();
 
     const second = await run();
 
-    expect(second).toMatchObject({ due: 1, attempted: 1, published: 1 });
+    expect(second).toMatchObject({ due: 0, skipped: 0, attempted: 0, published: 0 });
+    // 1 回目の 1 件だけ。2 回目は誰も送らない。
     expect(publish).toHaveBeenCalledTimes(1);
-    expect((await skipRow(deliverable)).status).toBe('published');
   }, 60_000);
 });
 
@@ -556,47 +589,274 @@ describe('#92 着手できたら skip_count / skip_reason が戻る', () => {
 });
 
 /**
- * #93。**予約し直すと数え直しが消える**（設計 §6.2）。
+ * #93。**未来へ置き直すと数え直しが消える。過去日時では消えない**
+ * （設計 §6.2 / §5.1.1。裁定 #12-a）。
  *
- * 戻さないと、後ろへ送られた予定を引きずったまま再予約され、指定した時刻に出ない。
+ * 判定は 1 つだけ：`next = { …current, …input }` が
+ * `status === 'scheduled'` かつ `scheduledAt > now` なら
+ * `skip_count = 0` / `skip_reason = NULL` / `next_attempt_at = NULL`。
+ * **`current.status` は見ない。**
+ *
+ * > **2026-09-23 に書き直した（検証レポート §9.2 の R-1 / R-2、裁定 #12-a）。** もとは
+ * > **`draft` を経由する形（いまの (c)）しか見ていなかった**ため、`scheduled` のまま
+ * > 日時だけ直す更新がリセットされないことを捕まえられず、
+ * > **「予約中の投稿の日時を直す」という最も普通の操作**が最大 23 時間配信されない
+ * > 欠陥をテストが通してしまった。
+ * >
+ * > **保証は弱めていない**（純増）：(c) が元の条件そのもので、(a)(b)(d)(e) を足した。
+ * > 「未来」を条件に足したのは、同じ 1 か所が 3 回上限の回避路でもあるため（R-2）。
  */
-describe('#93 予約し直すと数え直しが消える', () => {
-  async function skippedThenRescheduled(): Promise<string> {
+describe('#93 未来へ置き直すと数え直しが消える', () => {
+  const TEN_MINUTES_MS = 10 * 60_000;
+
+  /** `no_publisher` で 1 回飛ばされた `scheduled` の投稿を作る。 */
+  async function skippedOnce(): Promise<string> {
     const accountId = await accountFor({ credentials: CREDENTIALS });
     const postId = await makePost(accountId);
     await run();
-    expect((await skipRow(postId)).skip_count).toBe(1);
 
-    await updateSocialPost(admin, { id: postId, status: 'draft' });
-    await updateSocialPost(admin, {
-      id: postId,
-      status: 'scheduled',
-      scheduledAt: new Date(Date.now() - 60_000),
-    });
+    const row = await skipRow(postId);
+    expect(row.skip_count).toBe(1);
+    expect(row.skip_reason).toBe('no_publisher');
+    expectDelay(row.next_attempt_at, HOUR_MS);
     return postId;
   }
 
-  it('#93 skip_count が 0 に、skip_reason が NULL に戻る', async () => {
-    const row = await skipRow(await skippedThenRescheduled());
+  function future(): Date {
+    return new Date(Date.now() + TEN_MINUTES_MS);
+  }
 
+  function past(): Date {
+    return new Date(Date.now() - 60_000);
+  }
+
+  /** 飛ばした履歴が消えていること。 */
+  async function expectCleared(postId: string): Promise<void> {
+    const row = await skipRow(postId);
     expect(row.skip_count).toBe(0);
     expect(row.skip_reason).toBeNull();
+    expect(row.next_attempt_at).toBeNull();
+  }
+
+  /** 飛ばした履歴が残っていること。 */
+  async function expectKept(postId: string): Promise<void> {
+    const row = await skipRow(postId);
+    expect(row.skip_count).toBe(1);
+    expect(row.skip_reason).toBe('no_publisher');
+    expect(row.next_attempt_at).toBeInstanceOf(Date);
+  }
+
+  /** 予約日時を過去へ戻して 1 回実行する（未来の予約を「その時刻まで進める」代わり）。 */
+  async function rewindScheduledAt(postId: string): Promise<void> {
+    await withConnection(async (connection) => {
+      await connection.db
+        .updateTable('social_posts')
+        .set({ scheduled_at: new Date(Date.now() - 1_000) })
+        .where('id', '=', postId)
+        .execute();
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // (a) scheduled のまま scheduledAt だけ未来へ直す（編集フォームと同じく status を送る）
+  // -------------------------------------------------------------------------
+
+  describe('#93 (a) scheduled のまま日時だけ未来へ直す', () => {
+    async function rescheduled(): Promise<string> {
+      const postId = await skippedOnce();
+      await updateSocialPost(admin, { id: postId, status: 'scheduled', scheduledAt: future() });
+      return postId;
+    }
+
+    it('#93 (a) skip_count / skip_reason / next_attempt_at がすべて戻る', async () => {
+      await expectCleared(await rescheduled());
+    });
+
+    /**
+     * #93 (a) の要。**`next_attempt_at` が残っていれば 23 時間待たされて落ちる。**
+     * 「指定し直した時刻に出る」ことまで見ないと、リセットの有無を見分けられない。
+     */
+    it('#93 (a) その時刻まで進めるとその回で配信される', async () => {
+      const postId = await rescheduled();
+
+      usePublisher(async () => ({ ok: true }));
+      await rewindScheduledAt(postId);
+      const summary = await run();
+
+      expect(summary).toMatchObject({ due: 1, attempted: 1, published: 1 });
+      expect((await skipRow(postId)).status).toBe('published');
+    });
   });
 
-  it('#93 next_attempt_at が NULL に戻る（後ろへ送られた予定を引きずらない）', async () => {
-    const postId = await skippedThenRescheduled();
+  // -------------------------------------------------------------------------
+  // (b) status を送らずに scheduledAt だけ未来へ直す
+  // -------------------------------------------------------------------------
 
-    expect((await skipRow(postId)).next_attempt_at).toBeNull();
+  describe('#93 (b) status を送らずに日時だけ未来へ直す', () => {
+    async function rescheduled(): Promise<string> {
+      const postId = await skippedOnce();
+      // 判定は `input` ではなく `next = { …current, …input }` で行う（設計 §6.2）。
+      await updateSocialPost(admin, { id: postId, scheduledAt: future() });
+      return postId;
+    }
+
+    it('#93 (b) skip_count / skip_reason / next_attempt_at がすべて戻る', async () => {
+      await expectCleared(await rescheduled());
+    });
+
+    it('#93 (b) その時刻まで進めるとその回で配信される', async () => {
+      const postId = await rescheduled();
+
+      usePublisher(async () => ({ ok: true }));
+      await rewindScheduledAt(postId);
+
+      expect(await run()).toMatchObject({ due: 1, attempted: 1, published: 1 });
+    });
   });
 
-  it('#93 予約し直した投稿は次の実行で配信される', async () => {
-    const postId = await skippedThenRescheduled();
+  // -------------------------------------------------------------------------
+  // (c) draft を経由する従来の形（**元の条件そのもの。消さない**）
+  // -------------------------------------------------------------------------
 
-    usePublisher(async () => ({ ok: true }));
-    const summary = await run();
+  describe('#93 (c) draft を経由して予約し直す', () => {
+    async function rescheduled(): Promise<string> {
+      const postId = await skippedOnce();
+      await updateSocialPost(admin, { id: postId, status: 'draft' });
+      await updateSocialPost(admin, { id: postId, status: 'scheduled', scheduledAt: future() });
+      return postId;
+    }
 
-    expect(summary).toMatchObject({ due: 1, published: 1 });
-    expect((await skipRow(postId)).status).toBe('published');
+    it('#93 (c) skip_count が 0 に、skip_reason が NULL に戻る', async () => {
+      const row = await skipRow(await rescheduled());
+
+      expect(row.skip_count).toBe(0);
+      expect(row.skip_reason).toBeNull();
+    });
+
+    it('#93 (c) next_attempt_at が NULL に戻る（後ろへ送られた予定を引きずらない）', async () => {
+      expect((await skipRow(await rescheduled())).next_attempt_at).toBeNull();
+    });
+
+    it('#93 (c) 予約し直した投稿はその時刻の回で配信される', async () => {
+      const postId = await rescheduled();
+
+      usePublisher(async () => ({ ok: true }));
+      await rewindScheduledAt(postId);
+      const summary = await run();
+
+      expect(summary).toMatchObject({ due: 1, published: 1 });
+      expect((await skipRow(postId)).status).toBe('published');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // (d) 過去日時では戻らない（3 回上限の回避路を塞ぐ。R-2）
+  // -------------------------------------------------------------------------
+
+  describe('#93 (d) 過去日時では戻らない', () => {
+    it('#93 (d) scheduled のまま過去日時へ直す更新は成功する', async () => {
+      const postId = await skippedOnce();
+
+      await expect(
+        updateSocialPost(admin, { id: postId, status: 'scheduled', scheduledAt: past() }),
+      ).resolves.toMatchObject({ status: 'scheduled' });
+    });
+
+    it('#93 (d) 過去日時では skip_count / skip_reason / next_attempt_at が残る', async () => {
+      const postId = await skippedOnce();
+
+      await updateSocialPost(admin, { id: postId, status: 'scheduled', scheduledAt: past() });
+
+      await expectKept(postId);
+    });
+
+    it('#93 (d) draft を経由して過去日時へ戻しても残る', async () => {
+      const postId = await skippedOnce();
+
+      await updateSocialPost(admin, { id: postId, status: 'draft' });
+      await updateSocialPost(admin, { id: postId, status: 'scheduled', scheduledAt: past() });
+
+      await expectKept(postId);
+    });
+
+    /**
+     * #93 (d) の要（R-2）。**3 回上限の回避路が無い。**
+     *
+     * 過去日時のまま `draft` → `scheduled` を繰り返せば `skip_count` を 0 に戻し続けられ、
+     * `social.delete` を持たない `social.write` 単独のトークンが
+     * **期限切れの行を列の先頭に置き続けられた。**
+     */
+    it('#93 (d) skip_count = 2 の投稿で 5 回繰り返しても skip_count は 2 のまま', async () => {
+      const postId = await skippedOnce();
+      await rewindNextAttempt(postId);
+      await run();
+      expect((await skipRow(postId)).skip_count).toBe(2);
+
+      for (let i = 0; i < 5; i += 1) {
+        await updateSocialPost(admin, { id: postId, status: 'draft' });
+        await updateSocialPost(admin, { id: postId, status: 'scheduled', scheduledAt: past() });
+      }
+
+      expect((await skipRow(postId)).skip_count).toBe(2);
+    });
+
+    it('#93 (d) 繰り返した後も次に飛ばされた時点で failed になる', async () => {
+      const postId = await skippedOnce();
+      await rewindNextAttempt(postId);
+      await run();
+
+      for (let i = 0; i < 5; i += 1) {
+        await updateSocialPost(admin, { id: postId, status: 'draft' });
+        await updateSocialPost(admin, { id: postId, status: 'scheduled', scheduledAt: past() });
+      }
+      await rewindNextAttempt(postId);
+      const summary = await run();
+
+      expect(summary).toMatchObject({ skipFailed: 1, skipped: 0 });
+      expect((await skipRow(postId)).status).toBe('failed');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // (e) attempt_count は (a)〜(d) のどれでも変わらない
+  // -------------------------------------------------------------------------
+
+  describe('#93 (e) attempt_count は戻さない', () => {
+    /** 戻すのは飛ばした履歴だけ。再試行の回数（`publish()` を呼んだ回数）ではない。 */
+    it.each([
+      [
+        '(a) scheduled のまま未来へ',
+        async (postId: string) => {
+          await updateSocialPost(admin, { id: postId, status: 'scheduled', scheduledAt: future() });
+        },
+      ],
+      [
+        '(b) status を送らず未来へ',
+        async (postId: string) => {
+          await updateSocialPost(admin, { id: postId, scheduledAt: future() });
+        },
+      ],
+      [
+        '(c) draft を経由して未来へ',
+        async (postId: string) => {
+          await updateSocialPost(admin, { id: postId, status: 'draft' });
+          await updateSocialPost(admin, { id: postId, status: 'scheduled', scheduledAt: future() });
+        },
+      ],
+      [
+        '(d) 過去日時へ',
+        async (postId: string) => {
+          await updateSocialPost(admin, { id: postId, status: 'scheduled', scheduledAt: past() });
+        },
+      ],
+    ])('#93 (e) %s でも attempt_count が変わらない', async (_label, update) => {
+      const postId = await skippedOnce();
+      const before = (await skipRow(postId)).attempt_count;
+
+      await update(postId);
+
+      expect((await skipRow(postId)).attempt_count).toBe(before);
+    });
   });
 });
 

@@ -16,6 +16,27 @@ import { isValidExternalUrl, type SocialPost } from './social';
 export const PUBLISH_BATCH_SIZE = 20;
 
 /**
+ * 1 回の実行で**見る**上限（設計 §5.6.2 / §6.5.3。裁定 #12-b）。
+ *
+ * **`PUBLISH_BATCH_SIZE` は「送る行」の上限で、こちらは「読む行」の上限。**
+ * 配信の支度ができていない行は後ろへ送るだけで送る枠を食わず、着手できる行が枠ぶん集まるか
+ * ここに達するまで読み進める。飛ばす処理は 1 行あたり SELECT と UPDATE だけなので、
+ * 1 分周期に対して十分小さい。
+ *
+ * **上限を置かずに「尽きるまで読む」としない。** 1 回の実行時間を状況で青天井にしないため
+ * （設計 §11 #6 と同じ理由）。
+ */
+export const PUBLISH_SCAN_LIMIT = 200;
+
+/**
+ * 読み進めの 1 ページの大きさ（設計 §6.5.3）。
+ *
+ * 支度が整っている普通の installation では**1 ページ読んで終わり**で、
+ * `022` までと同じ 1 回の SELECT に戻る。飛ばす行があるときだけページが増える。
+ */
+export const PUBLISH_PAGE_SIZE = PUBLISH_BATCH_SIZE;
+
+/**
  * `publish()` 1 回の上限。
  *
  * 超えたら `AbortSignal` を発火し、**結果不明**として `failed` にする（再試行しない）。

@@ -14,6 +14,7 @@ import { Alert, Button, FormField, Input, Select, Textarea } from '@/ui/componen
 import {
   DELIVERY_MODE_LABEL,
   POST_FORM_DELIVERY_NOTE,
+  POST_FORM_SCHEDULE_NOTE,
   POST_STATUS_LABEL,
 } from '@/ui/social/labels';
 
@@ -225,7 +226,7 @@ export function SocialPostForm({ title, initial, accounts, postId, sidebar }: So
 
           <FormField
             label="予約日時"
-            description="空欄なら予約しません。"
+            description={POST_FORM_SCHEDULE_NOTE}
             {...(fieldErrors['scheduledAt'] === undefined
               ? {}
               : { errors: fieldErrors['scheduledAt'] })}

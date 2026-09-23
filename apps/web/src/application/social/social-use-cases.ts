@@ -556,18 +556,51 @@ interface PreflightOptions {
    */
   readonly checkManualSupport: boolean;
   /**
-   * e / f / j〜m（予約として成立するか）を掛けるか。
+   * e / f（予約として成立するか。**Core 自身の規則で、Plugin を呼ばない**）を掛けるか。
    *
    * **更新では変更後の状態が `draft` / `scheduled` のときだけ**（設計 §6.2）。
-   * `limits` / `validate()` が守っているのは「配信時刻に初めて失敗しない」ことで、
-   * これは**これから配信される状態**へ向かう更新の話である。
    * `published` / `failed` への遷移は**起きた事実の記録**であって、予約の検証ではない。
    */
   readonly checkSchedulable: boolean;
+  /**
+   * j〜m（`limits` / `validate()`。**publisher を呼ぶ検査**）を掛けるか。
+   *
+   * **更新では変更後が `scheduled` のときだけ**（設計 §6.2、検証レポート §9.2 の R-6）。
+   * `draft` への更新は**取りやめ**であり、`validate()` が例外／制限時間超過なら 500 になる。
+   * **壊れた Plugin が取りやめを塞ぐ**のは S-3 で直した形そのものである（あのときは 422）。
+   *
+   * **原則を 1 つにする：既にある行の出口を塞ぐ検査を、Plugin の宣言や生死に依存させない。**
+   * これらが守っているのは「予約が配信時刻に初めて失敗しない」ことなので、
+   * **予約になる更新にだけ**掛かれば目的を果たす。
+   */
+  readonly checkPublisherRules: boolean;
+}
+
+/**
+ * 飛ばした履歴（`skip_count` / `skip_reason` / `next_attempt_at`）を消す更新か
+ * （設計 §5.1.1 / §6.2。裁定 #12-a）。
+ *
+ * **条件は 1 つだけ：更新後が `scheduled` で、予約日時が現在時刻より未来。**
+ * `current.status` は見ないので、`draft` → `scheduled`（取りやめ → 予約し直し）も、
+ * `scheduled` のまま日時だけ直す更新も、同じ判定で戻る。
+ *
+ * **`attempt_count` は戻さない。** あれは `publish()` を呼んだ回数で、
+ * 再試行の 5 回という上限は別の話である（設計 §6.5.6）。
+ */
+function resetsSkipHistory(next: Pick<PostSubject, 'status' | 'scheduledAt'>): boolean {
+  return (
+    next.status === 'scheduled' &&
+    next.scheduledAt !== null &&
+    next.scheduledAt.getTime() > Date.now()
+  );
 }
 
 /** 作成では従来どおり全部掛ける（設計 §6.1.2）。 */
-const CREATE_PREFLIGHT: PreflightOptions = { checkManualSupport: true, checkSchedulable: true };
+const CREATE_PREFLIGHT: PreflightOptions = {
+  checkManualSupport: true,
+  checkSchedulable: true,
+  checkPublisherRules: true,
+};
 
 async function assertPostIsDeliverable(
   subject: PostSubject,
@@ -609,7 +642,7 @@ async function assertPostIsDeliverable(
     );
   }
 
-  if (!options.checkSchedulable || publisher === null) {
+  if (!options.checkPublisherRules || publisher === null) {
     return;
   }
 
@@ -964,6 +997,9 @@ export const updateSocialPost = defineUseCase<UpdatePostInput, SocialPost>({
     await assertPostIsDeliverable(next, account, {
       checkManualSupport: input.deliveryMode === 'manual',
       checkSchedulable: next.status === 'draft' || next.status === 'scheduled',
+      // **publisher を呼ぶ検査は「予約になる更新」にだけ**（設計 §6.2、R-6）。
+      // `draft`（取りやめ）を壊れた Plugin に塞がせない。
+      checkPublisherRules: next.status === 'scheduled',
     });
 
     const post = await context.connection.transaction((tx) =>
@@ -985,11 +1021,16 @@ export const updateSocialPost = defineUseCase<UpdatePostInput, SocialPost>({
         ...(input.providerOptions === undefined ? {} : { providerOptions: input.providerOptions }),
         ...(input.externalId === undefined ? {} : { externalId: input.externalId }),
         ...(input.externalUrl === undefined ? {} : { externalUrl: input.externalUrl }),
-        // **予約し直したら数え直しを消す**（035-social-publishing 設計 §5.1.1）。
+        // **予約を未来へ置き直したら数え直しを消す**（設計 §5.1.1 / §6.2。裁定 #12-a）。
         // 戻さないと、後ろへ送られた予定を引きずったまま再予約され、指定した時刻に出ない。
-        ...(input.status === 'scheduled' && current.status !== 'scheduled'
-          ? { skipCount: 0, skipReason: null, nextAttemptAt: null }
-          : {}),
+        //
+        // **`current.status` は見ない**（検証レポート §9.2 の R-1）。編集フォームは常に
+        // `status` を送るので、「予約中の投稿の日時を直す」という最も普通の操作も
+        // `scheduled` のままこの経路に入る。`draft` を経由する形だけを見ていると素通りする。
+        //
+        // **過去日時では戻さない**（R-2）。戻すと、過去日時のまま `draft` → `scheduled` を
+        // 繰り返して飛ばした回数を 0 に保ち、期限切れの行を列の先頭に置き続けられる。
+        ...(resetsSkipHistory(next) ? { skipCount: 0, skipReason: null, nextAttemptAt: null } : {}),
       }),
     );
 
@@ -1076,11 +1117,13 @@ export interface ManualHandoffInput {
    */
   readonly timeoutMs?: number | undefined;
   /**
-   * 1 回の描画あたりの打ち切り時刻（設計 §6.6）。
+   * 1 回の描画の**絶対の締切**（壁時計。設計 §6.6。裁定 #12-c）。
    *
-   * **過ぎていれば `manual()` を呼ばずに `plugin_error` を返す。**
-   * 行ごとに呼ぶ側（`app/social/page.tsx`）がこれを 1 回だけ作ってすべての行へ渡すので、
-   * 累計の上限が `MANUAL_HANDOFF_BUDGET_MS` で決まる。**画面は必ず返る。**
+   * * 過ぎていれば `manual()` を**呼ばずに** `plugin_error` を返す
+   * * 締切までの残りが `timeoutMs` より短ければ、**その行の制限時間を残り時間まで切り詰める**
+   *
+   * 行ごとに呼ぶ側（`app/social/page.tsx`）がこれを 1 回だけ作って
+   * `Promise.all` の全行へ渡すので、**どの行も締切を越えて走らない。**
    */
   readonly deadline?: Date | undefined;
 }
@@ -1119,22 +1162,34 @@ export const resolveManualHandoff = defineUseCase<ManualHandoffInput, ManualHand
       return { ok: false, reason: 'unsupported' };
     }
 
-    // 1 回の描画あたりの累計の上限（設計 §6.6）。**過ぎていれば呼ばない。**
-    // 行ごとの上限だけでは、50 行 × 2 秒で `/social` が 100 秒まっ白になる。
-    if (input.deadline !== undefined && input.deadline.getTime() <= Date.now()) {
-      log.warn('social publisher manual skipped by budget', {
-        provider: account.provider,
-        pluginId: publisher.pluginId,
-        postId: post.id,
-      });
-      return { ok: false, reason: 'plugin_error' };
+    // 1 回の描画の絶対の締切（壁時計。設計 §6.6。裁定 #12-c）。**過ぎていれば呼ばない。**
+    //
+    // 行ごとの呼び出しは `Promise.all` で並行に行うので、この締切は「累計の予算」ではない。
+    // それでも要るのは、`MANUAL_TIMEOUT_MS` が `manual()` の中しか測っていないため。
+    // 50 本の UseCase が同時に接続プールへ並ぶと、後ろの行が `manual()` に着くのは何秒か後になりうる。
+    const timeoutMs = input.timeoutMs ?? MANUAL_TIMEOUT_MS;
+    let remainingMs = timeoutMs;
+    if (input.deadline !== undefined) {
+      remainingMs = input.deadline.getTime() - Date.now();
+      if (remainingMs <= 0) {
+        log.warn('social publisher manual skipped by budget', {
+          provider: account.provider,
+          pluginId: publisher.pluginId,
+          postId: post.id,
+        });
+        return { ok: false, reason: 'plugin_error' };
+      }
+      // **締切までの残りが制限時間より短ければ、その行は残り時間で打ち切る**
+      // （検証レポート §9.2 の R-4）。「呼ぶ／呼ばない」の 1 回の判定だけだと、
+      // 締切の 1 ミリ秒前に始まった行が制限時間ぶん（2 秒）はみ出せる。
+      remainingMs = Math.min(timeoutMs, remainingMs);
     }
 
     // 同期でも Promise でもよい（設計 §6.6）。**応答しない `manual()` に画面を止めさせない**
     // （検証レポート L-3）。`publish()` の 30 秒より短く取る。
     const outcome = await callWithTimeout(
       () => manual({ post: toPostView(post), account: toAccountView(account) }),
-      input.timeoutMs ?? MANUAL_TIMEOUT_MS,
+      remainingMs,
     );
 
     if (outcome.type === 'timeout') {

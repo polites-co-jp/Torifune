@@ -393,3 +393,144 @@ describe('認証と認可', () => {
     expect(result.status).toBe(404);
   });
 });
+
+/**
+ * #112。**壊れた `validate()` でも取りやめが 500 にならない**
+ * （検証レポート §9.2 の R-6。設計 §6.2 / §7.1）。
+ *
+ * `limits` / `validate()` が守っているのは「**予約が配信時刻に初めて失敗しない**」ことなので、
+ * **予約になる更新（`next.status === 'scheduled'`）にだけ**掛かれば目的を果たす。
+ * `draft`（取りやめ）・`published`・`failed`（起きた事実の記録）は publisher の
+ * 宣言にも生死にも左右されない。
+ *
+ * ここは**応答の層**を見る（UseCase の層は
+ * `application/social/social-post-outcome.integration.test.ts` の #112）。
+ * 500 になる経路で **Plugin の文言が応答に出ない**ことは、この層でしか見られない。
+ */
+describe('#112 壊れた validate() でも取りやめができる', () => {
+  const PLUGIN_TEXT = 'validate exploded at line 42';
+
+  /** `validate()` が例外を投げる publisher を登録する。 */
+  function registerBrokenPublisher(): void {
+    registerPublisher(
+      'test-plugin',
+      publisherFor({
+        validate: () => {
+          throw new Error(PLUGIN_TEXT);
+        },
+      }),
+    );
+  }
+
+  async function scheduledPost(): Promise<SocialPost> {
+    // **publisher を登録する前に作る**（裁定 #8 で 201）。
+    const { post } = await createSocialPost(admin, {
+      socialAccountId: accountId,
+      body: '予約した本文',
+      scheduledAt: new Date(Date.now() - 60_000),
+      status: 'scheduled',
+      deliveryMode: 'auto',
+    });
+    return post;
+  }
+
+  it('#112 取りやめ（draft）が 200 になる', async () => {
+    const post = await scheduledPost();
+    registerBrokenPublisher();
+
+    const result = await callUpdate(post.id, { status: 'draft' });
+
+    expect(result.status).toBe(200);
+    expect(dataOf(result)['status']).toBe('draft');
+  });
+
+  it('#112 published への記録も 200 になる', async () => {
+    const post = await scheduledPost();
+    registerBrokenPublisher();
+
+    expect((await callUpdate(post.id, { status: 'published' })).status).toBe(200);
+  });
+
+  it('#112 failed への記録も 200 になる', async () => {
+    const post = await scheduledPost();
+    registerBrokenPublisher();
+
+    expect((await callUpdate(post.id, { status: 'failed' })).status).toBe(200);
+  });
+
+  it('#112 予約し直し（scheduled）は従来どおり 500', async () => {
+    const post = await scheduledPost();
+    registerBrokenPublisher();
+
+    const result = await callUpdate(post.id, {
+      status: 'scheduled',
+      scheduledAt: new Date(Date.now() + 600_000).toISOString(),
+    });
+
+    expect(result.status).toBe(500);
+  });
+
+  it('#112 500 の応答のコードが INTERNAL_ERROR', async () => {
+    const post = await scheduledPost();
+    registerBrokenPublisher();
+
+    const result = await callUpdate(post.id, {
+      status: 'scheduled',
+      scheduledAt: new Date(Date.now() + 600_000).toISOString(),
+    });
+
+    expect((result.body['error'] as { code?: string } | undefined)?.code).toBe('INTERNAL_ERROR');
+  });
+
+  it('#112 500 の応答に Plugin の文言が出ない', async () => {
+    // `027` §3.3「Plugin の例外を素で外へ出さない」。
+    const post = await scheduledPost();
+    registerBrokenPublisher();
+
+    const result = await callUpdate(post.id, {
+      status: 'scheduled',
+      scheduledAt: new Date(Date.now() + 600_000).toISOString(),
+    });
+
+    expect(JSON.stringify(result.body)).not.toContain(PLUGIN_TEXT);
+  });
+
+  it('#112 social.read だけの Token では取りやめも 403', async () => {
+    // 検査を緩めたことが認可の穴になっていない。
+    const post = await scheduledPost();
+    registerBrokenPublisher();
+    const readOnly = await createApiToken(admin, {
+      name: 'read only 112',
+      scopes: ['social.read'],
+      expiresAt: null,
+    });
+
+    const result = await callUpdate(post.id, { status: 'draft' }, readOnly.plaintext);
+
+    expect(result.status).toBe(403);
+  });
+
+  it('#112 未認証では取りやめが 401', async () => {
+    const post = await scheduledPost();
+    registerBrokenPublisher();
+    // Bearer が無い経路は CSRF を通らないと 403 になり、401 を確かめられない。
+    const csrf = 'csrf-token-for-social-post-update';
+
+    const response = await updateSocialPostRoute(
+      new Request(`${BASE}/${post.id}`, {
+        method: 'PATCH',
+        headers: {
+          'content-type': 'application/json',
+          'x-forwarded-host': '127.0.0.1:3000',
+          origin: 'http://127.0.0.1:3000',
+          cookie: `torifune_csrf=${csrf}`,
+          'x-csrf-token': csrf,
+        },
+        body: JSON.stringify({ status: 'draft' }),
+      }),
+      { params: Promise.resolve({ id: post.id }) },
+    );
+
+    expect(response.status).toBe(401);
+  });
+});

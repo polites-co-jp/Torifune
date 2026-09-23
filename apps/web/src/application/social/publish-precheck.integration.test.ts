@@ -421,3 +421,95 @@ describe('#98 再検査を通った投稿は従来どおり配信される', () 
     expect((await postRow(postId)).status).toBe('published');
   });
 });
+
+/**
+ * #111。**`limits` 経路の理由文も秘匿を通る**（検証レポート §9.2 の R-5。設計 §6.5.2.2）。
+ *
+ * 配信直前の再検査のうち、**`limits` 経路（1）だけが `redactSecrets` を通っていなかった。**
+ * 3 の `validate()` 例外経路は通っている。片方だけ通す理由は無い。
+ *
+ * **Plugin 由来の自由文は `message` だけではない。** `publisherRejectedReason` が埋め込む
+ * `registration.label`（表示名）も、`checkPublisherLimits` が返す `problems[].field` /
+ * `problems[].message` も**すべて Plugin が書いた文字列**である。
+ *
+ * #84 の見出しは「Plugin 由来の自由文をログ・DB に載せる経路が**すべて**」と言っている。
+ * 見出しが言っていることを実装が満たしていないなら、直すのは実装のほうである。
+ *
+ * **秘匿の形は `redactSecrets` が実際に落とせるものに合わせる**
+ * （`infrastructure/secret-text.ts`。`scheme://user:password@host` の credential 部と
+ * `DATABASE_URL` の完全一致だけを落とす）。`route-error-redaction.integration.test.ts` と
+ * 同じ流儀で、**接続文字列の形に埋めた生きた値**が出ないことを見る。
+ */
+describe('#111 limits 経路の理由文も秘匿を通る', () => {
+  /** Plugin が書いた自由文に紛れ込んだ資格情報。 */
+  const LIVE_TOKEN = 'sk-livetoken-xyz';
+  /**
+   * `redactSecrets` が credential 部として落とす形（設計 §6.5.5 の「伏せてから切る」）。
+   *
+   * **DB 名を `torifune` にしてはいけない。** `redactSecrets` は credential 部だけでなく
+   * **`DATABASE_URL` の password 部の単独一致も伏せる**（`infrastructure/secret-text.ts` の (b)）。
+   * 開発・CI のどちらも password は `torifune` なので、DB 名を同じにすると `/torifune` まで
+   * `/***` になり、**どんな実装でも通らない期待値**になる。
+   */
+  const LEAKY_LABEL = `postgresql://plugin:${LIVE_TOKEN}@db.internal:5432/appdb`;
+
+  async function reasonVia(overrides: Partial<PublisherRegistration>): Promise<string> {
+    // **登録簿を空にしてから作る。** publisher が登録されていると作成時の事前検査に掛かり、
+    // 上限を超えた本文の投稿そのものを作れない（それでは配信直前の再検査を観測できない）。
+    // 同じ `it` の中で 2 回呼ぶと、1 回目の publisher が残っていてここで 422 になる。
+    resetPublisherRegistry();
+
+    const accountId = await accountFor();
+    const postId = await makePost(accountId, { body: 'あ'.repeat(50) });
+
+    usePublisher(overrides);
+    await run();
+
+    const row = await postRow(postId);
+    expect(row.status, 'failed になっていない（検査が空振りしている）').toBe('failed');
+    return row.failure_reason ?? '';
+  }
+
+  /** `limits` 経路。`label` は `publisherRejectedReason` が理由文へ埋め込む。 */
+  async function limitsReason(): Promise<string> {
+    return reasonVia({ label: LEAKY_LABEL, limits: { bodyMaxLength: 10 } });
+  }
+
+  /** `validate()` 経路。同じ文字列を `message` で返す。 */
+  async function validateReason(): Promise<string> {
+    return reasonVia({
+      label: LEAKY_LABEL,
+      validate: () => [{ field: 'body', message: `接続に失敗しました: ${LEAKY_LABEL}` }],
+    });
+  }
+
+  it('#111 limits 経路の failure_reason に生の値が出ない', async () => {
+    const reason = await limitsReason();
+
+    expect(reason, 'Plugin の label がそのまま DB に入っている').not.toContain(LIVE_TOKEN);
+  });
+
+  it('#111 limits 経路の failure_reason が伏せ字になっている', async () => {
+    expect(await limitsReason()).toContain('***');
+  });
+
+  it('#111 validate() 経路の failure_reason にも生の値が出ない（従来どおり）', async () => {
+    expect(await validateReason()).not.toContain(LIVE_TOKEN);
+  });
+
+  /** #111 の要。**経路によって差が無い。** */
+  it('#111 limits 経路と validate() 経路で同じ文字列が同じ形に伏せられる', async () => {
+    const redactedInLimits = await limitsReason();
+    // 同じ `label` を含む理由文なので、伏せた後の形も一致する。
+    expect(redactedInLimits).toContain('postgresql://***@db.internal:5432/appdb');
+    expect(await validateReason()).toContain('postgresql://***@db.internal:5432/appdb');
+  });
+
+  it('#111 limits 経路でも「配信していません」（未送信）と読める', async () => {
+    // 秘匿を足したことで、未送信であることの手がかりが消えていない。
+    const reason = await limitsReason();
+
+    expect(reason).toContain('配信していません');
+    expect(reason).not.toContain('結果不明');
+  });
+});

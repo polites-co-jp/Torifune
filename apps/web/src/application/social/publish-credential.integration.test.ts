@@ -732,3 +732,97 @@ describe('#55 資格情報と本文がどこにも出ない', () => {
     expect(records.some((record) => JSON.stringify(record).includes('leak'))).toBe(true);
   });
 });
+
+/**
+ * #113。**伏せ字は深さで素通ししない**（検証レポート §9.2 の R-8。設計 §6.5.5）。
+ *
+ * `fields` は Plugin が書く任意の構造なので、入れ子をたどる深さには上限（5）を置く
+ * （循環と深い木で回り続けないため）。しかし実装は**深さ 5 に達した時点で
+ * その値をそのまま返していた**ため、深さ 6 以上に置かれた文字列には伏せ字が掛からず、
+ * `logger.info('x', { a: { b: { c: { d: { e: { pw: <値> } } } } } })` が平文で出た。
+ *
+ * **伏せられないなら出さない。** 深さ上限は「たどるのをやめる」ための仕組みであって、
+ * 「素通しする」ための仕組みではない。落として困る Plugin は、浅いところに書けばよい。
+ * 深さ 1〜5 の値は従来どおり伏せ字に置き換わる（**構造は保つ**）。
+ */
+describe('#113 伏せ字は深さで素通ししない', () => {
+  const IDENTIFIER = 'id-5b71';
+  const APP_PASSWORD = 'pw-deep-secret';
+  /** 深さ上限を超えた枝に置く印（設計 §6.5.5 の「`'[depth limit]'` のような印」）。 */
+  const DEPTH_MARK = '[depth limit]';
+
+  /** `logger.info('nested', fields)` を 1 回だけ呼ぶ publisher で 1 件配信する。 */
+  async function logNested(fields: Record<string, unknown>): Promise<LogRecord[]> {
+    const { records } = capture();
+    usePublisher(async (input) => {
+      input.logger.info('nested', fields);
+      return { ok: true };
+    });
+    const accountId = await accountFor({
+      credentials: { identifier: IDENTIFIER, appPassword: APP_PASSWORD },
+    });
+    await makePost(accountId);
+
+    await run();
+    return records;
+  }
+
+  /** `{ a: { b: { … { pw: value } } } }` を作る（`pw` の深さが `depth`）。 */
+  function nest(depth: number, value: string): Record<string, unknown> {
+    let node: Record<string, unknown> = { pw: value };
+    for (let level = depth - 1; level > 0; level -= 1) {
+      node = { [String.fromCharCode('a'.charCodeAt(0) + level - 1)]: node };
+    }
+    return node;
+  }
+
+  function loggedText(records: readonly LogRecord[]): string {
+    return JSON.stringify(records.filter((record) => record.message === 'nested'));
+  }
+
+  it('#113 深さ 6 に置いた資格情報の値が出力に現れない', async () => {
+    // `{ a: { b: { c: { d: { e: { pw: <値> } } } } } }`。
+    const records = await logNested(nest(6, APP_PASSWORD));
+
+    expect(loggedText(records), '深さ上限を超えた枝が素通ししている').not.toContain(APP_PASSWORD);
+  });
+
+  it('#113 深さ上限を超えた枝は値ごと落ちる（印に置き換わる）', async () => {
+    const records = await logNested(nest(6, APP_PASSWORD));
+
+    expect(loggedText(records)).toContain(DEPTH_MARK);
+  });
+
+  /** #113。**資格情報でなくても**深さ上限を超えた値は出さない（伏せられないから落とす）。 */
+  it('#113 深さ 6 の無害な値も落ちる', async () => {
+    const records = await logNested(nest(6, 'harmless-deep-value'));
+
+    expect(loggedText(records)).not.toContain('harmless-deep-value');
+  });
+
+  it.each([1, 2, 3, 4, 5])('#113 深さ %i の値は従来どおり伏せ字に置き換わる', async (depth) => {
+    const records = await logNested(nest(depth, APP_PASSWORD));
+    const text = loggedText(records);
+
+    expect(text, `深さ ${depth} の値が平文で出ている`).not.toContain(APP_PASSWORD);
+    expect(text, `深さ ${depth} の値が落ちている（伏せ字であるべき）`).not.toContain(DEPTH_MARK);
+  });
+
+  /** #113。**構造は保つ。** 落とすのは上限を超えた枝だけで、木ごと消すのではない。 */
+  it('#113 深さ 5 までのキーは残る', async () => {
+    const records = await logNested(nest(5, APP_PASSWORD));
+    const text = loggedText(records);
+
+    for (const key of ['a', 'b', 'c', 'd', 'pw']) {
+      expect(text, `キー ${key} が消えている`).toContain(key);
+    }
+  });
+
+  it('#113 深さ 6 でも浅いところのキーは残る（枝だけ落ちる）', async () => {
+    const records = await logNested({ shallow: 'plain-value', ...nest(6, APP_PASSWORD) });
+    const text = loggedText(records);
+
+    expect(text).toContain('shallow');
+    expect(text).toContain('plain-value');
+  });
+});

@@ -30,6 +30,8 @@ import {
   decideSkipOutcome,
   INTERRUPTED_REASON,
   PUBLISH_BATCH_SIZE,
+  PUBLISH_PAGE_SIZE,
+  PUBLISH_SCAN_LIMIT,
   PUBLISH_TIMEOUT_MS,
   publisherRejectedReason,
   redactCredentialValues,
@@ -40,6 +42,7 @@ import {
   type SkipReason,
 } from '@/domain/social/publishing';
 import type { SocialAccount, SocialPost } from '@/domain/social/social';
+import type { DueCursor } from '@/domain/social/social-repository';
 import { encryptSecret } from '@/infrastructure/crypto/cipher';
 import { log } from '@/infrastructure/logging';
 import { redactSecrets } from '@/infrastructure/secret-text';
@@ -70,7 +73,13 @@ import { socialRepository } from '@/infrastructure/social-repository';
 export type PublishSummary = {
   /** 前回の実行が途中で死んでいた件数（`failed` に落とした）。 */
   readonly interrupted: number;
-  /** 取り出した件数（≤ `PUBLISH_BATCH_SIZE`）。 */
+  /**
+   * **走査して判定した期限到来の行の件数**（≤ `PUBLISH_SCAN_LIMIT`）。
+   *
+   * 飛ばした行（`skipped` / `skipFailed`）も含む。
+   * **取り出し枠（`PUBLISH_BATCH_SIZE`）は `attempted` のほうに掛かる**（設計 §6.5.7）。
+   * `due` が `PUBLISH_SCAN_LIMIT` に等しい周期は、まだ見ていない期限到来の行が残っている。
+   */
   readonly due: number;
   /** 配信の支度ができておらず**後ろへ送った**件数（`scheduled` のまま残る）。 */
   readonly skipped: number;
@@ -103,6 +112,13 @@ export interface PublishDueOptions {
    * `timeoutMs` と同じく、結合テストが実時間で待たないための口。
    */
   readonly validateTimeoutMs?: number;
+  /**
+   * 1 回の実行で**見る**行の上限。省略すると `PUBLISH_SCAN_LIMIT`（200）。
+   *
+   * **ジョブ定義は渡さない**（環境変数にもしない。設計 §6.5.3 / §11 #22）。
+   * 結合テストが 200 行を作らずに打ち切りを見るための口。
+   */
+  readonly scanLimit?: number;
 }
 
 type PublishFn = NonNullable<PublisherRegistration['publish']>;
@@ -134,17 +150,40 @@ function credentialFieldsOf(registration: PublisherRegistration): readonly Crede
 }
 
 /**
+ * 入れ子をたどる深さの上限（設計 §6.5.5）。
+ *
+ * `fields` は Plugin が書く任意の構造なので、循環と深い木で回り続けないための蓋。
+ */
+const REDACT_MAX_DEPTH = 5;
+
+/**
+ * 深さ上限を超えた枝に置く印（設計 §6.5.5、検証レポート §9.2 の R-8）。
+ *
+ * **伏せられないなら出さない。** 深さ上限は「たどるのをやめる」ための仕組みであって、
+ * 「素通しする」ための仕組みではない。落として困る Plugin は、浅いところに書けばよい。
+ */
+const DEPTH_LIMIT_MARK = '[depth limit]';
+
+/**
  * 自由文の中の資格情報を伏せる（文字列だけを置き換え、構造は壊さない）。
  *
  * Plugin が `logger.info('x', { pw: credential.appPassword })` と書いても、
  * `maskSecrets` はキー名しか見ないので値が残る。**値まで機構で落とす**（設計 §6.5.5、L-1）。
+ *
+ * 深さ上限を超えた枝は、**値をそのまま返さずに落とす**（R-8）。
+ * 素通しすると、深いところに置かれた文字列に伏せ字が掛からず平文で出る。
  */
 function redactDeep(value: unknown, values: readonly string[], depth = 0): unknown {
   if (typeof value === 'string') {
     return redactCredentialValues(value, values);
   }
-  if (depth >= 5 || value === null || typeof value !== 'object') {
+  if (value === null || typeof value !== 'object') {
     return value;
+  }
+  // **これ以上たどれない枝は、中身を返さずに落とす**（R-8）。
+  // 返すと、その先に置かれた文字列が伏せ字を通らずに平文で出る。
+  if (depth >= REDACT_MAX_DEPTH) {
+    return DEPTH_LIMIT_MARK;
   }
   if (Array.isArray(value)) {
     return value.map((item) => redactDeep(item, values, depth + 1));
@@ -475,13 +514,26 @@ async function precheck(input: PublishOneInput): Promise<PublishVerdict | null> 
   const { registration } = input.publisher;
 
   // 1: publisher が宣言した上限。**§6.1.2 の j〜l と同じ関数**を使う。
+  //
+  // **Plugin 由来の自由文は `message` だけではない**（検証レポート §9.2 の R-5）。
+  // `publisherRejectedReason` が埋め込む `registration.label`（表示名）も、
+  // `checkPublisherLimits` が返す `field` / `message` も**すべて Plugin が書いた文字列**である。
+  // `validate()` 経路と同じ関数を通してから理由文にする（経路によって差を作らない）。
   const limitProblems = checkPublisherLimits(
     input.post,
     registration.limits ?? {},
     registration.label,
   );
   if (limitProblems.length > 0) {
-    return { kind: 'failed', reason: publisherRejectedReason(limitProblems) };
+    return {
+      kind: 'failed',
+      reason: publisherRejectedReason(
+        limitProblems.map((problem) => ({
+          field: redactSecrets(problem.field),
+          message: redactSecrets(problem.message),
+        })),
+      ),
+    };
   }
 
   if (registration.validate === undefined) {
@@ -642,43 +694,13 @@ async function publishOne(input: PublishOneInput): Promise<RowOutcome> {
 // ジョブ本体
 // ---------------------------------------------------------------------------
 
-/** 期限の来た投稿のアカウントをまとめて引く（同じアカウントは 1 回だけ）。 */
-async function accountsOf(
-  connection: Connection,
-  posts: readonly SocialPost[],
-): Promise<Map<string, SocialAccount>> {
-  const accounts = new Map<string, SocialAccount>();
-  for (const post of posts) {
-    if (accounts.has(post.socialAccountId)) {
-      continue;
-    }
-    const account = await socialRepository.findAccountById(connection, post.socialAccountId);
-    if (account !== null) {
-      accounts.set(account.id, account);
-    }
-  }
-  return accounts;
-}
-
-/** publisher を持たない provider を **provider ごとに 1 行だけ** 警告する（設計 §6.5.7）。 */
-function warnMissingPublishers(
-  posts: readonly SocialPost[],
-  accounts: Map<string, SocialAccount>,
-): void {
-  const counts = new Map<string, number>();
-  for (const post of posts) {
-    const account = accounts.get(post.socialAccountId);
-    if (account === undefined) {
-      continue;
-    }
-    const publisher = findPublisher(account.provider);
-    if (publisher === null || publisher.registration.publish === undefined) {
-      counts.set(account.provider, (counts.get(account.provider) ?? 0) + 1);
-    }
-  }
-  for (const [provider, count] of counts) {
-    log.warn('social publisher is not registered', { provider, count });
-  }
+/** 走査で着手できると判断した 1 行。**2 で引いたものを 3 へそのまま持ち回る**（設計 §6.5.2）。 */
+interface ReadyRow {
+  readonly post: SocialPost;
+  readonly account: SocialAccount;
+  readonly publisher: RegisteredPublisher;
+  readonly publish: PublishFn;
+  readonly fields: readonly CredentialField[];
 }
 
 export async function publishDuePosts(
@@ -687,6 +709,7 @@ export async function publishDuePosts(
 ): Promise<PublishSummary> {
   const timeoutMs = options.timeoutMs ?? PUBLISH_TIMEOUT_MS;
   const validateTimeoutMs = options.validateTimeoutMs ?? VALIDATE_TIMEOUT_MS;
+  const scanLimit = options.scanLimit ?? PUBLISH_SCAN_LIMIT;
   const counters = {
     interrupted: 0,
     due: 0,
@@ -711,12 +734,20 @@ export async function publishDuePosts(
     });
   }
 
-  // 2. 期限の来た自動配信の投稿（設計 §6.5.3）。
-  const due = await socialRepository.listDue(connection, PUBLISH_BATCH_SIZE);
-  counters.due = due.length;
+  // 同じアカウントを二度引かない。走査（2）で引いたものを配信（3）へ持ち回る。
+  const accounts = new Map<string, SocialAccount | null>();
+  const accountOf = async (id: string): Promise<SocialAccount | null> => {
+    const cached = accounts.get(id);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const account = await socialRepository.findAccountById(connection, id);
+    accounts.set(id, account);
+    return account;
+  };
 
-  const accounts = await accountsOf(connection, due);
-  warnMissingPublishers(due, accounts);
+  /** publisher が無い provider は **provider ごとに 1 行だけ** 警告する（設計 §6.5.7）。 */
+  const missingPublisherCounts = new Map<string, number>();
   const warnedAccounts = new Set<string>();
 
   /**
@@ -725,7 +756,11 @@ export async function publishDuePosts(
    * **着手印は書かない**ので `attempt_count` は 0 のまま。
    * 同じ理由で 3 回飛ばされたら `failed` にして順番待ちから外す。
    */
-  const defer = async (post: SocialPost, reason: SkipReason): Promise<void> => {
+  const defer = async (
+    post: SocialPost,
+    reason: SkipReason,
+    provider: string | null,
+  ): Promise<void> => {
     const verdict = decideSkipOutcome(post, reason, new Date());
     const updated = await socialRepository.deferSkipped(connection, post.id, verdict);
     if (updated === 0) {
@@ -741,7 +776,7 @@ export async function publishDuePosts(
     counters.skipFailed += 1;
     log.error('social post skipped too many times', {
       postId: post.id,
-      provider: accounts.get(post.socialAccountId)?.provider ?? null,
+      provider,
       reason: verdict.reason,
       skipCount: verdict.skipCount,
     });
@@ -752,38 +787,84 @@ export async function publishDuePosts(
     });
   };
 
-  // 3. 行ごとに。**直列。並列にしない**（設計 §6.5.2）。
-  for (const post of due) {
-    const account = accounts.get(post.socialAccountId);
-    if (account === undefined) {
-      // FK があるので通常は起きない防御。
-      await defer(post, 'account_missing');
-      continue;
+  // 2. **着手できる行を集める**（設計 §6.5.3）。
+  //
+  // **`PUBLISH_BATCH_SIZE` は「送る行」の上限、`scanLimit` は「読む行」の上限。**
+  // 飛ばした行は送る枠を食わずに後ろへ送られ、着手できる行が枠ぶん集まるか
+  // 走査上限に達するまで読み進める（裁定 #12-b）。
+  //
+  // ここでは **Plugin を呼ばない。** `publish()`（最長 30 秒）は 3 でだけ呼ぶので、
+  // 飛ばした行の判定に外部 I/O の時間が混ざらない。
+  const ready: ReadyRow[] = [];
+  let cursor: DueCursor | null = null;
+  while (ready.length < PUBLISH_BATCH_SIZE && counters.due < scanLimit) {
+    const page = await socialRepository.listDue(
+      connection,
+      Math.min(PUBLISH_PAGE_SIZE, scanLimit - counters.due),
+      cursor,
+    );
+    if (page.length === 0) {
+      // 期限の来た行が尽きた。
+      break;
     }
 
-    // a: 配信の支度ができているか。**着手印を書く前に判定する**（要件 §4 裁定 #8・#9）。
-    const publisher = findPublisher(account.provider);
-    const publish = publisher?.registration.publish;
-    if (publisher === null || publish === undefined) {
-      await defer(post, 'no_publisher');
-      continue;
-    }
+    for (const post of page) {
+      counters.due += 1;
+      // **`OFFSET` を使わない**（設計 §6.5.3）。飛ばした行・着手した行は条件から外れるので、
+      // `OFFSET` だと外れた数だけ後ろの行を読み飛ばす。
+      cursor = { scheduledAt: post.scheduledAt ?? new Date(0), id: post.id };
 
-    const fields = credentialFieldsOf(publisher.registration);
-    if (fields.length > 0 && !account.credentialConfigured) {
-      // **「まだ設定していない」を その場で `failed` にしない。** 支度が整えば配信される。
-      if (!warnedAccounts.has(account.id)) {
-        warnedAccounts.add(account.id);
-        log.warn('social account credential is not configured', {
-          accountId: account.id,
-          provider: account.provider,
-        });
+      const account = await accountOf(post.socialAccountId);
+      if (account === null) {
+        // FK があるので通常は起きない防御。
+        await defer(post, 'account_missing', null);
+        continue;
       }
-      await defer(post, 'credential_missing');
-      continue;
+
+      // a: 配信の支度ができているか。**着手印を書く前に判定する**（要件 §4 裁定 #8・#9）。
+      const publisher = findPublisher(account.provider);
+      const publish = publisher?.registration.publish;
+      if (publisher === null || publish === undefined) {
+        missingPublisherCounts.set(
+          account.provider,
+          (missingPublisherCounts.get(account.provider) ?? 0) + 1,
+        );
+        await defer(post, 'no_publisher', account.provider);
+        continue;
+      }
+
+      const fields = credentialFieldsOf(publisher.registration);
+      if (fields.length > 0 && !account.credentialConfigured) {
+        // **「まだ設定していない」を その場で `failed` にしない。** 支度が整えば配信される。
+        if (!warnedAccounts.has(account.id)) {
+          warnedAccounts.add(account.id);
+          log.warn('social account credential is not configured', {
+            accountId: account.id,
+            provider: account.provider,
+          });
+        }
+        await defer(post, 'credential_missing', account.provider);
+        continue;
+      }
+
+      // a': 支度ができている。作業列へ積む。
+      ready.push({ post, account, publisher, publish, fields });
+      if (ready.length >= PUBLISH_BATCH_SIZE) {
+        break;
+      }
     }
+  }
+
+  for (const [provider, count] of missingPublisherCounts) {
+    log.warn('social publisher is not registered', { provider, count });
+  }
+
+  // 3. **送る。** 行ごとに直列。並列にしない（設計 §6.5.2）。
+  for (const row of ready) {
+    const { post, account, publisher, publish, fields } = row;
 
     // b: 着手印。**自分のトランザクションでコミットしてから `publish()` を呼ぶ。**
+    // 2 と 3 のあいだに人が触った行は 0 行で弾かれる（従来どおり）。
     const claimed = await socialRepository.claimForPublish(connection, post.id);
     if (claimed === null) {
       // 誰かが先に触った。行は相手のものなので何もしない。

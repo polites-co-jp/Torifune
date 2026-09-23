@@ -33,9 +33,8 @@ import { useScratchDatabase, type ScratchDatabase } from '@/test-support/databas
  *
  * ## テストが前提にする口（設計 §6.6 が「差し替える」とだけ書いている部分）
  *
- * 設計は「`MANUAL_TIMEOUT_MS` をテスト用に 50ms へ差し替え」「累計が
- * `MANUAL_TIMEOUT_MS * 5` を超えた時点で残りの行を `plugin_error` として描く」と
- * 書いているが、**差し替え方と累計の持ち方は書いていない。**
+ * 設計は「`MANUAL_TIMEOUT_MS` をテスト用に 50ms へ差し替え」と書いているが、
+ * **差し替え方は書いていない。**
  * `publishDuePosts(connection, { timeoutMs, validateTimeoutMs })` の流儀に揃え、
  * UseCase の入力に置く（`defineUseCase` は `(context, input)` しか取れない）：
  *
@@ -43,14 +42,18 @@ import { useScratchDatabase, type ScratchDatabase } from '@/test-support/databas
  * resolveManualHandoff(context, {
  *   id: string;
  *   timeoutMs?: number;   // この呼び出しの上限。既定 MANUAL_TIMEOUT_MS（2 秒）
- *   deadline?: Date;      // 1 回の描画あたりの打ち切り時刻。
- *                         // 過ぎていれば manual() を呼ばずに plugin_error を返す
+ *   deadline?: Date;      // 1 回の描画の絶対の締切（壁時計）。
+ *                         // 過ぎていれば manual() を呼ばずに plugin_error を返し、
+ *                         // 残りが timeoutMs より短ければ残り時間まで切り詰める
  * }) → ManualHandoffOutcome
  * ```
  *
- * 行ごとに呼ぶ側（`app/social/page.tsx`）は、`deadline` を
- * **1 回だけ**（`now + MANUAL_HANDOFF_BUDGET_MS`）作ってすべての行へ渡す。
- * こうすると累計の上限が Domain の定数で決まり、**画面は必ず返る。**
+ * **`MANUAL_HANDOFF_BUDGET_MS`（`MANUAL_TIMEOUT_MS * 5` = 10 秒）は「累計の予算」ではなく、
+ * 1 回の描画の絶対の締切である**（2026-09-23。裁定 #12-c）。
+ * 行ごとに呼ぶ側（`app/social/page.tsx`）は `deadline` を**1 回だけ**作って
+ * `Promise.all` の全行へ渡す。行ごとの呼び出しは**並行**なので、
+ * 応答しない `manual()` が 50 行ぶんあっても描画が待つのは
+ * およそ `MANUAL_TIMEOUT_MS` 1 回ぶんで、**行数に比例しない。**
  */
 
 const PLUGIN_ID = 'test-plugin';
@@ -168,15 +171,17 @@ afterEach(async () => {
     await connection.db.deleteFrom('social_posts').execute();
     await connection.db.deleteFrom('social_accounts').execute();
     await connection.db.deleteFrom('audit_logs').execute();
+    // **`job_runs` を必ず消す**（実装プラン §7 の 17）。
+    await connection.db.deleteFrom('job_runs').execute();
     await connection.db.deleteFrom('users').execute();
   });
 });
 
 // ---------------------------------------------------------------------------
-// #105 manual() の制限時間
+// #105 (a) manual() の制限時間（1 行）
 // ---------------------------------------------------------------------------
 
-describe('#105 manual() の制限時間', () => {
+describe('#105 (a) manual() の制限時間', () => {
   it('#105 MANUAL_TIMEOUT_MS が 2 秒（publish() より短い）', async () => {
     // **静的 import にしない。** 未実装の段階でこのファイル全体が読めなくなると、
     // 何が壊れたのか読めない（`static-checks.test.ts` と同じ流儀）。
@@ -254,13 +259,23 @@ describe('#105 manual() の制限時間', () => {
 });
 
 /**
- * #105 の後半。**50 件ぶん呼ぶ経路でも画面用のデータが必ず返る**（設計 §6.6）。
+ * #105 の (b)。**本番と同じ呼び出しの形**（設計 §6.6。裁定 #12-c）。
  *
- * 行ごとの上限だけでは足りない。50 行 × 2 秒で最悪 100 秒かかり、
- * `/social` はその間まっ白になる。**1 回の描画の累計にも上限を置く。**
+ * > **2026-09-23 に書き直した（検証レポート §9.2 の R-4）。** もとの条件は
+ * > 「50 件ぶん呼ぶ経路でも**累計の上限**で打ち切られ」と書き、テストは**直列に**呼んでいた。
+ * > 実装は `Promise.all` で並行に呼ぶので、**本番に存在しない経路を見ていた**
+ * > （`spec-verifier` / `security-reviewer` / `boundary-guardian` の 3 者が独立に指摘）。
+ * >
+ * > **保証は弱めていない**：「50 件でも画面用のデータが必ず返る」は
+ * > ここがより強い形（**所要が行数に比例しない**）で引き取り、
+ * > 締切そのものの働きは (c)(d)(e) が初めて固定する。
+ *
+ * `app/social/page.tsx` と同じく、**締切は 1 回だけ作って全行へ渡す。**
  */
-describe('#105 1 回の描画あたりの累計の上限', () => {
+describe('#105 (b) Promise.all で 50 行同時に呼んでも返る', () => {
   const ROWS = 50;
+  /** 1 行ぶんの制限時間。実時間で待たないために短くする。 */
+  const TIMEOUT_MS = 500;
 
   async function manyManualPosts(): Promise<readonly string[]> {
     const ids: string[] = [];
@@ -270,47 +285,74 @@ describe('#105 1 回の描画あたりの累計の上限', () => {
     return ids;
   }
 
-  it('#105 50 行すべてに結果が返る', { timeout: 30_000 }, async () => {
+  /** 本番と同じ形：締切を 1 回だけ作り、`Promise.all` で全行へ渡す。 */
+  async function resolveAll(
+    ids: readonly string[],
+    timeoutMs: number,
+  ): Promise<{ readonly outcomes: readonly unknown[]; readonly elapsedMs: number }> {
+    const deadline = new Date(Date.now() + timeoutMs * 5);
+    const startedAt = Date.now();
+    const outcomes = await Promise.all(
+      ids.map(async (id) => resolveManualHandoff(admin, { id, timeoutMs, deadline })),
+    );
+    return { outcomes, elapsedMs: Date.now() - startedAt };
+  }
+
+  it('#105 (b) 50 行すべてに結果が返る', { timeout: 60_000 }, async () => {
     usePublisher({ manual: () => never<never>() });
     const ids = await manyManualPosts();
-    const deadline = new Date(Date.now() + 200);
 
-    const outcomes = [];
-    for (const id of ids) {
-      outcomes.push(await resolveManualHandoff(admin, { id, deadline }));
-    }
+    const { outcomes } = await resolveAll(ids, TIMEOUT_MS);
 
     expect(outcomes).toHaveLength(ROWS);
   });
 
-  it('#105 打ち切られた行は plugin_error として返る', { timeout: 30_000 }, async () => {
+  it('#105 (b) 全 50 件が plugin_error で返る', { timeout: 60_000 }, async () => {
     usePublisher({ manual: () => never<never>() });
     const ids = await manyManualPosts();
-    const deadline = new Date(Date.now() + 200);
 
-    const outcomes = [];
-    for (const id of ids) {
-      outcomes.push(await resolveManualHandoff(admin, { id, deadline }));
-    }
+    const { outcomes } = await resolveAll(ids, TIMEOUT_MS);
 
-    expect(outcomes.every((outcome) => outcome.ok === false)).toBe(true);
+    expect(outcomes).toEqual(
+      Array.from({ length: ROWS }, () => ({ ok: false, reason: 'plugin_error' })),
+    );
   });
 
-  it('#105 50 行ぶん呼んでも累計の上限で打ち切られる', { timeout: 30_000 }, async () => {
+  /**
+   * #105 (b) の要。**行数に比例しない。**
+   *
+   * 直列に呼べば 50 倍（25 秒）かかる。並行なら 1 行ぶんの制限時間で全行が返る。
+   * 余裕を見て「1 行ぶんの 2 倍未満」で固定する。
+   */
+  it('#105 (b) 所要が 1 行ぶんの制限時間の 2 倍未満', { timeout: 60_000 }, async () => {
     usePublisher({ manual: () => never<never>() });
     const ids = await manyManualPosts();
-    const deadline = new Date(Date.now() + 200);
 
-    const startedAt = Date.now();
-    for (const id of ids) {
-      await resolveManualHandoff(admin, { id, deadline });
-    }
+    const { elapsedMs } = await resolveAll(ids, TIMEOUT_MS);
 
-    // 行ごとの上限（2 秒）だけなら 50 行で 100 秒かかる。
-    expect(Date.now() - startedAt).toBeLessThan(10_000);
+    expect(elapsedMs, `50 行で ${elapsedMs}ms（直列になっている）`).toBeLessThan(TIMEOUT_MS * 2);
   });
 
-  it('#105 打ち切り時刻を過ぎていれば manual() は呼ばれない', async () => {
+  it('#105 (b) 応える publisher なら 50 行すべてが ok', { timeout: 60_000 }, async () => {
+    usePublisher({ manual: () => ({ url: 'https://example.test/compose' }) });
+    const ids = await manyManualPosts();
+
+    const { outcomes } = await resolveAll(ids, TIMEOUT_MS);
+
+    expect(outcomes.every((outcome) => (outcome as { ok: boolean }).ok)).toBe(true);
+  });
+});
+
+/**
+ * #105 の (c)(d)。**締切（壁時計）そのものの働き**（設計 §6.6。裁定 #12-c）。
+ *
+ * `MANUAL_TIMEOUT_MS` は `manual()` の中しか測っていない。`resolveManualHandoff` は
+ * その前に投稿とアカウントを DB から引くので、50 本の UseCase が同時に接続プールへ並ぶと
+ * **後ろの行が `manual()` に着くのは何秒か後**になりうる。
+ * 締切はその待ち時間も含めて描画全体を覆う。
+ */
+describe('#105 (c)(d) 締切の働き', () => {
+  it('#105 (c) 締切を過ぎていれば manual() を呼ばない', async () => {
     const manual = vi.fn<ManualFn>(() => ({ url: 'https://example.test/compose' }));
     usePublisher({ manual });
     const id = await makeManualPost();
@@ -320,7 +362,7 @@ describe('#105 1 回の描画あたりの累計の上限', () => {
     expect(manual).not.toHaveBeenCalled();
   });
 
-  it('#105 打ち切り時刻を過ぎた行は plugin_error になる', async () => {
+  it('#105 (c) 締切を過ぎた行は plugin_error になる', async () => {
     usePublisher();
     const id = await makeManualPost();
 
@@ -329,13 +371,49 @@ describe('#105 1 回の描画あたりの累計の上限', () => {
     ).resolves.toEqual({ ok: false, reason: 'plugin_error' });
   });
 
-  it('#105 打ち切り時刻が先なら従来どおり ok が返る', async () => {
+  it('#105 (c) 締切が先なら従来どおり ok が返る', async () => {
     usePublisher();
     const id = await makeManualPost();
 
     await expect(
       resolveManualHandoff(admin, { id, deadline: new Date(Date.now() + 10_000) }),
     ).resolves.toMatchObject({ ok: true });
+  });
+
+  /**
+   * #105 (d)。**締切までの残りが制限時間より短ければ、その行は残り時間で打ち切られる。**
+   *
+   * 締切が「呼ぶ／呼ばない」の 1 回の判定だけだと、
+   * **締切の 1 ミリ秒前に始まった行が制限時間ぶん（2 秒）はみ出せる。**
+   */
+  it('#105 (d) 残り時間まで切り詰められる', { timeout: 20_000 }, async () => {
+    usePublisher({ manual: () => never<never>() });
+    const id = await makeManualPost();
+
+    const startedAt = Date.now();
+    const outcome = await resolveManualHandoff(admin, {
+      id,
+      timeoutMs: 1_000,
+      deadline: new Date(Date.now() + 50),
+    });
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(outcome).toEqual({ ok: false, reason: 'plugin_error' });
+    expect(elapsedMs, `${elapsedMs}ms（timeoutMs 側で打ち切られている）`).toBeLessThan(600);
+  });
+
+  it('#105 (d) 残りが制限時間より長ければ制限時間のほうで打ち切られる', async () => {
+    usePublisher({ manual: () => never<never>() });
+    const id = await makeManualPost();
+
+    const startedAt = Date.now();
+    await resolveManualHandoff(admin, {
+      id,
+      timeoutMs: 50,
+      deadline: new Date(Date.now() + 10_000),
+    });
+
+    expect(Date.now() - startedAt).toBeLessThan(1_500);
   });
 });
 

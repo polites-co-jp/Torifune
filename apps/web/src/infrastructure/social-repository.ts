@@ -13,6 +13,7 @@ import type {
 import type { PublishVerdict, SkipReason, SkipVerdict } from '../domain/social/publishing';
 import { isSkipReason } from '../domain/social/publishing';
 import type {
+  DueCursor,
   InterruptedPost,
   NewSocialAccount,
   NewSocialPost,
@@ -547,8 +548,12 @@ export const socialRepository: SocialRepository = {
     }));
   },
 
-  async listDue(connection: Connection, limit: number): Promise<readonly SocialPost[]> {
-    const rows = await connection.db
+  async listDue(
+    connection: Connection,
+    limit: number,
+    after?: DueCursor | null,
+  ): Promise<readonly SocialPost[]> {
+    let query = connection.db
       .selectFrom('social_posts')
       .select(POST_COLUMNS)
       .where('status', '=', 'scheduled')
@@ -560,7 +565,19 @@ export const socialRepository: SocialRepository = {
       .where('scheduled_at', '<=', sql<Date>`now()`)
       .where((eb) =>
         eb.or([eb('next_attempt_at', 'is', null), eb('next_attempt_at', '<=', sql<Date>`now()`)]),
-      )
+      );
+
+    // **2 ページ目以降だけ。** 取り出し条件そのものは `022` のときと変わらない
+    // （足したのはカーソルの比較だけ。設計 §6.5.3）。
+    if (after !== undefined && after !== null && UUID_PATTERN.test(after.id)) {
+      query = query.where(
+        sql<SqlBool>`(scheduled_at, id) > (${after.scheduledAt}::timestamptz, ${after.id}::uuid)`,
+      );
+    }
+
+    const rows = await query
+      // **並びは `(scheduled_at, id)` で一意に決まる**（`id` が同値排除の第 2 キー）。
+      // キーセットの比較がこの並びに載る。
       .orderBy('scheduled_at', 'asc')
       .orderBy('id', 'asc')
       .limit(limit)

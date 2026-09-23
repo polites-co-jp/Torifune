@@ -4,6 +4,7 @@ import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { SOCIAL_PUBLISH_JOB } from '@/application/jobs/definitions';
 import { JOB_NAMES } from '@/domain/jobs/job';
+import { CORE_PERMISSIONS } from '@/domain/permission';
 import {
   MANUAL_TIMEOUT_MS,
   PUBLISH_MAX_SKIPS,
@@ -315,7 +316,6 @@ describe('#81 ドキュメントの改訂', () => {
   it.each([
     ['他のアプリの投稿が読めること', '本文ごと全件返る'],
     ['他のアプリの投稿を書き換えられること', 'B の SNS アカウントで任意の文章を公開できる'],
-    ['他のアプリの投稿を取り消せること', 'DELETE /api/v1/social/posts/{B の投稿の id}'],
     ['他のアカウントの資格情報を上書きできること', 'B が登録した資格情報を上書き・削除できる'],
   ])('#81 マニュアルが %s を具体的に書いている', (_label, token) => {
     expect(externalManual).toContain(token);
@@ -324,8 +324,136 @@ describe('#81 ドキュメントの改訂', () => {
   it('#81 マニュアルが「信頼できない第三者のアプリへ渡さない」と書いている', () => {
     // 裁定 #10 が「マニュアルに書く」と決めた文そのもの。
     expect(externalManual).toContain('信頼できない第三者のアプリへ渡さない');
-    expect(externalManual).toContain('他のアプリが登録した投稿の閲覧・書き換え・取り消し');
-    expect(externalManual).toContain('他のアカウントの資格情報の上書きができる');
+  });
+
+  /**
+   * #81（2026-09-23 に足した。検証レポート §9.2 の R-7）。
+   * **マニュアルの Permission 名が実装と食い違わないこと。**
+   *
+   * 危険の説明として「取り消しもできる」と書いていたが、
+   * `DELETE /api/v1/social/posts/{id}` の Permission は **`social.delete`** で、
+   * **`social.write` だけのトークンでは通らない**（設計 §6.8 と `009-social`）。
+   *
+   * **できないことを「できる」と書くのは、危険の説明としても誤り**である。
+   * 読んだ運用者が Scope の絞り込み（`social.delete` を外す）に意味が無いと受け取る。
+   */
+  describe('#81 マニュアルの Permission 名', () => {
+    /** `<resource>.<read|write|delete|manage>` の形で書かれたもの。Event 名は拾わない。 */
+    const PERMISSION_TOKEN = String.raw`\x60[a-z][a-z0-9_-]*\.(?:read|write|delete|manage)\x60`;
+
+    /** その文に書かれた Permission 名（`g` フラグの状態を持ち回さないよう毎回作る）。 */
+    function permissionsIn(text: string): readonly string[] {
+      return [...text.matchAll(new RegExp(PERMISSION_TOKEN, 'g'))].map((match) =>
+        match[0].replaceAll('`', ''),
+      );
+    }
+
+    /** §「トークンは名前空間であって、分離境界ではない」の「できてしまうこと」の表。 */
+    function capabilityRows(): readonly string[] {
+      const start = externalManual.search(/^### トークンは名前空間であって、分離境界ではない$/m);
+      expect(start, 'その節が無い').toBeGreaterThanOrEqual(0);
+      // 見出しの行そのものを飛ばして、次の見出しまでを切り出す。
+      const rest = externalManual.slice(externalManual.indexOf('\n', start) + 1);
+      const end = rest.search(/^#{2,4} /m);
+      const section = end === -1 ? rest : rest.slice(0, end);
+
+      return (
+        section
+          .split('\n')
+          .filter((row) => row.startsWith('| '))
+          // 見出し行と区切り行を除く。
+          .filter((row) => !/^\|[\s|-]+$/.test(row) && !row.startsWith('| できてしまうこと'))
+      );
+    }
+
+    it('#81 マニュアルに書かれた Permission 名がすべて実在する', () => {
+      const mentioned = permissionsIn(externalManual);
+
+      expect(
+        mentioned.length,
+        'Permission 名が 1 つも見つからない（検査が空振り）',
+      ).toBeGreaterThan(0);
+      for (const name of new Set(mentioned)) {
+        expect(CORE_PERMISSIONS as readonly string[], `${name} は permissions に無い`).toContain(
+          name,
+        );
+      }
+    });
+
+    it('#81 「できてしまうこと」の各行に Permission 名が併記されている', () => {
+      const rows = capabilityRows();
+
+      expect(rows.length, '表の行が読み取れない').toBeGreaterThanOrEqual(4);
+      for (const row of rows) {
+        expect(permissionsIn(row), `Permission 名の無い行: ${row}`).not.toHaveLength(0);
+      }
+    });
+
+    /**
+     * #81。**`social.write` を持つトークンにできる、として挙げた操作の Permission は
+     * その一覧（`social.read` / `social.write`）に含まれる。**
+     */
+    it('#81 できると書いた行の Permission が social.read / social.write に収まる', () => {
+      const allowed = new Set(['social.read', 'social.write']);
+
+      for (const row of capabilityRows()) {
+        if (row.includes('このトークンには無い')) continue;
+        for (const name of permissionsIn(row)) {
+          expect(allowed, `${name} は social.write のトークンには無い: ${row}`).toContain(name);
+        }
+      }
+    });
+
+    /**
+     * #81 の要。**`social.write` でできると書いてよいのは `social.read` / `social.write` の操作だけ。**
+     * `social.delete` を要する行は「このトークンには無い」と明記する。
+     */
+    it('#81 social.delete を要する行は「このトークンには無い」と書かれている', () => {
+      for (const row of capabilityRows().filter((row) => row.includes('`social.delete`'))) {
+        expect(row, `social.delete の行に断りが無い: ${row}`).toContain('このトークンには無い');
+      }
+    });
+
+    it('#81 DELETE の行が social.delete を要ると書いている', () => {
+      const row = capabilityRows().find((line) => line.includes('DELETE /api/v1/social/posts'));
+
+      expect(row, 'DELETE を挙げた行が無い').toBeDefined();
+      expect(row).toContain('`social.delete`');
+    });
+
+    it('#81 まとめの文が「取り消し」をできることに数えていない', () => {
+      // 訂正前の文。残っていると実装と食い違う。
+      expect(externalManual).not.toContain('他のアプリが登録した投稿の閲覧・書き換え・取り消し');
+    });
+
+    it('#81 まとめの文が訂正後の形になっている', () => {
+      expect(externalManual).toContain('他のアプリが登録した投稿の閲覧・書き換えと、');
+      expect(externalManual).toContain('他のアカウントの資格情報の上書きができる');
+      expect(externalManual).toContain('取り消しには `social.delete` が別に要る');
+    });
+  });
+
+  /**
+   * 設計 §11 #21（裁定 #12-a の代償）。
+   * **支度待ちの投稿を「いますぐ出す」には未来の日時を指定する。**
+   *
+   * 過去日時への予約し直しでは `next_attempt_at` が戻らないので、
+   * 最大 23 時間待たされる。**画面のフォームとマニュアルで案内する**と設計が決めた。
+   * 案内が無いと、運用者は「直したのに出ない」を原因不明のまま踏む。
+   */
+  describe('§11 #21 いますぐ出したいときの案内（マニュアル）', () => {
+    it('§11 #21 マニュアルが「数分後の日時」を指定するよう案内している', () => {
+      expect(externalManual).toContain('数分後の日時');
+    });
+
+    it('§11 #21 マニュアルが「いますぐ出したいとき」の場面を書いている', () => {
+      expect(externalManual).toContain('いますぐ出したいとき');
+    });
+
+    it('§11 #21 マニュアルが過去の日時では待ち時刻が消えないと書いている', () => {
+      expect(externalManual).toContain('過去の日時');
+      expect(externalManual).toContain('nextAttemptAt');
+    });
   });
 
   /**
@@ -653,6 +781,117 @@ describe('#87 limits の判定を 1 か所に持つ', () => {
     const source = withoutComments(readFileSync(path, 'utf8'));
 
     expect(source).toContain('checkPublisherLimits');
+  });
+});
+
+/**
+ * #87 の (E)（2026-09-23 に足した。検証レポート §9.2 の R-10）。
+ *
+ * **`PublisherLimits` のキーの集合と、`checkPublisherLimits` が判定に使うキーの集合が一致する。**
+ *
+ * 前の (E) は「同じ関数を使う」ことしか見ておらず、`PublisherLimits` に項目を増やしても
+ * **どのテストも落ちない**。効かない宣言は、Plugin 側からは
+ * 「宣言したのに守られない」という最も気づきにくい壊れ方をする（設計 §9.2 のコメント）。
+ */
+describe('#87 PublisherLimits の宣言と判定が一致する', () => {
+  const EXPECTED = ['bodyMaxLength', 'mediaMax', 'mediaRequired'];
+
+  /** `packages/plugin-api/src/social.ts` の `interface PublisherLimits { … }` の中身。 */
+  function declaredKeys(): readonly string[] {
+    const path = join(REPO_ROOT, 'packages', 'plugin-api', 'src', 'social.ts');
+    const source = readFileSync(path, 'utf8');
+    const start = source.search(/^export interface PublisherLimits \{$/m);
+    expect(start, 'PublisherLimits の宣言が無い').toBeGreaterThanOrEqual(0);
+    const rest = source.slice(start);
+    const end = rest.search(/^\}/m);
+    expect(end, 'PublisherLimits の終わりが読めない').toBeGreaterThan(0);
+    const body = withoutComments(rest.slice(0, end));
+
+    return [...body.matchAll(/^\s*(?:readonly\s+)?([A-Za-z_$][\w$]*)\??\s*:/gm)]
+      .map((match) => match[1] as string)
+      .sort();
+  }
+
+  /** `domain/social/publishing.ts` の `checkPublisherLimits` が読む `limits.<key>`。 */
+  function judgedKeys(): readonly string[] {
+    const source = readFileSync(join(SRC_DIR, 'domain', 'social', 'publishing.ts'), 'utf8');
+    const start = source.search(/^export function checkPublisherLimits\(/m);
+    expect(start, 'checkPublisherLimits が無い').toBeGreaterThanOrEqual(0);
+    const rest = source.slice(start);
+    const end = rest.search(/^\}/m);
+    expect(end, 'checkPublisherLimits の終わりが読めない').toBeGreaterThan(0);
+    const body = withoutComments(rest.slice(0, end));
+
+    return [
+      ...new Set(
+        [...body.matchAll(/\blimits\.([A-Za-z_$][\w$]*)/g)].map((match) => match[1] as string),
+      ),
+    ].sort();
+  }
+
+  it('#87 PublisherLimits のキーが読み取れる（検査が空振りしていない）', () => {
+    expect(declaredKeys()).toEqual(EXPECTED);
+  });
+
+  it('#87 checkPublisherLimits が判定に使うキーが読み取れる', () => {
+    expect(judgedKeys()).toEqual(EXPECTED);
+  });
+
+  /** **宣言だけ足して Domain が黙って無視する状態を作れない。** */
+  it('#87 宣言と判定のキーの集合が一致する', () => {
+    expect(judgedKeys(), 'PublisherLimits に足したキーを Domain が見ていない').toEqual(
+      declaredKeys(),
+    );
+  });
+});
+
+/**
+ * #105 の (e)（設計 §6.6。裁定 #12-c）。
+ *
+ * **締切は 1 回だけ作って `Promise.all` の全行へ渡す。**
+ * 行ごとに作り直すと、締切が「1 行あたり 10 秒」になって描画全体の上限が消える。
+ * **同一プロセスの結合テストでは呼ぶ側の形を見られない**ので、ここが唯一の固定になる。
+ */
+describe('#105 (e) 締切の作り方（app/social/page.tsx）', () => {
+  const PAGE = join(SRC_DIR, 'app', 'social', 'page.tsx');
+
+  function pageSource(): string {
+    expect(existsSync(PAGE), 'app/social/page.tsx が無い').toBe(true);
+    return withoutComments(readFileSync(PAGE, 'utf8'));
+  }
+
+  /** `new Date(now.getTime() + MANUAL_HANDOFF_BUDGET_MS)` のような形（`)` をまたぐ）。 */
+  const DEADLINE = /new Date\([^;]*MANUAL_HANDOFF_BUDGET_MS/;
+
+  it('#105 (e) MANUAL_HANDOFF_BUDGET_MS から締切を作っている', () => {
+    expect(pageSource()).toMatch(DEADLINE);
+  });
+
+  it('#105 (e) 締切を作るのは 1 か所だけ（行ごとに作り直していない）', () => {
+    const matches = pageSource().match(new RegExp(DEADLINE.source, 'g')) ?? [];
+
+    expect(matches, '締切を複数回作っている').toHaveLength(1);
+  });
+
+  it('#105 (e) 行ごとの呼び出しは Promise.all で並行に行う', () => {
+    const source = pageSource();
+
+    expect(source).toContain('Promise.all');
+    expect(source).toMatch(/resolveManualHandoff\(/);
+  });
+
+  it('#105 (e) resolveManualHandoff に deadline を渡している', () => {
+    expect(pageSource()).toMatch(/resolveManualHandoff\([\s\S]{0,200}?deadline/);
+  });
+
+  it('#105 (e) 締切は Promise.all より前に作られている', () => {
+    const source = pageSource();
+    const deadlineAt = source.search(DEADLINE);
+    const mapAt = source.indexOf('Promise.all');
+
+    expect(deadlineAt, '締切を作っていない').toBeGreaterThanOrEqual(0);
+    expect(mapAt, 'Promise.all が無い').toBeGreaterThanOrEqual(0);
+    expect(deadlineAt, '締切を Promise.all の中で作っている').toBeLessThan(mapAt);
   });
 });
 

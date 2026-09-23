@@ -1,6 +1,6 @@
 import type { PublisherRegistration } from '@torifune/plugin-api';
 import { uuidv7 } from 'uuidv7';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ForbiddenError,
   UnauthenticatedError,
@@ -230,12 +230,15 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   resetPublisherRegistry();
   resetEventHandlers();
   await withConnection(async (connection) => {
     await connection.db.deleteFrom('social_posts').execute();
     await connection.db.deleteFrom('social_accounts').execute();
     await connection.db.deleteFrom('audit_logs').execute();
+    // **`job_runs` を必ず消す**（実装プラン §7 の 17）。
+    await connection.db.deleteFrom('job_runs').execute();
     await connection.db.deleteFrom('users').execute();
   });
 });
@@ -496,21 +499,32 @@ describe('#100 起きた事実の記録に予約の検査を掛けない', () =>
     });
   });
 
-  it('#100 draft へ戻す更新には limits が掛かる', async () => {
-    // `draft` はこれから配信される状態で、予約として成立するかが問われる（設計 §6.2）。
+  /**
+   * #100（2026-09-23 に 422 側から成功側へ移した。検証レポート §9.2 の R-6）。
+   *
+   * **`draft` への更新は「取りやめ」である。** `validate()` が例外／制限時間超過なら
+   * 500 になり、**壊れた Plugin が取りやめを塞ぐ**（S-3 で直した形そのもの。あのときは 422）。
+   * §7.1 の「`handoff.ok === false` の行でも『投稿した』『取りやめ』は押せる」とも矛盾する。
+   *
+   * **弱めた条件ではない**：外した 1 件（`draft` が 422）と引き換えに、
+   * 「取りやめは publisher の状態に関わらず通る」（#112）と
+   * 「予約し直しには掛かる」（下の 2 件）を足している。
+   */
+  it('#100 limits に反する投稿でも取りやめ（draft）はできる', async () => {
     const id = await longBodyPost();
 
-    await expect(updateSocialPost(admin, { id, status: 'draft' })).rejects.toBeInstanceOf(
-      ValidationError,
-    );
+    await expect(updateSocialPost(admin, { id, status: 'draft' })).resolves.toMatchObject({
+      status: 'draft',
+    });
   });
 
-  it('#100 draft へ戻す更新の例外のフィールドは body', async () => {
-    const id = await longBodyPost();
+  it('#100 validate() が問題を返す publisher でも取りやめ（draft）はできる', async () => {
+    const id = await makePost({ deliveryMode: 'auto' });
+    usePublisher({ validate: () => [{ field: 'body', message: 'だめです' }] });
 
-    const error = await errorFrom(updateSocialPost(admin, { id, status: 'draft' }));
-
-    expect((error as ValidationError).field).toBe('body');
+    await expect(updateSocialPost(admin, { id, status: 'draft' })).resolves.toMatchObject({
+      status: 'draft',
+    });
   });
 
   it('#100 scheduled のまま本文を変える更新にも limits が掛かる', async () => {
@@ -527,6 +541,202 @@ describe('#100 起きた事実の記録に予約の検査を掛けない', () =>
     const error = await errorFrom(updateSocialPost(admin, { id, body: 'い'.repeat(50) }));
 
     expect((error as ValidationError).field).toBe('body');
+  });
+
+  /**
+   * #100。**予約になる更新にだけ掛かる**（設計 §6.2）。
+   *
+   * `draft` から予約し直す経路は `next.status === 'scheduled'` なので検査に掛かる。
+   * 断っても `draft` / `published` / `failed` / 削除という出口は残っている。
+   */
+  it('#100 draft から予約し直す更新には limits が掛かる', async () => {
+    const id = await longBodyPost('draft');
+
+    await expect(
+      updateSocialPost(admin, {
+        id,
+        status: 'scheduled',
+        scheduledAt: new Date(Date.now() + 600_000),
+      }),
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it('#100 予約し直す更新の例外のフィールドは body', async () => {
+    const id = await longBodyPost('draft');
+
+    const error = await errorFrom(
+      updateSocialPost(admin, {
+        id,
+        status: 'scheduled',
+        scheduledAt: new Date(Date.now() + 600_000),
+      }),
+    );
+
+    expect((error as ValidationError).field).toBe('body');
+  });
+
+  it('#100 scheduled のまま予約し直す更新にも limits が掛かる', async () => {
+    const id = await longBodyPost();
+
+    await expect(
+      updateSocialPost(admin, {
+        id,
+        status: 'scheduled',
+        scheduledAt: new Date(Date.now() + 600_000),
+      }),
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #112 壊れた validate() でも取りやめが 500 にならない
+// ---------------------------------------------------------------------------
+
+/**
+ * #112（検証レポート §9.2 の R-6。設計 §6.2 / §7.1 と整合）。
+ *
+ * **原則を 1 つにする：既にある行の出口を塞ぐ検査を、Plugin の宣言や生死に依存させない。**
+ * `limits` / `validate()` が守っているのは「**予約が配信時刻に初めて失敗しない**」ことなので、
+ * **予約になる更新（`next.status === 'scheduled'`）にだけ**掛かれば目的を果たす。
+ *
+ * 「壊れた publisher」は 2 通り：
+ *
+ * * `validate()` が**例外を投げる**（その場で 500 になっていた）
+ * * `validate()` が**解決しない**（`VALIDATE_TIMEOUT_MS` = 5 秒で打ち切られて 500 になっていた）
+ *
+ * **取りやめの経路では `validate()` を呼ばない**ので、解決しない publisher でも
+ * **待たされずに**返る（制限時間の差し替えの口は要らない。`plugin-timeout.integration.test.ts`
+ * が「`validate()` には差し替えの口を作らない」と決めた流儀に合わせる）。
+ */
+describe('#112 壊れた validate() でも取りやめができる', () => {
+  const PLUGIN_TEXT = 'validate exploded at line 42';
+
+  /** 解決しない Promise（応答しない Plugin を模す）。 */
+  function never<T>(): Promise<T> {
+    return new Promise<T>(() => undefined);
+  }
+
+  type ValidateFn = NonNullable<PublisherRegistration['validate']>;
+
+  const BROKEN: readonly (readonly [string, () => ReturnType<typeof vi.fn<ValidateFn>>])[] = [
+    [
+      '例外を投げる validate()',
+      () =>
+        vi.fn<ValidateFn>(() => {
+          throw new Error(PLUGIN_TEXT);
+        }),
+    ],
+    ['解決しない validate()', () => vi.fn<ValidateFn>((() => never<never>()) as ValidateFn)],
+  ];
+
+  /**
+   * `scheduled` の投稿を作ってから、壊れた publisher を登録する。
+   *
+   * **登録より先に投稿を作る**（裁定 #8 で 201 になる）。登録済みの publisher が
+   * 壊れると、既にある行の出口が塞がる、という R-6 の形をなぞる。
+   */
+  async function scheduledPostWithBrokenPublisher(
+    validate: ReturnType<typeof vi.fn<ValidateFn>>,
+  ): Promise<string> {
+    const id = await makePost({ deliveryMode: 'auto' });
+    usePublisher({ validate });
+    return id;
+  }
+
+  describe.each(BROKEN)('%s', (_label, makeValidate) => {
+    it('#112 取りやめ（draft）が成功する', { timeout: 20_000 }, async () => {
+      const validate = makeValidate();
+      const id = await scheduledPostWithBrokenPublisher(validate);
+
+      await expect(updateSocialPost(admin, { id, status: 'draft' })).resolves.toMatchObject({
+        status: 'draft',
+      });
+    });
+
+    it('#112 取りやめでは validate() が呼ばれない', { timeout: 20_000 }, async () => {
+      const validate = makeValidate();
+      const id = await scheduledPostWithBrokenPublisher(validate);
+
+      await updateSocialPost(admin, { id, status: 'draft' });
+
+      expect(validate).not.toHaveBeenCalled();
+    });
+
+    /** 呼ばないのだから、応答しない publisher でも**待たされない**。 */
+    it('#112 取りやめは制限時間を待たずに返る', { timeout: 20_000 }, async () => {
+      const validate = makeValidate();
+      const id = await scheduledPostWithBrokenPublisher(validate);
+
+      const startedAt = Date.now();
+      await updateSocialPost(admin, { id, status: 'draft' });
+
+      // `VALIDATE_TIMEOUT_MS` は 5 秒。呼んでいればここを超える。
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
+    });
+
+    it('#112 published への記録も成功する', { timeout: 20_000 }, async () => {
+      const validate = makeValidate();
+      const id = await scheduledPostWithBrokenPublisher(validate);
+
+      await expect(updateSocialPost(admin, { id, status: 'published' })).resolves.toMatchObject({
+        status: 'published',
+      });
+      expect(validate).not.toHaveBeenCalled();
+    });
+
+    it('#112 failed への記録も成功する', { timeout: 20_000 }, async () => {
+      const validate = makeValidate();
+      const id = await scheduledPostWithBrokenPublisher(validate);
+
+      await expect(updateSocialPost(admin, { id, status: 'failed' })).resolves.toMatchObject({
+        status: 'failed',
+      });
+      expect(validate).not.toHaveBeenCalled();
+    });
+
+    /**
+     * #112。**予約し直しは従来どおり 500。**
+     *
+     * 予約として成立するかは `scheduled` へ戻すときに見直される。
+     * 断っても `draft` / `published` / `failed` / 削除という出口は残っている。
+     */
+    it('#112 予約し直しは失敗する（ValidationError ではない）', { timeout: 30_000 }, async () => {
+      const validate = makeValidate();
+      const id = await scheduledPostWithBrokenPublisher(validate);
+
+      const error = await errorFrom(
+        updateSocialPost(admin, {
+          id,
+          status: 'scheduled',
+          scheduledAt: new Date(Date.now() + 600_000),
+        }),
+      );
+
+      expect(error).toBeInstanceOf(Error);
+      expect(error, '422 になっている（500 であるべき）').not.toBeInstanceOf(ValidationError);
+    });
+
+    /**
+     * #112。**予約し直しでは `validate()` が呼ばれる**（検査を外したのではない）。
+     *
+     * 「取りやめでは呼ばない」だけを見ると、`validate()` を全部やめても通ってしまう。
+     * 応答が 500 になること（Plugin の文言を外へ出さないこと）は
+     * `api/social-post-update.integration.test.ts` が HTTP の層で見る。
+     */
+    it('#112 予約し直しでは validate() が呼ばれる', { timeout: 30_000 }, async () => {
+      const validate = makeValidate();
+      const id = await scheduledPostWithBrokenPublisher(validate);
+
+      await errorFrom(
+        updateSocialPost(admin, {
+          id,
+          status: 'scheduled',
+          scheduledAt: new Date(Date.now() + 600_000),
+        }),
+      );
+
+      expect(validate).toHaveBeenCalledTimes(1);
+    });
   });
 });
 
