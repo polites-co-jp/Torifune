@@ -47,6 +47,7 @@ import {
   MEDIA_MAX_BYTES,
   MEDIA_UPLOAD_TIMEOUT_MS,
   PUBLISH_TOTAL_BUDGET_MS,
+  RESPONSE_BODY_MAX_BYTES,
   X_API_BASE_URL,
 } from '../../../../plugins/sns-x-api/xapi';
 
@@ -614,6 +615,58 @@ function streamedImage(total: number): { readonly route: Route; readonly stats: 
     );
   return { route, stats };
 }
+
+/**
+ * `data` に詰め物（`pad`）を足し、JSON の全体が**ちょうど `totalBytes` バイト**になる本体（ASCII だけ）。
+ * `data.id` は形に合う値のままにする：**上限で打ち切らなければ、成功として読めてしまう**本体にする。
+ */
+function paddedJson(data: Readonly<Record<string, unknown>>, totalBytes: number): string {
+  const base = JSON.stringify({ data: { ...data, pad: '' } });
+  const json = JSON.stringify({ data: { ...data, pad: 'p'.repeat(totalBytes - base.length) } });
+  if (json.length !== totalBytes) {
+    throw new Error(`本体の長さが ${totalBytes} にならない: ${json.length}`);
+  }
+  return json;
+}
+
+/**
+ * R2 / R3 の応答の本体を 16 KiB ずつ流す（`Content-Length` なし）。**終わりのある stream**
+ * （打ち切りが壊れていてもテストが OOM にならずに落ちるように。検証の軽微-1）。`pull` の回数と `cancel` を記録する。
+ */
+function streamedJson(
+  status: number,
+  json: string,
+): { readonly route: Route; readonly stats: StreamStats } {
+  const CHUNK = 16 * 1024;
+  const bytes = new TextEncoder().encode(json);
+  const stats: StreamStats = { pulls: 0, sent: 0, cancelled: false };
+  const route: Route = () =>
+    new Response(
+      new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            if (stats.sent >= bytes.byteLength) {
+              controller.close();
+              return;
+            }
+            const end = Math.min(stats.sent + CHUNK, bytes.byteLength);
+            stats.pulls += 1;
+            controller.enqueue(bytes.slice(stats.sent, end));
+            stats.sent = end;
+          },
+          cancel() {
+            stats.cancelled = true;
+          },
+        },
+        { highWaterMark: 0 },
+      ),
+      { status, headers: { 'content-type': 'application/json; charset=utf-8' } },
+    );
+  return { route, stats };
+}
+
+/** 1 MiB。応答の本体の上限（64 KiB）を大きく超える、終わりのある長さ。 */
+const ONE_MIB = 1024 * 1024;
 
 /* -------------------------------------------------------------------------- */
 /* §6.8 の表（17 行）                                                           */
@@ -1581,6 +1634,43 @@ describe('P1 画像の取得の細部（#41）', () => {
     expectWarnedAt(log, 'media');
   });
 
+  it('P1 経過がちょうど MEDIA_BUDGET_MS なら、次の画像に取りかからない（>= で判定する境界）', async () => {
+    // 検証の軽微-3：`>` に変えても他のテストが落ちなかった。ちょうどの所で止まることを見る。
+    const { result, fake, log } = await run({
+      post: postView({ media: mediaOf(2) }),
+      routes: {
+        R2: (context) => {
+          if (context.index === 0) {
+            context.clock.advance(MEDIA_BUDGET_MS);
+          }
+          return defaultRoute('R2', context);
+        },
+      },
+    });
+
+    expect(retryableOf(result)).toBe(true);
+    expect(fake.kinds()).toEqual(['R1', 'R2']);
+    expectWarnedAt(log, 'media');
+  });
+
+  it('P1 経過が MEDIA_BUDGET_MS より 1ms 短ければ、次の画像に取りかかり R3 まで送る', async () => {
+    // 残りは 25,000 − 14,999 = 10,001ms で、R3 の 10 秒以上ある（P3 の判定にも掛からない）。
+    const { result, fake } = await run({
+      post: postView({ media: mediaOf(2) }),
+      routes: {
+        R2: (context) => {
+          if (context.index === 0) {
+            context.clock.advance(MEDIA_BUDGET_MS - 1);
+          }
+          return defaultRoute('R2', context);
+        },
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(fake.kinds()).toEqual(['R1', 'R2', 'R1', 'R2', 'R3']);
+  });
+
   it('P1 2 枚目の R1 が失敗したら、2 枚目の R2 と R3 を送らない', async () => {
     const { result, fake, log } = await run({
       post: postView({ media: mediaOf(2) }),
@@ -1657,6 +1747,93 @@ describe('P2 画像のアップロードの細部（#41 / #67）', () => {
   });
 });
 
+describe('応答の本体の上限（設計 §6.4 / §6.5 / §6.8。検証の軽微-1）', () => {
+  it('応答の本体の上限は 64 KiB', () => {
+    expect(RESPONSE_BODY_MAX_BYTES).toBe(64 * 1024);
+  });
+
+  it('前提：詰め物をした本体はちょうどの長さになり、そのまま読めば形に合う data.id を持つ', () => {
+    const json = paddedJson({ id: mediaIdOf(0) }, ONE_MIB);
+
+    expect(new TextEncoder().encode(json).byteLength).toBe(ONE_MIB);
+    expect((JSON.parse(json) as { data: { id: unknown } }).data.id).toBe(mediaIdOf(0));
+  });
+
+  it('R2 の 200 の本体が 1 MiB なら上限で読むのをやめ、retryable: true で R3 を送らない（phase: upload）', async () => {
+    // data.id は形に合う。上限で打ち切らなければ R3 へ進んで成功してしまう。
+    const streamed = streamedJson(200, paddedJson({ id: mediaIdOf(0) }, ONE_MIB));
+
+    const { result, fake, log } = await run({ ...ONE_IMAGE, routes: { R2: streamed.route } });
+
+    expect(retryableOf(result)).toBe(true);
+    expect(fake.of('R3')).toHaveLength(0);
+    expectWarnedAt(log, 'upload');
+    expect(streamed.stats.cancelled).toBe(true);
+    // 上限（64 KiB）を超えるのは 5 塊目。先読みの分を除き、それより先を読んでいない。
+    expect(streamed.stats.sent).toBeLessThan(ONE_MIB);
+    expect(streamed.stats.pulls).toBeLessThanOrEqual(RESPONSE_BODY_MAX_BYTES / (16 * 1024) + 3);
+  });
+
+  it('R2 の本体がちょうど 64 KiB なら読み切って R3 へ進む', async () => {
+    const streamed = streamedJson(200, paddedJson({ id: mediaIdOf(0) }, RESPONSE_BODY_MAX_BYTES));
+
+    const { result, fake } = await run({ ...ONE_IMAGE, routes: { R2: streamed.route } });
+
+    expect(result.ok).toBe(true);
+    expect(fake.of('R3')).toHaveLength(1);
+  });
+
+  it('R2 の本体が 64 KiB ＋ 1 バイトなら retryable: true で R3 を送らない', async () => {
+    const streamed = streamedJson(
+      200,
+      paddedJson({ id: mediaIdOf(0) }, RESPONSE_BODY_MAX_BYTES + 1),
+    );
+
+    const { result, fake, log } = await run({ ...ONE_IMAGE, routes: { R2: streamed.route } });
+
+    expect(retryableOf(result)).toBe(true);
+    expect(fake.of('R3')).toHaveLength(0);
+    expectWarnedAt(log, 'upload');
+  });
+
+  it('R3 の 201 の本体が 1 MiB なら上限で読むのをやめ、retryable: false（届いたか分からない。phase: create）', async () => {
+    // data.id は形に合う。上限で打ち切らなければ成功として読めてしまう。
+    const streamed = streamedJson(201, paddedJson({ id: TWEET_ID, text: 'posted' }, ONE_MIB));
+
+    const { result, fake, log } = await run({ routes: { R3: streamed.route } });
+
+    expect(retryableOf(result)).toBe(false);
+    expect(fake.of('R3')).toHaveLength(1);
+    expectWarnedAt(log, 'create');
+    expect(streamed.stats.cancelled).toBe(true);
+    expect(streamed.stats.sent).toBeLessThan(ONE_MIB);
+    expect(streamed.stats.pulls).toBeLessThanOrEqual(RESPONSE_BODY_MAX_BYTES / (16 * 1024) + 3);
+  });
+
+  it('R3 の本体がちょうど 64 KiB なら読み切って成功する', async () => {
+    const streamed = streamedJson(
+      201,
+      paddedJson({ id: TWEET_ID, text: 'posted' }, RESPONSE_BODY_MAX_BYTES),
+    );
+
+    const { result } = await run({ routes: { R3: streamed.route } });
+
+    expect(result).toEqual({ ok: true, externalId: TWEET_ID, externalUrl: statusUrlOf(TWEET_ID) });
+  });
+
+  it('R3 の本体が 64 KiB ＋ 1 バイトなら retryable: false', async () => {
+    const streamed = streamedJson(
+      201,
+      paddedJson({ id: TWEET_ID, text: 'posted' }, RESPONSE_BODY_MAX_BYTES + 1),
+    );
+
+    const { result, log } = await run({ routes: { R3: streamed.route } });
+
+    expect(retryableOf(result)).toBe(false);
+    expectWarnedAt(log, 'create');
+  });
+});
+
 describe('P3 準備の境界（#41）', () => {
   it('P3 R2 の後の残りがちょうど CREATE_TWEET_TIMEOUT_MS なら R3 を送る（以上あれば送る）', async () => {
     const { result, fake } = await run({
@@ -1675,6 +1852,28 @@ describe('P3 準備の境界（#41）', () => {
 });
 
 describe('P4 投稿の細部（#41 / #57 の単体側）', () => {
+  it.each([202, 203, 206])(
+    'P4 R3 が %i（200 / 201 以外の 2xx）なら、形に合う data.id があっても retryable: false（phase: create）',
+    async (status) => {
+      // 検証の軽微-2：成功は 200 / 201 だけ（設計 §6.4）。「2xx なら成功」に広げても他のテストが落ちなかった。
+      const { result, fake, log } = await run({
+        routes: { R3: reply({ status, body: { data: { id: TWEET_ID, text: 'posted' } } }) },
+      });
+
+      expect(retryableOf(result)).toBe(false);
+      expect(fake.of('R3')).toHaveLength(1);
+      expectWarnedAt(log, 'create');
+      expect(log.find((entry) => entry.level === 'warn')?.fields?.['status']).toBe(status);
+    },
+  );
+
+  it('P4 R3 が 204（本体なし）なら retryable: false', async () => {
+    const { result, log } = await run({ routes: { R3: reply({ status: 204, body: '' }) } });
+
+    expect(retryableOf(result)).toBe(false);
+    expectWarnedAt(log, 'create');
+  });
+
   it('P4 R3 の応答のヘッダを受け取った直後に合計の期限が発火すると、本体が届いていても retryable: false', async () => {
     // 本物の fetch は、ヘッダの後で signal が発火すると本体の読み込みも reject する（#57）。
     // 偽物の本体も signal と結びついているので、201・id ありの応答でも本体が読めない。

@@ -326,6 +326,13 @@ const LONE_SURROGATES: readonly {
     link: LINK,
     replaced: `abc\ufffd\n${LINK}`,
   },
+  {
+    // link を繋いだ後の文字列を見るので、field は link ではなく body（設計 §10.16 #93）。
+    label: 'link の中の U+D800',
+    body: 'abc',
+    link: 'https://example.com/\ud800',
+    replaced: 'abc\nhttps://example.com/\ufffd',
+  },
 ];
 
 describe('対になっていないサロゲート（#93）', () => {

@@ -534,6 +534,8 @@ const LONE_SURROGATES: readonly {
   { label: '末尾の U+DC00', body: 'abc\udc00', link: null },
   { label: '並びの途中の U+D800', body: 'ab\ud800cd', link: null },
   { label: 'link の直前の U+D800', body: 'abc\ud800', link: LINK },
+  // link を繋いだ後の文字列を見るので、field は link ではなく body（設計 §10.16 #93）。
+  { label: 'link の中の U+D800', body: 'abc', link: 'https://example.com/\ud800' },
 ];
 
 describe('対になっていないサロゲート（#93）', () => {

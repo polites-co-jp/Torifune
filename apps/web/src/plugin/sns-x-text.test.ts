@@ -204,7 +204,7 @@ const CASES: readonly TextCase[] = [
   {
     // 設計 §11 #3 (b)②：twitter-text は path に含めて 23。ここでは URL 23 + é(1) + /menu(5) = 29。
     label: '#14（§11 #3 の b②）path のラテン文字の拡張の所で URL を終える',
-    body: 'https://example.com/café/menu',
+    body: 'https://example.com/caf\u00e9/menu',
     link: null,
     weight: 29,
     manual: [],
@@ -312,6 +312,13 @@ const LONE_SURROGATE_CASES: readonly LoneSurrogateCase[] = [
     body: 'abc\ud800',
     link: LINK,
     replaced: `abc\ufffd\n${LINK}`,
+  },
+  {
+    // link を繋いだ後の文字列を見るので、field は link ではなく body（設計 §10.16 #93）。
+    label: 'link の中の U+D800',
+    body: 'abc',
+    link: 'https://example.com/\ud800',
+    replaced: 'abc\nhttps://example.com/\ufffd',
   },
   {
     label: '逆順に並んだ U+DC00 U+D800（どちらも片割れ）',
@@ -587,10 +594,10 @@ describe.each(COPIES)('%s/x-text.ts', (_name, text) => {
   });
 
   describe('対になっていないサロゲート（#93）', () => {
-    it('前提：表の本文は対になっていないサロゲートを含み、encodeURIComponent がそのままでは投げる', () => {
+    it('前提：表の本文（link を繋いだ後）は対になっていないサロゲートを含み、encodeURIComponent がそのままでは投げる', () => {
       // ここが崩れると、以下のテストが「例外を投げない」ことを確かめなくなる。
       for (const row of LONE_SURROGATE_CASES) {
-        expect(() => encodeURIComponent(row.body), row.label).toThrow(URIError);
+        expect(() => encodeURIComponent(text.composeXText(row)), row.label).toThrow(URIError);
       }
       expect(() => encodeURIComponent(THUMBS_UP_PAIR)).not.toThrow();
     });

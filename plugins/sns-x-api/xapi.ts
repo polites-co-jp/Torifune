@@ -501,7 +501,8 @@ export async function uploadMedia(params: {
   }
 
   // ここから先はどれも R3 を送っていない。読めなくても形が合わなくても `true`。
-  // 本体が上限を超える・本体の途中で打ち切られる分岐は、テストで到達を確かめていない（どちらも `true` で、§6.8 の P2 の既存の行）。
+  // 本体が上限を超えたら「JSON でない」と同じ扱い（§6.8 の P2 の既存の行）。
+  // 本体の途中で打ち切られる分岐は、テストで到達を確かめていない。
   const read = await readBounded(response, RESPONSE_BODY_MAX_BYTES);
   if (!read.ok) {
     return read.tooLarge
@@ -582,7 +583,7 @@ export async function createTweet(params: {
     });
   }
 
-  // 本体が上限を超えたら「JSON でない」と同じ扱い（`false`。実装プラン §8 の 8）。上限を超える分岐はテストで到達を確かめていない。
+  // 本体が上限を超えたら「JSON でない」と同じ扱い（`false`。設計 §6.4）。
   const read = await readBounded(response, RESPONSE_BODY_MAX_BYTES);
   if (!read.ok) {
     return read.tooLarge
