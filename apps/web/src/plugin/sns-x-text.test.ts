@@ -207,6 +207,47 @@ const CASES: readonly TextCase[] = [
   },
 ];
 
+/**
+ * #93：対になっていないサロゲートを含む本文（設計 §9.4 / §10.16）。
+ * `replaced` は `composeXText` の結果の片割れを U+FFFD に置き換えた文字列（intent URL の `text` が戻る先）。
+ */
+interface LoneSurrogateCase {
+  readonly label: string;
+  readonly body: string;
+  readonly link: string | null;
+  readonly replaced: string;
+}
+
+const LONE_SURROGATE_CASES: readonly LoneSurrogateCase[] = [
+  { label: '先頭の U+D800', body: '\ud800abc', link: null, replaced: '\ufffdabc' },
+  { label: '末尾の U+DC00', body: 'abc\udc00', link: null, replaced: 'abc\ufffd' },
+  { label: '並びの途中の U+D800', body: 'ab\ud800cd', link: null, replaced: 'ab\ufffdcd' },
+  {
+    label: 'link の直前の U+D800',
+    body: 'abc\ud800',
+    link: LINK,
+    replaced: `abc\ufffd\n${LINK}`,
+  },
+  {
+    label: '逆順に並んだ U+DC00 U+D800（どちらも片割れ）',
+    body: 'x\udc00\ud800y',
+    link: null,
+    replaced: 'x\ufffd\ufffdy',
+  },
+  {
+    label: '正しい対の後ろの U+D800（対はそのまま残る）',
+    body: '\ud83d\udc4d\ud800',
+    link: null,
+    replaced: '\ud83d\udc4d\ufffd',
+  },
+];
+
+/** #93 の文言（設計 §9.4）。 */
+const LONE_SURROGATE_MESSAGE = '本文に扱えない文字が含まれています。';
+
+/** 正しいサロゲートの対（👍 = U+1F44D）。 */
+const THUMBS_UP_PAIR = '\ud83d\udc4d';
+
 let realFetch: typeof globalThis.fetch;
 let fetchCalls = 0;
 
@@ -457,6 +498,88 @@ describe.each(COPIES)('%s/x-text.ts', (_name, text) => {
         url: text.buildXIntentUrl(post),
         note: text.X_MANUAL_NOTE,
       });
+    });
+  });
+
+  describe('対になっていないサロゲート（#93）', () => {
+    it('前提：表の本文は対になっていないサロゲートを含み、encodeURIComponent がそのままでは投げる', () => {
+      // ここが崩れると、以下のテストが「例外を投げない」ことを確かめなくなる。
+      for (const row of LONE_SURROGATE_CASES) {
+        expect(() => encodeURIComponent(row.body), row.label).toThrow(URIError);
+      }
+      expect(() => encodeURIComponent(THUMBS_UP_PAIR)).not.toThrow();
+    });
+
+    it.each(LONE_SURROGATE_CASES)(
+      '#93 checkXText は manual でも例外を投げず [{ field: body }] を返す：$label',
+      (row) => {
+        const post = { body: row.body, link: row.link, deliveryMode: 'manual' };
+
+        expect(() => text.checkXText(post)).not.toThrow();
+        expect(text.checkXText(post)).toEqual([{ field: 'body', message: LONE_SURROGATE_MESSAGE }]);
+      },
+    );
+
+    it.each(LONE_SURROGATE_CASES)(
+      '#93 checkXText は auto でも例外を投げず [{ field: body }] を返す（X へ送っても受け付けられない）：$label',
+      (row) => {
+        const post = { body: row.body, link: row.link, deliveryMode: 'auto' };
+
+        expect(() => text.checkXText(post)).not.toThrow();
+        expect(text.checkXText(post)).toEqual([{ field: 'body', message: LONE_SURROGATE_MESSAGE }]);
+      },
+    );
+
+    it('#93 片割れのある本文では intent URL の長さを数えない（長い URL を含んでも問題は 1 件）', () => {
+      // intent URL が 2048 を超える本文に片割れを足す。長さの問題は重ねない（設計 §9.4）。
+      const body = `${bodyWithIntentLength(2100)} \ud800`;
+
+      expect(text.checkXText({ body, link: null, deliveryMode: 'manual' })).toEqual([
+        { field: 'body', message: LONE_SURROGATE_MESSAGE },
+      ]);
+    });
+
+    it.each(LONE_SURROGATE_CASES)(
+      '#93 buildXIntentUrl は例外を投げず、text が片割れを U+FFFD に置き換えた文字列に戻る：$label',
+      (row) => {
+        expect(() => text.buildXIntentUrl(row)).not.toThrow();
+        const url = new URL(text.buildXIntentUrl(row));
+
+        expect(url.origin + url.pathname).toBe('https://x.com/intent/tweet');
+        expect(url.searchParams.get('text')).toBe(row.replaced);
+      },
+    );
+
+    it.each(LONE_SURROGATE_CASES)(
+      '#93 buildXManualHandoff も例外を投げず、url は buildXIntentUrl と同じ：$label',
+      (row) => {
+        expect(() => text.buildXManualHandoff(row)).not.toThrow();
+        expect(text.buildXManualHandoff(row)).toEqual({
+          url: text.buildXIntentUrl(row),
+          note: text.X_MANUAL_NOTE,
+        });
+      },
+    );
+
+    it('#93 正しいサロゲートの対（👍）は問題にしない（manual / auto）', () => {
+      for (const deliveryMode of ['manual', 'auto'] as const) {
+        expect(
+          text.checkXText({ body: `いいね${THUMBS_UP_PAIR}`, link: null, deliveryMode }),
+          deliveryMode,
+        ).toEqual([]);
+      }
+    });
+
+    it('#93 正しいサロゲートの対（👍）は U+FFFD に置き換えない', () => {
+      const post = { body: `いいね${THUMBS_UP_PAIR}`, link: LINK };
+
+      expect(new URL(text.buildXIntentUrl(post)).searchParams.get('text')).toBe(
+        `いいね${THUMBS_UP_PAIR}\n${LINK}`,
+      );
+      // #17 の等式は正しい文字列では変わらない。
+      expect(text.buildXIntentUrl(post)).toBe(
+        `https://x.com/intent/tweet?text=${encodeURIComponent(text.composeXText(post))}`,
+      );
     });
   });
 

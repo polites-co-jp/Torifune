@@ -6,6 +6,7 @@ import type {
   SocialPostView,
 } from '@torifune/plugin-api';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { CREDENTIAL, toResponse, tweetCreated } from '@/test-support/x-api';
 import { createXApiPublisher } from '../../../../plugins/sns-x-api/social';
 import * as apiText from '../../../../plugins/sns-x-api/x-text';
 import { createXManualPublisher } from '../../../../plugins/sns-x-manual/social';
@@ -207,6 +208,10 @@ describe('登録（#26）', () => {
     expect(typeof registration.validate).toBe('function');
     expect(typeof registration.manual).toBe('function');
   });
+
+  it('#26 publish がある', () => {
+    expect(typeof apiPublisher().publish).toBe('function');
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -398,6 +403,17 @@ const PAIRS: readonly Pair[] = [
   { label: 'link が文字列でない', body: '本文です', link: 42 },
 ];
 
+/**
+ * #10 の組のうち、`publish()` が R3 まで進むもの（本文が空でない文字列で、`auto` の本文の判定に通るもの）。
+ * `publish()` は入口で本文の重みを見て、通らなければ外へ出さない（設計 §6.8 の P0）。
+ */
+const PUBLISHABLE_PAIRS: readonly Pair[] = PAIRS.filter(
+  (pair) =>
+    typeof pair.body === 'string' &&
+    pair.body !== '' &&
+    apiText.checkXText({ body: pair.body, link: pair.link, deliveryMode: 'auto' }).length === 0,
+);
+
 function draftOf(pair: Pair): SocialPostDraftView {
   return draft({
     deliveryMode: 'manual',
@@ -419,6 +435,13 @@ describe('振る舞いの一致（#10）', () => {
     expect(PAIRS.length).toBeGreaterThanOrEqual(20);
   });
 
+  it('#10 publish() まで通す組が 10 通り以上ある（link あり・URL・絵文字・改行を含む）', () => {
+    expect(PUBLISHABLE_PAIRS.length).toBeGreaterThanOrEqual(10);
+    expect(PUBLISHABLE_PAIRS.some((pair) => typeof pair.link === 'string')).toBe(true);
+    expect(PUBLISHABLE_PAIRS.some((pair) => String(pair.body).includes('https://'))).toBe(true);
+    expect(PUBLISHABLE_PAIRS.some((pair) => String(pair.body).includes('\n'))).toBe(true);
+  });
+
   it('#10 組には validate() が問題を返すものと返さないものの両方がある（一致の検査が空振りしない）', () => {
     const results = PAIRS.map((pair) => validateWith(manualPublisher(), draftOf(pair)));
 
@@ -438,6 +461,52 @@ describe('振る舞いの一致（#10）', () => {
     expect(validateWith(apiPublisher(), post)).toEqual(validateWith(manualPublisher(), post));
   });
 
+  it.each(PUBLISHABLE_PAIRS)(
+    '#10 publish() が R3 に送る text が、同じ投稿の manual() の URL の text 引数と一致する：$label',
+    async (pair) => {
+      const post = postView({
+        ...postOf(pair),
+        deliveryMode: 'auto',
+        status: 'publishing',
+      });
+      const sent: unknown[] = [];
+      // 偽の X API（R3 だけ）。**外へは出ない**（`createXApiPublisher` の `fetch` に注入する。設計 §10.1）。
+      const fakeX = (async (input: unknown, init: RequestInit = {}): Promise<Response> => {
+        if (String(input) !== 'https://api.x.com/2/tweets') {
+          throw new TypeError(`偽の X API が知らない宛先: ${String(input)}`);
+        }
+        const request = new Request(String(input), {
+          method: init.method ?? 'GET',
+          headers: init.headers,
+          body: init.body ?? null,
+        });
+        sent.push((JSON.parse(await request.text()) as { readonly text?: unknown }).text);
+        return toResponse(tweetCreated(), init.signal);
+      }) as typeof globalThis.fetch;
+      const publish = createXApiPublisher({
+        fetch: fakeX,
+        now: () => new Date('2026-09-23T12:00:00.000Z'),
+        nonce: () => 'nonce-0001',
+      }).publish;
+      if (publish === undefined) {
+        throw new Error('publish() が実装されていない');
+      }
+
+      const result = await publish({
+        post,
+        account: accountView(),
+        credential: { ...CREDENTIAL },
+        attempt: 1,
+        signal: new AbortController().signal,
+        logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+      });
+
+      expect(result.ok).toBe(true);
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toBe(new URL(manualWith(apiPublisher(), post).url).searchParams.get('text'));
+    },
+  );
+
   it.each(PAIRS)(
     '#10 どちらの validate() も body の問題は自分の x-text.ts の checkXText と同じ：$label',
     (pair) => {
@@ -447,6 +516,63 @@ describe('振る舞いの一致（#10）', () => {
 
       expect(bodyOf(validateWith(manualPublisher(), post))).toEqual(manualText.checkXText(post));
       expect(bodyOf(validateWith(apiPublisher(), post))).toEqual(apiText.checkXText(post));
+    },
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* 対になっていないサロゲート（#93）                                              */
+/* -------------------------------------------------------------------------- */
+
+/** 対になっていないサロゲートを含む本文（設計 §9.4 / §10.16）。 */
+const LONE_SURROGATES: readonly {
+  readonly label: string;
+  readonly body: string;
+  readonly link: string | null;
+}[] = [
+  { label: '先頭の U+D800', body: '\ud800abc', link: null },
+  { label: '末尾の U+DC00', body: 'abc\udc00', link: null },
+  { label: '並びの途中の U+D800', body: 'ab\ud800cd', link: null },
+  { label: 'link の直前の U+D800', body: 'abc\ud800', link: LINK },
+];
+
+describe('対になっていないサロゲート（#93）', () => {
+  it.each(LONE_SURROGATES)(
+    '#93 validate() は manual でも auto でも例外を投げず body の問題だけを返す：$label',
+    (row) => {
+      for (const deliveryMode of ['manual', 'auto'] as const) {
+        const post = draft({ deliveryMode, body: row.body, link: row.link });
+
+        expect(() => validate(post), deliveryMode).not.toThrow();
+        expect(fieldsOf(validate(post)), deliveryMode).toEqual(['body']);
+      }
+    },
+  );
+
+  it.each(LONE_SURROGATES)(
+    '#93 validate() の判定が sns-x-manual と一致する（manual）：$label',
+    (row) => {
+      const post = draft({ deliveryMode: 'manual', body: row.body, link: row.link });
+
+      expect(validateWith(apiPublisher(), post)).toEqual(validateWith(manualPublisher(), post));
+    },
+  );
+
+  it('#93 正しいサロゲートの対（👍）は body の問題にしない', () => {
+    for (const deliveryMode of ['manual', 'auto'] as const) {
+      expect(validate(draft({ deliveryMode, body: 'いいね\ud83d\udc4d' })), deliveryMode).toEqual(
+        [],
+      );
+    }
+  });
+
+  it.each(LONE_SURROGATES)(
+    '#93 manual() も例外を投げず、sns-x-manual の manual() と同じ値を返す：$label',
+    (row) => {
+      const post = postView({ body: row.body, link: row.link });
+
+      expect(() => manualWith(apiPublisher(), post)).not.toThrow();
+      expect(manualWith(apiPublisher(), post)).toEqual(manualWith(manualPublisher(), post));
     },
   );
 });

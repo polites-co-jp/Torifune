@@ -306,6 +306,65 @@ describe('manual()（#25）', () => {
   });
 });
 
+/* -------------------------------------------------------------------------- */
+/* 対になっていないサロゲート（#93）                                              */
+/* -------------------------------------------------------------------------- */
+
+/** 対になっていないサロゲートを含む本文（設計 §9.4 / §10.16）。`replaced` は intent URL の text が戻る先。 */
+const LONE_SURROGATES: readonly {
+  readonly label: string;
+  readonly body: string;
+  readonly link: string | null;
+  readonly replaced: string;
+}[] = [
+  { label: '先頭の U+D800', body: '\ud800abc', link: null, replaced: '\ufffdabc' },
+  { label: '末尾の U+DC00', body: 'abc\udc00', link: null, replaced: 'abc\ufffd' },
+  { label: '並びの途中の U+D800', body: 'ab\ud800cd', link: null, replaced: 'ab\ufffdcd' },
+  {
+    label: 'link の直前の U+D800',
+    body: 'abc\ud800',
+    link: LINK,
+    replaced: `abc\ufffd\n${LINK}`,
+  },
+];
+
+describe('対になっていないサロゲート（#93）', () => {
+  it.each(LONE_SURROGATES)(
+    '#93 validate()（manual）は例外を投げず body の問題を返す：$label',
+    (row) => {
+      const post = draft({ deliveryMode: 'manual', body: row.body, link: row.link });
+
+      expect(() => validate(post)).not.toThrow();
+      expect(fieldsOf(validate(post))).toEqual(['body']);
+    },
+  );
+
+  it.each(LONE_SURROGATES)(
+    '#93 validate()（auto）も例外を投げず、deliveryMode と body の問題を返す：$label',
+    (row) => {
+      const post = draft({ deliveryMode: 'auto', body: row.body, link: row.link });
+
+      expect(() => validate(post)).not.toThrow();
+      expect(fieldsOf(validate(post)).sort()).toEqual(['body', 'deliveryMode']);
+    },
+  );
+
+  it('#93 正しいサロゲートの対（👍）は body の問題にしない', () => {
+    expect(validate(draft({ deliveryMode: 'manual', body: 'いいね\ud83d\udc4d' }))).toEqual([]);
+  });
+
+  it.each(LONE_SURROGATES)(
+    '#93 manual() も例外を投げず、intent URL の text は片割れを U+FFFD に置き換えた文字列：$label',
+    (row) => {
+      // manual() は validate() を通っていない投稿でも呼ばれうる（設計 §9.4）。
+      const post = postView({ body: row.body, link: row.link });
+
+      expect(() => manual(post)).not.toThrow();
+      expect(new URL(manual(post).url).searchParams.get('text')).toBe(row.replaced);
+    },
+  );
+});
+
 describe('外へ出ない（#90）', () => {
   it('#90 投げる fetch のまま validate() と manual() がすべて通り、fetch が 1 度も呼ばれない', () => {
     const throwing = globalThis.fetch;
