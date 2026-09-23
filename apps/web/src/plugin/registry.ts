@@ -253,6 +253,17 @@ export function settingsOf(pluginId: string): SettingsRegistration | null {
   return registrations.get(pluginId)?.settings ?? null;
 }
 
+/**
+ * その Plugin が登録した publisher の provider（035-social-publishing 設計 §7.9 / §9.4）。
+ *
+ * **どちらの Plugin が provider を握ったかを運用者が確かめる場所を作る。**
+ * 「同じ provider は先に有効化したほうが勝つ」は 1 行の規則で保証されているが、
+ * 結果を見る場所が無かった（検証レポート §6 の 3）。
+ */
+export function publishersOf(pluginId: string): readonly string[] {
+  return registrations.get(pluginId)?.publishers ?? [];
+}
+
 /** Plugin が定義した拡張点。Core のものと合わせて一覧できる。 */
 export function definedExtensionPoints(): readonly string[] {
   const points = new Set<string>();

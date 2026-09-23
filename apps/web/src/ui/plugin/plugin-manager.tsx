@@ -41,7 +41,31 @@ export interface PluginRow {
   readonly description: string | null;
   /** Manifest の任意項目。宣言が無ければ null。 */
   readonly author: string | null;
+  /**
+   * Manifest が宣言した拡張点（035-social-publishing 設計 §7.9、裁定 #11）。
+   *
+   * **導入前の行にも出す。** 入れてしまった後に分かるのでは、宣言の意味が無い。
+   */
+  readonly extensions: readonly string[];
+  /** 実際に登録した publisher の provider。**有効化した後だけ値が入る**（設計 §9.4）。 */
+  readonly publishers: readonly string[];
 }
+
+/**
+ * 拡張点の表示名（035-social-publishing 設計 §7.9）。
+ *
+ * **何を握るかが読める文言にする。** 種類の名前だけを出しても、
+ * 導入の判断材料にならない。`social` だけを特別扱いせず、
+ * 既にある高権限の拡張点（`database` / `authentication`）も同じ場所に出す。
+ */
+const EXTENSION_KIND_LABEL: Record<string, string> = {
+  social: 'SNS配信（SNSアカウントの資格情報を受け取ります）',
+  database: 'データベース接続（接続情報を受け取ります）',
+  authentication: '認証（利用者の認証を担います）',
+  data: 'データ参照（本体のデータを読み書きします）',
+  events: 'イベント購読',
+  ui: '画面の拡張',
+};
 
 export interface OperationRow {
   readonly id: string;
@@ -465,6 +489,8 @@ export function PluginManager(props: PluginManagerProps) {
                       )}
 
                       <PermissionList permissions={plugin.permissions} />
+                      <ExtensionList extensions={plugin.extensions} />
+                      <PublisherList publishers={plugin.publishers} />
                       <DependencyList dependencies={plugin.dependencies} />
                       <div
                         style={{
@@ -533,6 +559,8 @@ export function PluginManager(props: PluginManagerProps) {
                       </p>
                     )}
                     <PermissionList permissions={plugin.permissions} />
+                    {/* **導入前に見えることが要点**（設計 §7.9）。入れた後では遅い。 */}
+                    <ExtensionList extensions={plugin.extensions} />
                     <DependencyList dependencies={plugin.dependencies} />
                     <div style={{ marginTop: 'var(--tf-space-3)' }}>
                       <Button
@@ -688,6 +716,58 @@ function DependencyList({
           <code>
             {id} {range}
           </code>
+        </span>
+      ))}
+    </p>
+  );
+}
+
+/**
+ * 握る拡張点（035-social-publishing 設計 §7.9、裁定 #11）。
+ *
+ * **要求 Permission の隣に並べる。置き換えない。** 資格情報を Plugin へ渡すことを
+ * 正当化した根拠は「入れる側が導入時に見られる」という宣言であり、
+ * 宣言が画面に出ていなければその説明は空文になる。
+ */
+function ExtensionList({ extensions }: { readonly extensions: readonly string[] }) {
+  return (
+    <p style={{ margin: 'var(--tf-space-2) 0', color: 'var(--tf-color-text-muted)' }}>
+      拡張点:{' '}
+      {extensions.length === 0
+        ? '—'
+        : extensions.map((kind, index) => (
+            <span key={kind}>
+              {index > 0 ? '、' : ''}
+              {/*
+                **未知の kind は生の値をそのまま出す。** Manifest 検証が弾くので
+                通常は現れないが、表示側が黙って落とすと「宣言が見える」が成り立たない。
+              */}
+              {EXTENSION_KIND_LABEL[kind] ?? kind}
+            </span>
+          ))}
+    </p>
+  );
+}
+
+/**
+ * 登録済みの provider（設計 §7.9、§9.4）。
+ *
+ * **どちらの Plugin が勝ったかを確かめる場所。** 「同じ provider は先に有効化した
+ * ほうが勝つ」は 1 行の規則で保証されているが、結果を見る場所が無かった。
+ * 登録が無ければ欄ごと出さない（負けた側・無効な Plugin は状態と理由で説明される）。
+ */
+function PublisherList({ publishers }: { readonly publishers: readonly string[] }) {
+  if (publishers.length === 0) {
+    return null;
+  }
+
+  return (
+    <p style={{ margin: 'var(--tf-space-2) 0', color: 'var(--tf-color-text-muted)' }}>
+      登録済みのSNS:{' '}
+      {publishers.map((provider, index) => (
+        <span key={provider}>
+          {index > 0 ? '、' : ''}
+          <code>{provider}</code>
         </span>
       ))}
     </p>

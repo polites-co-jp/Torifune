@@ -482,7 +482,9 @@ describe('#24 配信 Plugin が無くても予約を断らない（要件 §4 �
     expect(result.status).toBe(201);
   });
 
-  it('#24 断られた予約は保存され、状態は scheduled のまま', async () => {
+  // 検証レポート §4 の 6。もとの名前（「断られた予約は…」）は、内容
+  // （**断られずに**保存される）と逆の意味に読めた。挙動は変えていない。
+  it('#24 断られなかった予約は保存され、状態は scheduled のまま', async () => {
     const result = await callCreate(
       minimalPost({
         status: 'scheduled',

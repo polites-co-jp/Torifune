@@ -1,3 +1,4 @@
+import { isSafeReturnTo } from '../authorization-state';
 import type { Secret } from '../secret';
 import type { SkipReason } from './publishing';
 
@@ -229,6 +230,25 @@ export function isValidLink(value: string): boolean {
 
 export function isValidExternalUrl(value: string): boolean {
   return isValidExternalHttpsUrl(value, EXTERNAL_URL_MAX_LENGTH);
+}
+
+/**
+ * publisher の `manual()` が返した投稿画面の URL として受け付けるか（設計 §6.6）。
+ *
+ * * **絶対 URL は `isValidExternalUrl` と同じ規則**（https のみ・資格情報付き URL を拒否・
+ *   2048 文字以内）。同じ「Plugin が返した URL」なのに、`publish()` の `externalUrl` より
+ *   甘い門があってはならない
+ * * **`/` で始まるものだけ Torifune 内のパスとして `isSafeReturnTo` に委ねる**
+ *   （`//` / `/\` で始まらない、制御文字を含まない）
+ *
+ * **`isSafeReturnTo` を絶対 URL の判定に流用しない**（検証レポート L-2）。
+ * 目的が違う関数を共有すると、片方の都合で緩めたときにもう片方が黙って緩む。
+ */
+export function isValidManualUrl(value: string): boolean {
+  if (value.startsWith('/')) {
+    return isSafeReturnTo(value);
+  }
+  return isValidExternalUrl(value);
 }
 
 /**

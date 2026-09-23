@@ -26,6 +26,12 @@ import { SocialAccounts, type SocialAccountsProps } from './social-accounts';
  *   無ければ従来どおり 1 つの `SecretField`（`credential`）
  * * **保存後は再表示しない**（`06` §38）。一覧は `credentialConfigured` の「••••••••」だけ
  * * 既存の E2E（provider `x` に `credential` を送る、マスク表示）はそのまま通ること
+ *
+ * **「`Modal` を閉じると入力値が消える」はここでは見ない**（設計 §10 #71 の書き直し、
+ * 2026-09-23。検証レポート §5 の 2）。vitest に DOM が無く、`Modal` の開閉に伴う
+ * 再マウントを部品テストで踏めないため、**(A) 単体では観測できない。**
+ * その保証は **E2E #76**（開いて入力 → 閉じる → 開き直すと空）が引き取っている。
+ * 「実装はあるのに条件が無い」でも「条件はあるのに観測できない」でもない形にする。
  */
 
 const PROVIDERS: SocialAccountsProps['providers'] = [

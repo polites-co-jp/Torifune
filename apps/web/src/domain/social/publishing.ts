@@ -36,6 +36,23 @@ export const MAX_RETRY_AFTER_MS = 24 * 60 * 60_000;
  */
 export const VALIDATE_TIMEOUT_MS = 5_000;
 
+/**
+ * `manual()` 1 回の上限。
+ *
+ * **`publish()` より短く取る。** `/social` は 1 回の描画で最大 50 行ぶん呼ぶので、
+ * 1 件あたり 30 秒では画面が返らない（設計 §6.6、検証レポート L-3）。
+ */
+export const MANUAL_TIMEOUT_MS = 2_000;
+
+/**
+ * 1 回の描画で `manual()` に費やしてよい合計（ミリ秒）。
+ *
+ * **行ごとの上限だけでは足りない。** 50 行 × 2 秒で最悪 100 秒かかり、
+ * その間 `/social` はまっ白になる。呼ぶ側は打ち切り時刻を 1 回だけ作って
+ * すべての行へ渡し、過ぎた行は `manual()` を呼ばずに打ち切る。**画面は必ず返る。**
+ */
+export const MANUAL_HANDOFF_BUDGET_MS = MANUAL_TIMEOUT_MS * 5;
+
 /** 伏せ字にする値の最小の長さ。短い値まで置換すると関係のない文字列を潰す。 */
 const REDACT_MIN_LENGTH = 4;
 

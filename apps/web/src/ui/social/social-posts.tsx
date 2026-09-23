@@ -288,7 +288,12 @@ export function SocialPosts(props: SocialPostsProps) {
       {unreadyCount > 0 && (
         <div style={{ marginBottom: 'var(--tf-space-4)' }}>
           <Alert tone="warning">
-            {`配信の支度ができていない予約投稿が ${unreadyCount} 件あります。配信 Plugin の有効化と資格情報の設定が済むまで配信されません。`}
+            {/*
+              **「いつまでに直せばよいか」まで伝える**（設計 §7.3、裁定 #9）。
+              支度が整わない予約は約24時間で `failed` になる。画面がそれを言わないと、
+              運用者は取りやめられて初めて知ることになる。
+            */}
+            {`配信の支度ができていない予約投稿が ${unreadyCount} 件あります。配信 Plugin の有効化と資格情報の設定が済むまで配信されません。予約日時から約24時間が過ぎても支度が整わない投稿は、取りやめ（失敗）になります。`}
           </Alert>
         </div>
       )}

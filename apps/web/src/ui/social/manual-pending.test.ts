@@ -27,7 +27,11 @@ import { ManualPending, type ManualPendingProps, type ManualPendingRow } from '.
  *   呼ばないとポップアップとして扱われず、ブロックされる（設計 §7.1）
  * * `open` を props にしてあるのは、この環境（vitest の `environment: 'node'`）に
  *   `window` が無く `vi.spyOn(window, 'open')` が使えないため（実装プラン §7 の 13 / §8 の 10）。
- *   既定値なので本番の経路は変わらない
+ *   既定値なので本番の経路は変わらない。
+ *   **設計 §10 #68 は 2026-09-23 にこの形へ書き直された**（検証レポート §5 の 1）。
+ *   もとの条件は `vi.spyOn(window, 'open')` と書いていたが、この環境では成立せず、
+ *   **設計書の記述のほうが誤りだった。** 部品が `window` を直に触らないのは、
+ *   Server / Client の境界を部品テストから外すためでもある
  * * 静的 HTML には `onClick` が出ないので、`@/ui/components` の `Button` を包んで
  *   props（ラベル・`onClick`・`disabled`）を記録し、ハンドラを直接呼ぶ
  */

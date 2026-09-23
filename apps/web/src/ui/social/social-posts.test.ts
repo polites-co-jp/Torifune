@@ -230,6 +230,27 @@ describe('配信の支度ができていない予約の警告', () => {
   it('#69 対象が無ければ Alert を出さない', () => {
     expect(textOf(render())).not.toContain('配信の支度ができていない予約投稿');
   });
+
+  /**
+   * #106（設計 §7.3、裁定 #9。2026-09-23 に足した）。
+   *
+   * 裁定 #9 で「支度が整わない予約は約24時間で `failed` になる」という
+   * **新しい結末**が生まれた。画面がそれを言わないと、運用者は取りやめられて
+   * 初めて知ることになる。**警告は「いつまでに直せばよいか」まで伝える。**
+   *
+   * 条件 #106 は (D) で画面の配線を見るが、文言そのものはここでも観測できる。
+   */
+  it('#106 Alert に約24時間で取りやめになることを書く', () => {
+    const text = textOf(render({ initialPosts: [post({ socialAccountId: OTHER_ACCOUNT_ID })] }));
+
+    expect(text).toContain('約24時間');
+  });
+
+  it('#106 Alert に取りやめ（失敗）になると書く', () => {
+    const text = textOf(render({ initialPosts: [post({ socialAccountId: OTHER_ACCOUNT_ID })] }));
+
+    expect(text).toMatch(/取りやめ|失敗/);
+  });
 });
 
 describe('状態列の補足', () => {

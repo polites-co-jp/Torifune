@@ -382,6 +382,12 @@ describe('#83 Secret.expose() の呼び出し箇所', () => {
  * `reason` も例外のメッセージも Plugin が書いた自由文で、接続文字列や
  * 資格情報を含みうる。`application/jobs/static-checks.test.ts` と同じ形で、
  * **組み立てている場所が `redactSecrets` を通していること**を固定する。
+ *
+ * **2026-09-23 に対象を足した（検証レポート §4 の 3、#84 の書き直し）。**
+ * `social-use-cases.ts` の `validate()`（設計 §6.1.2 の m）と `manual()`（§6.6）の
+ * 例外メッセージが `redactSecrets` を通らずログへ出ていた。**条件違反ではなかった**
+ * （検査対象の 3 ファイルに入っていなかった）が、#84 の見出しは「**すべて**」と書いている。
+ * 見出しが言っていることを条件が保証していないなら、**直すべきは条件のほうである。**
  */
 describe('#84 Plugin 由来の自由文の秘匿', () => {
   /** 生のメッセージをそのまま `reason` にしている書き方。 */
@@ -393,12 +399,26 @@ describe('#84 Plugin 由来の自由文の秘匿', () => {
     ['api/route.ts', join(SRC_DIR, 'api', 'route.ts')],
     ['application/social/publish.ts', join(SRC_DIR, 'application', 'social', 'publish.ts')],
     ['application/jobs/scheduler.ts', join(SRC_DIR, 'application', 'jobs', 'scheduler.ts')],
+    [
+      'application/social/social-use-cases.ts',
+      join(SRC_DIR, 'application', 'social', 'social-use-cases.ts'),
+    ],
   ])('#84 %s が redactSecrets を通し、生の message を reason にしていない', (_label, path) => {
     const source = withoutComments(readFileSync(path, 'utf8'));
 
     expect(source, 'redactSecrets を使っていない').toContain('redactSecrets');
     expect(source, '生の message をそのまま reason にしている').not.toMatch(RAW_REASON);
     expect(source, '生の message をそのまま reason にしている').not.toMatch(RAW_MESSAGE);
+  });
+
+  it('#84 social-use-cases.ts が reason を出している（検査が空振りしていない）', () => {
+    // `validate()`（設計 §6.1.2 の m）と `manual()`（§6.6）の失敗をログに残す経路。
+    // 出していないなら、この検査は何も守っていない。
+    const source = withoutComments(
+      readFileSync(join(SRC_DIR, 'application', 'social', 'social-use-cases.ts'), 'utf8'),
+    );
+
+    expect(source).toMatch(/reason:/);
   });
 
   it('#84 publish.ts が資格情報の値も伏せる（redactCredentialValues）', () => {

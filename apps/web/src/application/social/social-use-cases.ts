@@ -3,7 +3,6 @@ import { uuidv7 } from 'uuidv7';
 import { defineUseCase } from '@/application/authorization/use-case';
 import { emit } from '@/application/events';
 import { findPublisher, type RegisteredPublisher } from '@/application/social/publisher-registry';
-import { isSafeReturnTo } from '@/domain/authorization-state';
 import { NotFoundError, ValidationError } from '@/domain/repository';
 import type { Secret } from '@/domain/secret';
 import {
@@ -11,12 +10,20 @@ import {
   validateCredentialAgainstFields,
   type CredentialField,
 } from '@/domain/social/credential';
-import { checkPublisherLimits } from '@/domain/social/publishing';
+import {
+  checkPublisherLimits,
+  MANUAL_TIMEOUT_MS,
+  VALIDATE_TIMEOUT_MS,
+} from '@/domain/social/publishing';
 import {
   canTransition,
   DELIVERED_STATUSES,
+  EXTERNAL_ID_MAX_LENGTH,
+  EXTERNAL_URL_MAX_LENGTH,
   FAILURE_REASON_MAX_LENGTH,
   isValidDisplayName,
+  isValidExternalUrl,
+  isValidManualUrl,
   isValidPostBody,
   isValidProvider,
   type AccountStatus,
@@ -29,6 +36,7 @@ import {
 import type { SocialAccountPage, SocialPostPage } from '@/domain/social/social-repository';
 import { encryptSecret } from '@/infrastructure/crypto/cipher';
 import { log } from '@/infrastructure/logging';
+import { redactSecrets } from '@/infrastructure/secret-text';
 import { socialRepository } from '@/infrastructure/social-repository';
 
 /**
@@ -460,6 +468,62 @@ interface PostSubject {
 /** `validate()` が返した `field` として受け付ける形。合わないものは丸める。 */
 const VALIDATE_FIELD_PATTERN = /^[A-Za-z][A-Za-z0-9_.]{0,63}$/;
 
+/**
+ * Plugin が書いた自由文をログへ載せる形にそろえる。
+ *
+ * **接続文字列や資格情報が混じりうる**（設計 §6.5.5）。素通しで出さない。
+ */
+function safeMessage(error: unknown): string {
+  return redactSecrets(error instanceof Error ? error.message : String(error));
+}
+
+/** Plugin の関数を 1 回呼んだ結果。例外も制限時間超過も観測できる形に畳む。 */
+type PluginCallOutcome<T> =
+  | { readonly type: 'ok'; readonly value: T }
+  | { readonly type: 'thrown'; readonly error: unknown }
+  | { readonly type: 'timeout' };
+
+/**
+ * Plugin の関数を制限時間つきで 1 回呼ぶ（設計 §6.1.2 / §6.6、検証レポート L-3）。
+ *
+ * `publish()` と同じく、**解決しない Promise に処理を止めさせない**。
+ * 同期で投げる実装も、後から解決する Promise も、ここで畳む
+ * （放置された Promise を `unhandledRejection` にしない）。
+ *
+ * **同期の無限ループは打ち切れない**（設計 §11 #20）。Plugin は信頼されたコードという
+ * 前提の範囲で、「待たされる」だけを防ぐ。
+ */
+async function callWithTimeout<T>(
+  call: () => T | Promise<T>,
+  timeoutMs: number,
+): Promise<PluginCallOutcome<T>> {
+  let running: Promise<PluginCallOutcome<T>>;
+  try {
+    running = Promise.resolve(call()).then(
+      (value) => ({ type: 'ok', value }) satisfies PluginCallOutcome<T>,
+      (error: unknown) => ({ type: 'thrown', error }) satisfies PluginCallOutcome<T>,
+    );
+  } catch (error) {
+    running = Promise.resolve({ type: 'thrown', error } satisfies PluginCallOutcome<T>);
+  }
+  void running.catch(() => undefined);
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<PluginCallOutcome<T>>((resolve) => {
+    timer = setTimeout(() => {
+      resolve({ type: 'timeout' });
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([running, timedOut]);
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 function toDraftView(subject: PostSubject): SocialPostDraftView {
   return {
     body: subject.body,
@@ -481,32 +545,63 @@ function toDraftView(subject: PostSubject): SocialPostDraftView {
  * 例外は `deliveryMode: 'manual'`。投稿画面の URL は publisher の `manual()` からしか
  * 得られないので、publisher が無ければその投稿は**待っても何もできない**。
  */
+interface PreflightOptions {
+  /**
+   * g（manual 非対応の provider を断る）を掛けるか。
+   *
+   * **更新では `manual` に*しようとする*要求にだけ掛ける**（設計 §6.2、検証レポート S-3）。
+   * 検査 g が守っているのは「`manual` にしても投稿画面の URL を作れない」ことで、
+   * それは `manual` にしようとするときにしか問われない。既に `manual` である行に、
+   * あとから Plugin が消えたことを理由に**出口を塞ぐ**のは検査の目的を超えている。
+   */
+  readonly checkManualSupport: boolean;
+  /**
+   * e / f / j〜m（予約として成立するか）を掛けるか。
+   *
+   * **更新では変更後の状態が `draft` / `scheduled` のときだけ**（設計 §6.2）。
+   * `limits` / `validate()` が守っているのは「配信時刻に初めて失敗しない」ことで、
+   * これは**これから配信される状態**へ向かう更新の話である。
+   * `published` / `failed` への遷移は**起きた事実の記録**であって、予約の検証ではない。
+   */
+  readonly checkSchedulable: boolean;
+}
+
+/** 作成では従来どおり全部掛ける（設計 §6.1.2）。 */
+const CREATE_PREFLIGHT: PreflightOptions = { checkManualSupport: true, checkSchedulable: true };
+
 async function assertPostIsDeliverable(
   subject: PostSubject,
   account: SocialAccount,
+  options: PreflightOptions,
 ): Promise<void> {
-  // e: 予約するなら予約日時が要る。無いと誰も取り出せない行になる。
-  if (subject.status === 'scheduled' && subject.scheduledAt === null) {
-    throw new ValidationError(
-      'SocialPost',
-      'scheduledAt',
-      '予約するときは予約日時を指定してください。',
-    );
-  }
+  if (options.checkSchedulable) {
+    // e: 予約するなら予約日時が要る。無いと誰も取り出せない行になる。
+    if (subject.status === 'scheduled' && subject.scheduledAt === null) {
+      throw new ValidationError(
+        'SocialPost',
+        'scheduledAt',
+        '予約するときは予約日時を指定してください。',
+      );
+    }
 
-  // f: 手動投稿は媒体を持てない（人が投稿画面で添付する）。
-  if (subject.deliveryMode === 'manual' && subject.media.length > 0) {
-    throw new ValidationError(
-      'SocialPost',
-      'media',
-      '手動投稿には媒体を添付できません（投稿画面で添付してください）。',
-    );
+    // f: 手動投稿は媒体を持てない（人が投稿画面で添付する）。
+    if (subject.deliveryMode === 'manual' && subject.media.length > 0) {
+      throw new ValidationError(
+        'SocialPost',
+        'media',
+        '手動投稿には媒体を添付できません（投稿画面で添付してください）。',
+      );
+    }
   }
 
   const publisher = findPublisher(account.provider);
 
   // g: 手動投稿に対応していない provider。
-  if (subject.deliveryMode === 'manual' && publisher?.registration.manual === undefined) {
+  if (
+    options.checkManualSupport &&
+    subject.deliveryMode === 'manual' &&
+    publisher?.registration.manual === undefined
+  ) {
     throw new ValidationError(
       'SocialPost',
       'deliveryMode',
@@ -514,7 +609,7 @@ async function assertPostIsDeliverable(
     );
   }
 
-  if (publisher === null) {
+  if (!options.checkSchedulable || publisher === null) {
     return;
   }
 
@@ -541,21 +636,35 @@ async function assertPostIsDeliverable(
     return;
   }
 
-  let problems: readonly { readonly field: string; readonly message: string }[];
-  try {
-    problems = await registration.validate({
-      post: toDraftView(subject),
-      account: toAccountView(account),
+  // **応答しない `validate()` に `POST /social/posts` を無期限に止めさせない**
+  // （設計 §6.1.2、検証レポート L-3）。ここには差し替えの口を作らない。
+  // HTTP 要求 1 本につき 1 回しか呼ばれず、`VALIDATE_TIMEOUT_MS` そのものが約束である。
+  const validate = registration.validate;
+  const outcome = await callWithTimeout(
+    () => validate({ post: toDraftView(subject), account: toAccountView(account) }),
+    VALIDATE_TIMEOUT_MS,
+  );
+
+  if (outcome.type === 'timeout') {
+    // 例外と同じ扱い（設計 §6.1.2）。応答は 500 で、内容を外へ出さない。
+    log.error('social publisher validate timed out', {
+      provider: account.provider,
+      pluginId: publisher.pluginId,
+      timeoutMs: VALIDATE_TIMEOUT_MS,
     });
-  } catch (error) {
+    throw new Error('配信 Plugin の検査が制限時間内に終わりませんでした。');
+  }
+  if (outcome.type === 'thrown') {
     // Plugin の例外を素で外へ出さない（027 設計 §3.3）。応答には内容を載せない。
     log.error('social publisher validate failed', {
       provider: account.provider,
       pluginId: publisher.pluginId,
-      reason: error instanceof Error ? error.message : String(error),
+      reason: safeMessage(outcome.error),
     });
-    throw error;
+    throw outcome.error;
   }
+
+  const problems = outcome.value;
 
   if (problems.length === 0) {
     return;
@@ -676,6 +785,7 @@ export const createSocialPost = defineUseCase<CreatePostInput, CreatePostOutput>
         providerOptions,
       },
       account,
+      CREATE_PREFLIGHT,
     );
 
     const result = await context.connection.transaction((tx) =>
@@ -806,7 +916,35 @@ export const updateSocialPost = defineUseCase<UpdatePostInput, SocialPost>({
       );
     }
 
+    // **`externalUrl` / `externalId` は UseCase で検証する**（設計 §6.2、検証レポート S-4）。
+    // Data API の `markPublished(id, { externalUrl })` は Zod を通らないので、
+    // ここで見ないと Plugin から任意の文字列が投稿一覧と履歴の `href` へそのまま出る。
+    // `body` を同じ UseCase の中で再検証しているのに `externalUrl` はしない、という不揃いも直す。
+    if (
+      input.externalUrl !== undefined &&
+      input.externalUrl !== null &&
+      !isValidExternalUrl(input.externalUrl)
+    ) {
+      throw new ValidationError(
+        'SocialPost',
+        'externalUrl',
+        `投稿の URL は https で ${EXTERNAL_URL_MAX_LENGTH} 文字以内にしてください。`,
+      );
+    }
+    if (
+      input.externalId !== undefined &&
+      input.externalId !== null &&
+      input.externalId.length > EXTERNAL_ID_MAX_LENGTH
+    ) {
+      throw new ValidationError(
+        'SocialPost',
+        'externalId',
+        `SNS 側の投稿 ID は${EXTERNAL_ID_MAX_LENGTH}文字以内にしてください。`,
+      );
+    }
+
     // 事前検査は**変更後の値**に対して、作成と同じ順で掛ける（設計 §6.2）。
+    // ただし**掛ける条件が区分ごとに違う**（`PreflightOptions`。検証レポート S-3）。
     const account = await socialRepository.findAccountById(
       context.connection,
       current.socialAccountId,
@@ -814,18 +952,19 @@ export const updateSocialPost = defineUseCase<UpdatePostInput, SocialPost>({
     if (account === null) {
       throw new ValidationError('SocialPost', 'socialAccountId', 'SNSアカウントが見つかりません。');
     }
-    await assertPostIsDeliverable(
-      {
-        body: input.body ?? current.body,
-        scheduledAt: input.scheduledAt === undefined ? current.scheduledAt : input.scheduledAt,
-        status: input.status ?? current.status,
-        deliveryMode: input.deliveryMode ?? current.deliveryMode,
-        media: input.media ?? current.media,
-        link: input.link === undefined ? current.link : input.link,
-        providerOptions: input.providerOptions ?? current.providerOptions,
-      },
-      account,
-    );
+    const next: PostSubject = {
+      body: input.body ?? current.body,
+      scheduledAt: input.scheduledAt === undefined ? current.scheduledAt : input.scheduledAt,
+      status: input.status ?? current.status,
+      deliveryMode: input.deliveryMode ?? current.deliveryMode,
+      media: input.media ?? current.media,
+      link: input.link === undefined ? current.link : input.link,
+      providerOptions: input.providerOptions ?? current.providerOptions,
+    };
+    await assertPostIsDeliverable(next, account, {
+      checkManualSupport: input.deliveryMode === 'manual',
+      checkSchedulable: next.status === 'draft' || next.status === 'scheduled',
+    });
 
     const post = await context.connection.transaction((tx) =>
       socialRepository.updatePost(tx, input.id, {
@@ -927,24 +1066,23 @@ export type ManualHandoffOutcome =
   | { readonly ok: true; readonly url: string; readonly note: string | null }
   | { readonly ok: false; readonly reason: 'unsupported' | 'invalid_url' | 'plugin_error' };
 
-/**
- * publisher が返した投稿画面の URL として受け付けるか（設計 §6.6）。
- *
- * **https の絶対 URL**、または **`/` で始まる同一オリジンのパス**（`//` / `/\` で
- * 始まらない）だけを通す。判定は `025` §8（`isSafeReturnTo`）と同じものを使う。
- * Plugin が返した文字列をそのまま `window.open` へ渡すので、ここが最後の関門になる。
- */
-function isValidHandoffUrl(url: string): boolean {
-  if (url.startsWith('/')) {
-    return isSafeReturnTo(url);
-  }
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return false;
-  }
-  return parsed.protocol === 'https:';
+export interface ManualHandoffInput {
+  readonly id: string;
+  /**
+   * この呼び出しの上限（ミリ秒）。省略すると `MANUAL_TIMEOUT_MS`。
+   *
+   * `publishDuePosts` の `timeoutMs` と同じ流儀の口で、
+   * 結合テストが実時間で 2 秒待たないために要る。
+   */
+  readonly timeoutMs?: number | undefined;
+  /**
+   * 1 回の描画あたりの打ち切り時刻（設計 §6.6）。
+   *
+   * **過ぎていれば `manual()` を呼ばずに `plugin_error` を返す。**
+   * 行ごとに呼ぶ側（`app/social/page.tsx`）がこれを 1 回だけ作ってすべての行へ渡すので、
+   * 累計の上限が `MANUAL_HANDOFF_BUDGET_MS` で決まる。**画面は必ず返る。**
+   */
+  readonly deadline?: Date | undefined;
 }
 
 /**
@@ -953,7 +1091,7 @@ function isValidHandoffUrl(url: string): boolean {
  * **資格情報は渡さない**（設計 §6.5.5 末尾）。Web Intent は公開 URL で足りる。
  * 渡すと「配信のときだけ」という約束が崩れ、監査の外で平文が広がる。
  */
-export const resolveManualHandoff = defineUseCase<{ id: string }, ManualHandoffOutcome>({
+export const resolveManualHandoff = defineUseCase<ManualHandoffInput, ManualHandoffOutcome>({
   name: 'social.post.manualHandoff',
   permission: 'social.read',
   handler: async (context, input) => {
@@ -981,22 +1119,47 @@ export const resolveManualHandoff = defineUseCase<{ id: string }, ManualHandoffO
       return { ok: false, reason: 'unsupported' };
     }
 
-    let handoff;
-    try {
-      // 同期でも Promise でもよい（設計 §6.6）。
-      handoff = await manual({ post: toPostView(post), account: toAccountView(account) });
-    } catch (error) {
+    // 1 回の描画あたりの累計の上限（設計 §6.6）。**過ぎていれば呼ばない。**
+    // 行ごとの上限だけでは、50 行 × 2 秒で `/social` が 100 秒まっ白になる。
+    if (input.deadline !== undefined && input.deadline.getTime() <= Date.now()) {
+      log.warn('social publisher manual skipped by budget', {
+        provider: account.provider,
+        pluginId: publisher.pluginId,
+        postId: post.id,
+      });
+      return { ok: false, reason: 'plugin_error' };
+    }
+
+    // 同期でも Promise でもよい（設計 §6.6）。**応答しない `manual()` に画面を止めさせない**
+    // （検証レポート L-3）。`publish()` の 30 秒より短く取る。
+    const outcome = await callWithTimeout(
+      () => manual({ post: toPostView(post), account: toAccountView(account) }),
+      input.timeoutMs ?? MANUAL_TIMEOUT_MS,
+    );
+
+    if (outcome.type === 'timeout') {
+      // 画面には出さないが、運用者が原因へ辿れる経路は残す。
+      log.error('social publisher manual timed out', {
+        provider: account.provider,
+        pluginId: publisher.pluginId,
+        postId: post.id,
+      });
+      return { ok: false, reason: 'plugin_error' };
+    }
+    if (outcome.type === 'thrown') {
       // Plugin の例外を素で外へ出さない（027 設計 §3.3）。**戻り値にも画面にも内容を載せない。**
       log.error('social publisher manual failed', {
         provider: account.provider,
         pluginId: publisher.pluginId,
         postId: post.id,
-        reason: error instanceof Error ? error.message : String(error),
+        reason: safeMessage(outcome.error),
       });
       return { ok: false, reason: 'plugin_error' };
     }
 
-    if (!isValidHandoffUrl(handoff.url)) {
+    const handoff = outcome.value;
+
+    if (!isValidManualUrl(handoff.url)) {
       log.warn('social publisher manual returned an unusable url', {
         provider: account.provider,
         pluginId: publisher.pluginId,

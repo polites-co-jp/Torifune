@@ -130,10 +130,17 @@ async function viewerContext(
   return context;
 }
 
+/**
+ * `summary` のキー（設計 §6.5.7、受け入れ条件 #57 / #62）。
+ *
+ * **2026-09-23 に 8 → 9 へ（裁定 #9）。** 「後ろへ送った」（`skipped`）と
+ * 「3 回飛ばして諦めた」（`skipFailed`）を 1 つのキーにまとめない。
+ */
 const SUMMARY_KEYS = [
   'interrupted',
   'due',
   'skipped',
+  'skipFailed',
   'attempted',
   'published',
   'retried',
@@ -414,6 +421,16 @@ function manualPendingSection(page: Page): Locator {
 
 function manualPendingRow(page: Page, body: string): Locator {
   return manualPendingSection(page).getByRole('row').filter({ hasText: body });
+}
+
+/**
+ * 投稿一覧（`SocialPosts`）の行。
+ *
+ * 手動投稿待ちの区画にも同じ本文が出るので、**「編集」を持つ行**で絞る
+ * （操作列があるのは投稿一覧だけ）。
+ */
+function postListRow(page: Page, body: string): Locator {
+  return page.getByRole('row').filter({ hasText: body }).filter({ hasText: '編集' });
 }
 
 /** 導入済みか。**同じ版を導入し直すと 422 になる**ので、叩く前に見る。 */
@@ -822,7 +839,15 @@ test.describe('#75 自動配信', () => {
   });
 });
 
-/** #78。設定 → 一般「定期実行」に `social.publish` の行が出る（設計 §7.7）。 */
+/**
+ * #78。設定 → 一般「定期実行」に `social.publish` の行が出る（設計 §7.7）。
+ *
+ * > **配置をここで追認する（検証レポート §4 の 7）。** 実装プランは
+ * > `settings-tabs.spec.ts` へ置くと宣言していたが、実物はここにある。
+ * > この行が `ok` になるには**配信ジョブが実際に走っている**ことが要り、
+ * > その前提（`plugins/example-plugin` の有効化と投稿）はこのファイルが作る。
+ * > 設定画面のタブ構成を見る spec へ移すと、前提を二重に用意することになる。
+ */
 test.describe('#78 定期実行の行', () => {
   test('#78 「SNS 投稿の配信」の行があり、90 秒以内に結果が ok になる', async ({ page }) => {
     test.setTimeout(120_000);
@@ -842,6 +867,237 @@ test.describe('#78 定期実行の行', () => {
         { timeout: 90_000, intervals: [5_000] },
       )
       .toBeGreaterThanOrEqual(1);
+  });
+});
+
+/**
+ * #29 の Cookie 経路（検証レポート §4 の 4。実装プラン §8 の 3 が宣言した 2 本目）。
+ *
+ * **セッション認証からは `externalRef` を指定できない**（設計 §6.1.2 の c）。
+ * Token が無いと一意の名前空間が無く、PostgreSQL の一意索引は NULL を
+ * 区別しないので「冪等のつもりで二重登録」が黙って起きる。
+ *
+ * 結合テスト（`social-publishing.integration.test.ts`）は UseCase を直接呼んでおり、
+ * **HTTP の Cookie 経路で実際に 422 になることはここでしか見ていない。**
+ */
+test.describe('#29 セッション認証では externalRef を指定できない', () => {
+  test('#29 Cookie の要求に externalRef を付けると 422 externalRef', async ({ request }) => {
+    const account = await createExampleAccount(request);
+
+    const response = await postJson(request, '/api/v1/social/posts', {
+      socialAccountId: account.id,
+      body: `E2E externalRef ${unique()}`,
+      status: 'draft',
+      externalRef: `e2e-${unique()}`,
+    });
+
+    expect(response.status(), await response.text()).toBe(422);
+    const body = (await response.json()) as { error: { details?: Record<string, string[]> } };
+    expect(Object.keys(body.error.details ?? {})).toContain('externalRef');
+    expect(body.error.details?.['externalRef']?.join('')).toContain('トークン');
+  });
+
+  test('#29 externalRef を省略すれば Cookie でも 201', async ({ request }) => {
+    const account = await createExampleAccount(request);
+
+    const response = await postJson(request, '/api/v1/social/posts', {
+      socialAccountId: account.id,
+      body: `E2E externalRef なし ${unique()}`,
+      status: 'draft',
+    });
+
+    expect(response.status(), await response.text()).toBe(201);
+  });
+});
+
+/**
+ * #106。**`app/social/page.tsx` が `publisherProviders` を渡していることを見る唯一のテスト**
+ * （設計 §7.3、検証レポート §4 の 1）。
+ *
+ * 部品テスト（#69）は props を直接与えて描くので、**Server Component が
+ * 組み立てて渡す経路は通らない。** 渡し忘れても部品テストは緑のままになる。
+ * この警告こそ裁定 #8 で 422 を外した代償なので、配線まで固定する。
+ */
+test.describe('#106 配信の支度ができていない予約の警告', () => {
+  test('#106 publisher の無い provider の予約に Badge と件数入りの Alert が出る', async ({
+    page,
+    request,
+  }) => {
+    // provider `x` には publisher が無い（`example` にしかない）。
+    const account = await postJson(request, '/api/v1/social/accounts', {
+      provider: 'x',
+      displayName: `E2E 配信不可 ${unique()}`,
+      handle: `@${unique()}`,
+      credential: 'e2e-credential',
+      status: 'connected',
+    });
+    expect(account.status(), await account.text()).toBe(201);
+    const accountId = ((await account.json()) as { data: { id: string } }).data.id;
+    createdAccountIds.push(accountId);
+
+    const body = `E2E支度なし${unique()}`;
+    // **裁定 #8 で 201。** 断らない代わりに、予約した時点で画面に出す。
+    await createPost(request, accountId, {
+      body,
+      status: 'scheduled',
+      deliveryMode: 'auto',
+      scheduledAt: minutesAgo(1),
+    });
+
+    await page.goto('/social');
+
+    await expect(postListRow(page, body)).toContainText('配信 Plugin なし');
+    await expect(page.getByText(/配信の支度ができていない予約投稿が \d+ 件あります/)).toBeVisible();
+  });
+
+  test('#106 Alert が約24時間で取りやめになることまで伝える', async ({ page, request }) => {
+    // 裁定 #9 で「支度が整わない予約は約24時間で failed」という**新しい結末**が生まれた。
+    // 画面がそれを言わないと、運用者は取りやめられて初めて知る（設計 §7.3）。
+    const account = await postJson(request, '/api/v1/social/accounts', {
+      provider: 'x',
+      displayName: `E2E 猶予 ${unique()}`,
+      handle: `@${unique()}`,
+      credential: 'e2e-credential',
+      status: 'connected',
+    });
+    expect(account.status(), await account.text()).toBe(201);
+    const accountId = ((await account.json()) as { data: { id: string } }).data.id;
+    createdAccountIds.push(accountId);
+
+    await createPost(request, accountId, {
+      body: `E2E猶予${unique()}`,
+      status: 'scheduled',
+      deliveryMode: 'auto',
+      scheduledAt: minutesAgo(1),
+    });
+
+    await page.goto('/social');
+
+    await expect(page.getByText(/約24時間/)).toBeVisible();
+  });
+});
+
+/**
+ * #107。投稿一覧の状態列に出る「手動投稿待ち」の補足（設計 §7.3）。
+ *
+ * **設計書に条件が無かったために未観測だった箇所**（検証レポート §4 の 2、
+ * 設計書側の問題 5）。`PostRow.manualPending` は Server Component が
+ * 「いま」を判定して渡す（設計 §7.1 の補足）ので、部品テストでは配線を見られない。
+ */
+test.describe('#107 投稿一覧の「手動投稿待ち」の補足', () => {
+  test('#107 manual で期限の来た投稿の状態列に補足が出る', async ({ page, request }) => {
+    const account = await createExampleAccount(request);
+    const body = `E2E補足行${unique()}`;
+    await createPost(request, account.id, {
+      body,
+      status: 'scheduled',
+      deliveryMode: 'manual',
+      scheduledAt: minutesAgo(3),
+    });
+
+    await page.goto('/social');
+
+    await expect(postListRow(page, body)).toContainText('手動投稿待ち');
+  });
+
+  test('#107 期限がまだ来ていない manual の行には補足が出ない', async ({ page, request }) => {
+    // 「手動投稿待ち」は期限が来てから（設計 §5.8）。
+    const account = await createExampleAccount(request);
+    const body = `E2E未来の手動${unique()}`;
+    await createPost(request, account.id, {
+      body,
+      status: 'scheduled',
+      deliveryMode: 'manual',
+      scheduledAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+    });
+
+    await page.goto('/social');
+
+    const row = postListRow(page, body);
+    await expect(row).toBeVisible();
+    await expect(row).not.toContainText('手動投稿待ち');
+  });
+});
+
+/**
+ * #108。編集画面の `manualSupported` の配線（設計 §7.4）。
+ *
+ * `app/social/posts/[id]/edit/page.tsx` も `new` と同じ props を組み立てるが、
+ * **E2E は `new` しか通っていなかった**（検証レポート §4 の 5）。
+ */
+test.describe('#108 編集画面の配信方法', () => {
+  test('#108 manual 対応の provider のアカウントの投稿では「配信方法」が出る', async ({
+    page,
+    request,
+  }) => {
+    const account = await createExampleAccount(request);
+    const post = await createPost(request, account.id, {
+      body: `E2E編集manual${unique()}`,
+      status: 'draft',
+    });
+
+    await page.goto(`/social/posts/${post.id}/edit`);
+
+    await expect(page.getByLabel('配信方法')).toBeVisible();
+  });
+
+  test('#108 非対応の provider のアカウントの投稿では「配信方法」が出ない', async ({
+    page,
+    request,
+  }) => {
+    // 押しても 422 になる選択肢を出さない（設計 §7.4）。
+    const account = await postJson(request, '/api/v1/social/accounts', {
+      provider: 'x',
+      displayName: `E2E 編集非対応 ${unique()}`,
+      handle: `@${unique()}`,
+      credential: 'e2e-credential',
+      status: 'connected',
+    });
+    expect(account.status(), await account.text()).toBe(201);
+    const accountId = ((await account.json()) as { data: { id: string } }).data.id;
+    createdAccountIds.push(accountId);
+
+    const post = await createPost(request, accountId, {
+      body: `E2E編集auto${unique()}`,
+      status: 'draft',
+    });
+
+    await page.goto(`/social/posts/${post.id}/edit`);
+
+    await expect(page.getByLabel('本文')).toBeVisible();
+    await expect(page.getByLabel('配信方法')).toHaveCount(0);
+  });
+});
+
+/**
+ * #104。Plugin マネージャが Manifest の `extensions` を出す（設計 §7.9、裁定 #11）。
+ *
+ * **資格情報を Plugin へ渡す変更を正当化した根拠のうち「宣言で見える」の半分が
+ * 実装されていなかった**（検証レポート §6 の 1）。
+ *
+ * > **設計 §10 #104 は `/settings?tab=plugins` と書いているが、Plugin マネージャの
+ * > 置き場は `/plugins` である**（`app/plugins/page.tsx`。設定画面にタブは無い）。
+ * > 条件が指しているのは「導入前に見える一覧」という場所であり、ここではその実物を開く。
+ */
+test.describe('#104 Plugin マネージャの拡張点', () => {
+  test('#104 サンプル Plugin の行に「SNS配信」が出る', async ({ page }) => {
+    await page.goto('/plugins');
+
+    await expect(page.getByText('サンプルPlugin  1.0.0')).toBeVisible();
+    await expect(page.getByText(/SNS配信/)).toBeVisible();
+  });
+
+  test('#104 何を握るかが読める文言になっている', async ({ page }) => {
+    await page.goto('/plugins');
+
+    await expect(page.getByText(/資格情報を受け取ります/)).toBeVisible();
+  });
+
+  test('#104 有効化した後は登録済みの provider として example が出る', async ({ page }) => {
+    // どちらの Plugin が provider を握ったかを確かめる場所（検証レポート §6 の 3）。
+    await page.goto('/plugins');
+
+    await expect(page.getByText(/登録済み[\s\S]{0,60}example/).first()).toBeVisible();
   });
 });
 

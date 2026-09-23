@@ -6,6 +6,7 @@ import {
   listSocialPosts,
   resolveManualHandoff,
 } from '@/application/social/social-use-cases';
+import { MANUAL_HANDOFF_BUDGET_MS } from '@/domain/social/publishing';
 import { isManualPending, KNOWN_PROVIDERS, providerLabel } from '@/domain/social/social';
 import { Button } from '@/ui/components';
 import { AppShell } from '@/ui/layout/app-shell';
@@ -141,6 +142,14 @@ export default async function SocialPage({
   const now = new Date();
 
   const manualPending = await listManualPendingPosts(context, { limit: MANUAL_PENDING_LIMIT });
+  /**
+   * 1 回の描画で `manual()` に費やしてよい合計（設計 §6.6、検証レポート L-3）。
+   *
+   * **打ち切り時刻はここで 1 回だけ作り、すべての行へ渡す。** 行ごとの上限
+   * （`MANUAL_TIMEOUT_MS`）だけでは、50 行 × 2 秒で最悪 100 秒かかり、
+   * その間この画面はまっ白になる。**画面は必ず返る。**
+   */
+  const handoffDeadline = new Date(now.getTime() + MANUAL_HANDOFF_BUDGET_MS);
   // **行ごとに publisher へ問い合わせる**（設計 §7.1）。上限 50 件で、`manual()` は URL の組み立て。
   const manualRows: readonly ManualPendingRow[] = await Promise.all(
     manualPending.items.map(async (post) => ({
@@ -151,7 +160,7 @@ export default async function SocialPage({
         scheduledAt: (post.scheduledAt ?? post.createdAt).toISOString(),
         elapsedText: elapsedTextOf(post.scheduledAt ?? post.createdAt, now),
       },
-      handoff: await resolveManualHandoff(context, { id: post.id }),
+      handoff: await resolveManualHandoff(context, { id: post.id, deadline: handoffDeadline }),
     })),
   );
 

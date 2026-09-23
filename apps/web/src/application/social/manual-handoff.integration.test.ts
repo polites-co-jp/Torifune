@@ -41,7 +41,15 @@ import { useScratchDatabase, type ScratchDatabase } from '@/test-support/databas
  * * `resolveManualHandoff` は publisher の `manual()` を呼ぶだけで、
  *   **資格情報を渡さない**（設計 §6.5.5 末尾。Web Intent は公開 URL で足りる）
  * * 返った URL は「https の絶対 URL」か「`/` で始まり `//` / `/\` で始まらない
- *   同一オリジンのパス」に限る。それ以外は `invalid_url`（設計 §6.6、`025` §8 と同じ判定）
+ *   同一オリジンのパス」に限る。それ以外は `invalid_url`（設計 §6.6）
+ *
+ * **2026-09-23 に判定を分けた（検証レポート L-2 / §6 の 6、#61 の書き直し）。**
+ * 絶対 URL の判定にまで `isSafeReturnTo`（ログイン後の戻り先を決める関数）を
+ * 流用しており、`isValidExternalUrl` より緩かった：`https://user:pass@evil/` が通り、
+ * 長さの上限も無かった。**同じ「Plugin が返した URL」なのに `publish()` の
+ * `externalUrl` より甘い門になっていた。** `isValidManualUrl`（設計 §5.6.1）へ分け、
+ * 絶対 URL は `isValidExternalUrl` と同じ規則（userinfo を拒否・2048 文字以内）、
+ * 相対パスの判定だけを `isSafeReturnTo` に委ねる。
  *
  * 偽の publisher は `registerPublisher('test-plugin', …)` で直接登録する
  * （Plugin の読み込みを経ない。設計 §10 冒頭）。
@@ -476,6 +484,42 @@ describe('#61 投稿画面の URL を publisher に作らせる', () => {
 
     it('#61 空文字は invalid_url', async () => {
       await expect(outcomeFor('')).resolves.toEqual({ ok: false, reason: 'invalid_url' });
+    });
+
+    /**
+     * #61（2026-09-23 に足した。検証レポート L-2）。
+     *
+     * **`isValidExternalUrl` と同じ規則に揃える。** 資格情報付きの URL は、
+     * 表示された見かけと実際の宛先が食い違う（`https://bsky.app@evil/` のような形）。
+     * `publish()` が返す `externalUrl` は拒否しているのに、`manual()` の
+     * 戻り値だけが通るのは門の不揃いである。
+     */
+    it('#61 資格情報付きの https は invalid_url', async () => {
+      await expect(outcomeFor('https://user:pass@bsky.app/')).resolves.toEqual({
+        ok: false,
+        reason: 'invalid_url',
+      });
+    });
+
+    it('#61 利用者名だけの https も invalid_url', async () => {
+      await expect(outcomeFor('https://user@bsky.app/')).resolves.toEqual({
+        ok: false,
+        reason: 'invalid_url',
+      });
+    });
+
+    it('#61 2049 文字の https は invalid_url（長さの上限がある）', async () => {
+      const url = `https://bsky.app/${'a'.repeat(2049 - 'https://bsky.app/'.length)}`;
+      expect(url).toHaveLength(2049);
+
+      await expect(outcomeFor(url)).resolves.toEqual({ ok: false, reason: 'invalid_url' });
+    });
+
+    it('#61 2048 文字ちょうどの https は ok（境界）', async () => {
+      const url = `https://bsky.app/${'a'.repeat(2048 - 'https://bsky.app/'.length)}`;
+      expect(url).toHaveLength(2048);
+
+      await expect(outcomeFor(url)).resolves.toMatchObject({ ok: true, url });
     });
   });
 
