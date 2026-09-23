@@ -49,6 +49,21 @@ const URL_PATTERN = /https?:\/\/[^\s]+/g;
 /** ホスト名まで揃っているか（末尾を削った結果 `https://` だけになったものは URL と数えない）。 */
 const URL_WITH_HOST_PATTERN = /^https?:\/\/[^\s/?#]+/;
 
+/**
+ * 対になっていないサロゲート（片割れ）。
+ *
+ * **`u` フラグを付けない**（付けると正しい対が 1 文字として扱われ、片割れとの区別に使えない）。
+ * `String.prototype.isWellFormed` / `toWellFormed` は `tsconfig` の `lib`（ES2023）に型が無いので正規表現で書く（設計 §9.4）。
+ */
+const LONE_SURROGATE_PATTERN =
+  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+/** 置き換え用（`g` を付けたもの）。判定には `g` の無いほうを使う（`lastIndex` を持ち越さない）。 */
+const LONE_SURROGATE_GLOBAL_PATTERN = new RegExp(LONE_SURROGATE_PATTERN.source, 'g');
+
+/** `checkXText` が片割れを見つけたときの文言（設計 §9.4 / #93）。 */
+const LONE_SURROGATE_MESSAGE = '本文に扱えない文字が含まれています。';
+
 /** 絵文字として 2 と数える grapheme（ZWJ で繋いだ並びや国旗も 1 つで 2）。 */
 const EMOJI_PATTERN = /\p{Extended_Pictographic}|\p{Regional_Indicator}/u;
 
@@ -165,14 +180,24 @@ export function composeXText(post: { readonly body: unknown; readonly link: unkn
   return body;
 }
 
+/** 対になっていないサロゲートを含むか。 */
+function hasLoneSurrogate(text: string): boolean {
+  return LONE_SURROGATE_PATTERN.test(text);
+}
+
 /**
  * 手動投稿の URL（設計 §9.4）。
  *
  * **`url=` の引数を使わず、`link` も `text` に入れる。** 本文と URL の繋ぎ方を X に決めさせると、
  * Torifune が数えた文字列と投稿画面に入る文字列が一致しなくなる。
+ *
+ * **対になっていないサロゲートは U+FFFD に置き換えてからエンコードする**（`encodeURIComponent` は片割れで
+ * `URIError` を投げる）。`manual()` は `validate()` を通っていない投稿でも呼ばれうるので、ここでも投げない（#93）。
+ * 正しい文字列には何もしない。
  */
 export function buildXIntentUrl(post: { readonly body: unknown; readonly link: unknown }): string {
-  return `${X_INTENT_BASE_URL}?text=${encodeURIComponent(composeXText(post))}`;
+  const text = composeXText(post).replace(LONE_SURROGATE_GLOBAL_PATTERN, '\uFFFD');
+  return `${X_INTENT_BASE_URL}?text=${encodeURIComponent(text)}`;
 }
 
 /**
@@ -180,6 +205,7 @@ export function buildXIntentUrl(post: { readonly body: unknown; readonly link: u
  *
  * **2 つの Plugin の `validate()` が本文について言うことは、すべてここから来る**（設計 §4.2）。
  * 同期で返す。例外を投げない。問題が無ければ空配列。
+ * 本文に対になっていないサロゲートがあれば、それも `body` の問題として返す（設計 §9.4 / #93）。
  */
 export function checkXText(post: {
   readonly body: unknown;
@@ -187,9 +213,10 @@ export function checkXText(post: {
   readonly deliveryMode: unknown;
 }): PublisherValidationProblem[] {
   const problems: PublisherValidationProblem[] = [];
+  const text = composeXText(post);
 
   // 2：自動・手動とも同じ文字列（composeXText）を数える。
-  const weight = countXWeightedLength(composeXText(post));
+  const weight = countXWeightedLength(text);
   if (weight > X_WEIGHTED_LENGTH_MAX) {
     problems.push({
       field: 'body',
@@ -198,6 +225,13 @@ export function checkXText(post: {
         `（日本語・絵文字は1文字を2、URLは長さによらず${X_URL_WEIGHT}と数えます。` +
         `link を指定した場合はそれも含みます）。いまは ${weight} です。`,
     });
+  }
+
+  // 対になっていないサロゲート（#93）。自動でも断る（X へ送っても受け付けられない）。
+  // 片割れがあれば intent URL の長さ（3）は数えない。
+  if (hasLoneSurrogate(text)) {
+    problems.push({ field: 'body', message: LONE_SURROGATE_MESSAGE });
+    return problems;
   }
 
   // 3：手動投稿だけ。URL は 23 と数えられても、エンコードした intent URL では全長が効く。
