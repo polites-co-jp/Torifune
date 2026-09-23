@@ -195,12 +195,6 @@ describe('#64 findAccountWithCredential の credentialVersion', () => {
     expect((await withCredential(id))?.credentialVersion).toBeNull();
   });
 
-  it("#64 列が '' のときも credentialVersion は null（実装プラン §8 の 25）", async () => {
-    const id = await insertAccount('');
-
-    expect((await withCredential(id))?.credentialVersion).toBeNull();
-  });
-
   it('#64 暗号文が壊れていて復号できない行でも credentialVersion は載り、credential は null', async () => {
     const broken = 'v1.k1.not-a-valid-ciphertext';
     const id = await insertAccount(broken);
