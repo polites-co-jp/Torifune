@@ -140,6 +140,8 @@ Instagram には **24 時間あたりに公開できる投稿数の上限**が�
 
 - **状態を 1 つも持ちません。** 設定もなく、投稿の状態も資格情報も自分では保存しません（延長したトークンは Torifune 本体が保存します）
 - アクセストークンの送り先は Instagram の Graph API に固定されています。設定で変えることはできません
+- **延長の要求（`refresh_access_token`）は、Graph API の仕様で URL のクエリにアクセストークンが入ります。**
+  この Plugin はその URL をログにも失敗の理由にも出しませんが、Torifune の `fetch` に計測（OpenTelemetry・Sentry など）を足すときは、**要求の URL のクエリを伏せる設定にしてください**
 - Torifune の Permission を 1 つも追加しません。データベースにも直接触りません
 
 ## ライセンス
