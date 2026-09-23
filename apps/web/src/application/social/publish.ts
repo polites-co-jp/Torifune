@@ -337,6 +337,15 @@ function sqlStateOf(error: unknown): string | null {
   return typeof code === 'string' && SQLSTATE_PATTERN.test(code) ? code : null;
 }
 
+/** `rotateCredential` に渡すもの。 */
+interface RotateCredentialParams {
+  readonly accountId: string;
+  readonly pluginId: string;
+  readonly fields: readonly CredentialField[];
+  readonly rotated: Readonly<Record<string, string>>;
+  readonly version: string | null;
+}
+
 /**
  * `rotatedCredential` を書き戻す（`035` 設計 §6.5.6、039 設計 §6.1）。
  *
@@ -346,20 +355,35 @@ function sqlStateOf(error: unknown): string | null {
  * **配信の前に読んだ暗号文（`version`）と DB の暗号文が同じときだけ書く**（比較更新。039 §6.1）。
  * 配信の間に運用者が差し替えた・消した（同じ値の入れ直しを含む）なら捨てる。運用者の値が正である。
  *
- * **どこで止まっても投稿の結果は変えない。** 例外もここで受け止める。外へ出すと
- * その行が `unrecorded` になり、次の実行で「中断」の `failed` に落ちる（実際には投稿されている）。
+ * **どこで止まっても投稿の結果は変えない。** 例外は**本体のどこで出ても**ここで受け止める
+ * （039 §6.1 の 4 の 2026-09-24 追記、#75）。Plugin は JavaScript なので、`rotated` が型に反する値
+ * （`BigInt` の値、読むと投げる getter）を持ちうる。突き合わせや `JSON.stringify` も投げうる。
+ * 外へ出すとその行が `unrecorded` になり、次の実行で「中断」の `failed` に落ちる（実際には投稿されている）。
  *
- * ログに載せるのは `accountId` / `pluginId`（と SQLSTATE）だけ。値・暗号文・版を載せない。
+ * ログに載せるのは `accountId` / `pluginId`（と SQLSTATE）だけ。値・暗号文・版・例外の文言を載せない。
  */
 async function rotateCredential(
   connection: Connection,
-  params: {
-    readonly accountId: string;
-    readonly pluginId: string;
-    readonly fields: readonly CredentialField[];
-    readonly rotated: Readonly<Record<string, string>>;
-    readonly version: string | null;
-  },
+  params: RotateCredentialParams,
+): Promise<void> {
+  const { accountId, pluginId } = params;
+  try {
+    await rotateCredentialSteps(connection, params);
+  } catch (error) {
+    // **例外の文言を載せない**（SQL の値や Plugin が返した値を含みうる）。SQLSTATE があればそれだけ。
+    const code = sqlStateOf(error);
+    log.error('rotated credential could not be saved', {
+      accountId,
+      pluginId,
+      ...(code === null ? {} : { code }),
+    });
+  }
+}
+
+/** `rotateCredential` の手順（039 §6.1 の 4 の表の順）。例外は呼び出し元が受け止める。 */
+async function rotateCredentialSteps(
+  connection: Connection,
+  params: RotateCredentialParams,
 ): Promise<void> {
   const { accountId, pluginId } = params;
 
@@ -390,25 +414,12 @@ async function rotateCredential(
     return;
   }
 
-  let replaced: boolean;
-  try {
-    const encryptedCredential = encryptSecret(plaintext);
-    replaced = await socialRepository.replaceCredentialIfUnchanged(
-      connection,
-      accountId,
-      params.version,
-      encryptedCredential,
-    );
-  } catch (error) {
-    // **例外の文言を載せない**（SQL の値を含みうる）。SQLSTATE があればそれだけ。
-    const code = sqlStateOf(error);
-    log.error('rotated credential could not be saved', {
-      accountId,
-      pluginId,
-      ...(code === null ? {} : { code }),
-    });
-    return;
-  }
+  const replaced = await socialRepository.replaceCredentialIfUnchanged(
+    connection,
+    accountId,
+    params.version,
+    encryptSecret(plaintext),
+  );
 
   if (!replaced) {
     // 何も変わっていないので監査は出さない。運用者の変更はその要求の `updated` が残している。
@@ -419,6 +430,8 @@ async function rotateCredential(
     return;
   }
 
+  // `recordSystemAudit` は自分で例外を受け止めるので、書き戻せた後に `could not be saved` とは記録されない
+  // （実装プラン §8 の 33）。
   await recordSystemAudit(connection, {
     action: 'updated',
     resourceType: 'social_account',

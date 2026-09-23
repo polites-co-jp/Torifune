@@ -844,3 +844,108 @@ describe('#62 credentialFields: [] の publisher が rotatedCredential を返す
     expect(recordsWith(records, 'warn', IGNORED_EMPTY_FIELDS)).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #75 型に反する rotatedCredential でも投稿の記録を止めない
+// ---------------------------------------------------------------------------
+
+/**
+ * #75（設計 §6.1 の 4 の 2026-09-24 追記、§10.12）。Plugin は JavaScript なので、型の上では
+ * `Record<string, string>` の `rotatedCredential` が、実際には型に反する値を持ちうる。
+ * 宣言との突き合わせや `JSON.stringify` がそれで投げても、例外を `rotateCredential` の中で受け止める。
+ * 外へ出ると `unrecorded` → 次の実行で「中断」の `failed` → 出し直して二重投稿になる。
+ */
+describe('#75 publisher が型に反する rotatedCredential を返す', () => {
+  /** 例外の文言。ログに載ってはならない。 */
+  const GETTER_TEXT = 'getter exploded near rot-pw-R9a1';
+
+  const MALFORMED: readonly [string, () => Record<string, string>][] = [
+    [
+      '(a) 値の 1 つが BigInt（突き合わせは通り、JSON.stringify が投げる）',
+      () =>
+        ({ identifier: ROTATED.identifier, appPassword: 1n }) as unknown as Record<string, string>,
+    ],
+    [
+      '(b) 宣言のキーの 1 つが読むと投げる getter（突き合わせが投げる）',
+      () => {
+        const value: Record<string, string> = { identifier: ROTATED.identifier };
+        Object.defineProperty(value, 'appPassword', {
+          enumerable: true,
+          get() {
+            throw new Error(GETTER_TEXT);
+          },
+        });
+        return value;
+      },
+    ],
+  ];
+
+  async function malformedRun(make: () => Record<string, string>) {
+    const { records } = capture();
+    usePublisher(async () => ({ ok: true, rotatedCredential: make() }));
+    const accountId = await accountFor({ credentials: INITIAL });
+    const postId = await makePost(accountId);
+    const before = await accountRow(accountId);
+
+    const summary = await run();
+    return { accountId, postId, records, summary, before };
+  }
+
+  it.each(MALFORMED)('#75 %s：summary.published が 1 で unrecorded が 0', async (_, make) => {
+    const { summary } = await malformedRun(make);
+
+    expect(summary.published).toBe(1);
+    expect(summary.unrecorded).toBe(0);
+  });
+
+  it.each(MALFORMED)('#75 %s：投稿は published と記録される', async (_, make) => {
+    const { postId } = await malformedRun(make);
+
+    expect(await postStatus(postId)).toBe('published');
+  });
+
+  it.each(MALFORMED)('#75 %s：アカウントの資格情報は配信の前のまま', async (_, make) => {
+    const { accountId, before } = await malformedRun(make);
+
+    expect(await storedCredential(accountId)).toBe(before.credential);
+  });
+
+  it.each(MALFORMED)('#75 %s：rotated: true の監査の行が無い', async (_, make) => {
+    await malformedRun(make);
+
+    expect(await rotatedAuditRows()).toHaveLength(0);
+  });
+
+  it.each(MALFORMED)(
+    "#75 %s：log.error('rotated credential could not be saved') が 1 回で、fields は accountId / pluginId ちょうど",
+    async (_, make) => {
+      const { accountId, records } = await malformedRun(make);
+      const logged = recordsWith(records, 'error', COULD_NOT_BE_SAVED);
+
+      expect(logged).toHaveLength(1);
+      expect(logged[0]?.fields).toEqual({ accountId, pluginId: PLUGIN_ID });
+    },
+  );
+
+  it.each(MALFORMED)('#75 %s：どのログにも例外の文言が無い', async (_, make) => {
+    const { records } = await malformedRun(make);
+    const text = records
+      .map((record) => `${record.message} ${JSON.stringify(record.fields ?? {})}`)
+      .join('\n');
+
+    expect(text).not.toContain('getter exploded');
+    expect(text).not.toContain('BigInt');
+  });
+
+  it.each(MALFORMED)(
+    '#75 %s：続けてもう一度走らせても interrupted が 0 で、投稿は published のまま',
+    async (_, make) => {
+      const { postId } = await malformedRun(make);
+
+      const second = await run();
+
+      expect(second.interrupted).toBe(0);
+      expect(await postStatus(postId)).toBe('published');
+    },
+  );
+});
