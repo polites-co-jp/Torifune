@@ -610,12 +610,38 @@ export function retryableFor(
   errorClass?: GraphErrorClass,
   state?: ContainerState,
 ): boolean {
-  void phase;
-  void kind;
-  void status;
-  void errorClass;
-  void state;
-  return false;
+  // 準備の期限・round の上限・R4 を送るだけの残り時間の不足は、どれも R4 を送る前に諦めている（P3）。
+  if (kind === 'budget') {
+    return true;
+  }
+  const redirected = status !== undefined && status >= 300 && status < 400;
+
+  if (phase === 'publish') {
+    // **送った後は既定で false。** 届いたか分からない。SNS の投稿は取り消せない（P4）。
+    // レート制限だけは書き込む前に断られたと読める。`dailyLimit` は分類で先に落ちている。
+    return kind === 'http' && !redirected && errorClass === 'rateLimit';
+  }
+
+  // ここから先は R4 を送る前（P1 / P2 / P3）。既定で true、直らないものだけ false。
+  if (kind === 'state') {
+    // ERROR は画像の問題。PUBLISHED はまだ送っていないのに公開済みと言われている（迷ったら false）。
+    return state === 'EXPIRED' || state === 'unknown';
+  }
+  if (kind !== 'http') {
+    // 接続できない・制限時間・打ち切り・応答が読めない。公開の要求をまだ出していない。
+    return true;
+  }
+  if (redirected) {
+    return false;
+  }
+  if (errorClass === 'dailyLimit' || errorClass === 'token' || errorClass === 'permission') {
+    return false;
+  }
+  if (errorClass === 'rateLimit' || errorClass === 'transient') {
+    return true;
+  }
+  // 5xx はまだ何も作られていない。その他の 4xx は投稿の内容の問題（人が直す）。
+  return status !== undefined && status >= 500;
 }
 
 function transportFailure(

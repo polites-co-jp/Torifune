@@ -189,15 +189,165 @@ function validateDraft(post: SocialPostDraftView): readonly PublisherValidationP
 
 const ABORTED_REASON = 'Instagram への配信が打ち切られました。';
 
-/** `reason` の文言。**Graph API の自由文を載せない**（設計 §6.11）。 */
-function reasonFor(failure: GraphFailure): string {
-  void failure;
-  return 'Instagram への配信に失敗しました。';
+const MEDIA_REQUIRED_REASON =
+  'Instagram への配信には画像が必要です。画像を 1〜10 枚付けて登録し直してください。';
+
+const LINK_REASON =
+  'Instagram はキャプション内の URL をリンクにしません。link を外して登録し直してください' +
+  '（URL を見せたい場合は本文に書いてください）。';
+
+const CREDENTIAL_REASON =
+  'Instagram の資格情報の形が正しくありません（ユーザー ID は数字だけ、長期アクセストークンは空白や改行を含まない' +
+  ' 2048 文字以内の文字列）。SNS アカウントの資格情報を登録し直してください。';
+
+const UNEXPECTED_BEFORE_PUBLISH_REASON =
+  'Instagram への配信の準備中に予期しない問題が起きました。公開の要求は送っていないので、時間をおいて再試行します。';
+
+const UNEXPECTED_AFTER_PUBLISH_REASON =
+  'Instagram へ公開の要求を送った後で予期しない問題が起きました。二重投稿を避けるため再試行しません。' +
+  'Instagram 側で投稿を確認してから、必要なら予約し直してください。';
+
+const NOT_CONFIRMED_SUFFIX =
+  '二重投稿を避けるため再試行しません。Instagram 側で投稿を確認してから、必要なら予約し直してください。';
+
+/**
+ * `reason` に載せる応答の素性。
+ *
+ * **HTTP の status と、既知の `code` / `error_subcode`（知らなければ `unknown`）だけ。**
+ * Graph API の自由文（`message` / `error_user_msg` など）・`fbtrace_id`・要求の URL は載せない。
+ * Core の伏せ字は 4 文字以上の完全一致しか消せないので、**伏せ字を当てにしない**（設計 §6.11）。
+ */
+function detailOf(failure: GraphFailure): string {
+  const parts: string[] = [];
+  if (failure.status !== undefined) {
+    parts.push(`HTTP ${failure.status}`);
+  }
+  if (failure.code !== undefined) {
+    parts.push(`code ${failure.code}`);
+  }
+  if (failure.subcode !== undefined) {
+    parts.push(`subcode ${failure.subcode}`);
+  }
+  return parts.length === 0 ? '' : `（${parts.join(' / ')}）`;
 }
 
-const INPUT_REASON = 'Instagram への配信の入力が正しくありません。';
+const PHASE_LABELS: Readonly<Record<GraphFailure['phase'], string>> = {
+  container: 'container の作成',
+  status: 'container の状態の確認',
+  publish: '公開',
+  permalink: '投稿の URL の問い合わせ',
+  refresh: 'トークンの延長',
+};
 
-const UNEXPECTED_REASON = 'Instagram への配信で予期しない問題が起きました。';
+/** 状態（`status_code`）の失敗。**知らない値はそのまま出さない**（外から来た文字列）。 */
+function stateReason(failure: GraphFailure): string {
+  switch (failure.state) {
+    case 'ERROR':
+      return (
+        'Instagram が画像を処理できませんでした（container の状態 ERROR）。' +
+        'media の URL が公開された JPEG 画像を指しているか確かめてください。'
+      );
+    case 'PUBLISHED':
+      return (
+        'Instagram が、公開の要求を送る前に container を公開済みと返しました（container の状態 PUBLISHED）。' +
+        NOT_CONFIRMED_SUFFIX
+      );
+    case 'EXPIRED':
+      return 'Instagram の container が失効しました（container の状態 EXPIRED）。時間をおいて再試行します。';
+    default:
+      return 'Instagram の container の状態を読み取れませんでした。時間をおいて再試行します。';
+  }
+}
+
+/** 直らない種類のエラー（どのフェーズでも同じ案内）。 */
+function classReason(failure: GraphFailure, detail: string): string | undefined {
+  switch (failure.errorClass) {
+    case 'token':
+      return failure.phase === 'publish'
+        ? `Instagram のアクセストークンが公開の途中で無効になりました${detail}。${NOT_CONFIRMED_SUFFIX}` +
+            'あわせて長期アクセストークンを発行し直し、SNS アカウントの資格情報を登録し直してください。'
+        : `Instagram のアクセストークンが無効か期限切れです${detail}。` +
+            '長期アクセストークンを発行し直し、SNS アカウントの資格情報を登録し直してください。';
+    case 'dailyLimit':
+      return (
+        `Instagram の 24 時間あたりの公開数の上限に達しました${detail}。` +
+        '時間をおいて新しい投稿として登録し直してください。'
+      );
+    case 'permission':
+      if (failure.phase === 'publish') {
+        return undefined;
+      }
+      return (
+        `Instagram の権限が足りません${detail}。プロアカウント（ビジネスまたはクリエイター）であることと、` +
+        'instagram_business_content_publish の権限があることを確かめてください。'
+      );
+    default:
+      return undefined;
+  }
+}
+
+/** R4 を送る前（container の作成・状態の確認）の失敗。 */
+function beforePublishReason(failure: GraphFailure, detail: string): string {
+  const phase = PHASE_LABELS[failure.phase];
+  switch (failure.kind) {
+    case 'network':
+    case 'timeout':
+    case 'aborted':
+      return `Instagram へ接続できませんでした（${phase}）。時間をおいて再試行します。`;
+    case 'shape':
+      return `Instagram の応答を解釈できませんでした（${phase}）${detail}。時間をおいて再試行します。`;
+    case 'state':
+      return stateReason(failure);
+    case 'budget':
+      return 'Instagram の画像の処理が時間内に終わりませんでした。時間をおいて再試行します。';
+    default:
+      break;
+  }
+
+  const known = classReason(failure, detail);
+  if (known !== undefined) {
+    return known;
+  }
+  const status = failure.status ?? 0;
+  if (status >= 300 && status < 400) {
+    return `Instagram が想定しない転送を返しました（${phase}）${detail}。転送は追いません。時間をおいて予約し直してください。`;
+  }
+  if (failure.errorClass === 'rateLimit') {
+    return `Instagram の呼び出し回数の制限に達しました${detail}。時間をおいて再試行します。`;
+  }
+  if (failure.retryable) {
+    return `Instagram が一時的に応答できませんでした（${phase}）${detail}。時間をおいて再試行します。`;
+  }
+  return failure.phase === 'container'
+    ? `Instagram が画像を受け付けませんでした${detail}。media の URL が公開された JPEG 画像を指しているか確かめてください。`
+    : `Instagram が container の状態の確認を断りました${detail}。Instagram 側でアカウントの状態を確かめてください。`;
+}
+
+/** R4（公開）の失敗。**送った後は、レート制限のほかは届いたか分からない。** */
+function publishReason(failure: GraphFailure, detail: string): string {
+  if (failure.kind === 'budget') {
+    return '公開の要求を送るだけの時間が残っていなかったため、送らずに中断しました。時間をおいて再試行します。';
+  }
+  const known = classReason(failure, detail);
+  if (known !== undefined) {
+    return known;
+  }
+  if (failure.retryable) {
+    return `Instagram への公開が制限されました${detail}。時間をおいて再試行します。`;
+  }
+  return `Instagram へ公開の要求が届いたかを確認できませんでした${detail}。${NOT_CONFIRMED_SUFFIX}`;
+}
+
+/**
+ * `reason` の文言。**運用者が次に何をすればよいかが読める日本語**にする。
+ * **Graph API の自由文を載せない**（設計 §6.11）。
+ */
+function reasonFor(failure: GraphFailure): string {
+  const detail = detailOf(failure);
+  return failure.phase === 'publish'
+    ? publishReason(failure, detail)
+    : beforePublishReason(failure, detail);
+}
 
 /* -------------------------------------------------------------------------- */
 /* publish()：段取り（設計 §6.3〜§6.8）                                           */
@@ -252,6 +402,8 @@ async function runGroup<T, R>(
       const result = await send(items[index] as T, siblings.signal);
       if (result.ok) {
         values[index] = result.value;
+      } else if (result.failure.kind === 'aborted' && siblings.signal.aborted) {
+        // **子どうしの打ち切りで止まったものは失敗に数えない**（設計 §6.9「複数の失敗」）。
       } else {
         failures.push({ index, failure: result.failure });
         siblings.abort();
@@ -264,11 +416,26 @@ async function runGroup<T, R>(
   );
   await Promise.all(workers);
 
-  const first = failures.sort((a, b) => a.index - b.index)[0];
-  if (first !== undefined) {
-    return { ok: false, failure: first.failure };
+  if (failures.length === 0) {
+    return { ok: true, value: values };
   }
-  return { ok: true, value: values };
+  return { ok: false, failure: mergeFailures(failures) };
+}
+
+/**
+ * 複数の失敗を 1 つにまとめる（設計 §6.9「複数の失敗」）。
+ *
+ * `retryable` は**すべての失敗が `true` のときだけ `true`**。`reason` とログに使うのは
+ * `retryable: false` のうち添字がいちばん小さいもの、無ければ添字がいちばん小さいもの。
+ * **完了の順で選ばない**（同じ入力で `reason` が変わる）。
+ */
+function mergeFailures(
+  failures: readonly { readonly index: number; readonly failure: GraphFailure }[],
+): GraphFailure {
+  const ordered = [...failures].sort((a, b) => a.index - b.index);
+  // 1 つでも直らない失敗があれば、作り直しても同じところで落ちる。それを選べば `retryable` は `false` になる。
+  const chosen = ordered.find((entry) => !entry.failure.retryable) ?? ordered[0];
+  return (chosen as (typeof ordered)[number]).failure;
 }
 
 /**
@@ -495,6 +662,8 @@ async function publishPost(
   const log = (message: string, phase: string, detail: Record<string, unknown> = {}): void => {
     logger.warn(message, { ...base, phase, ...detail });
   };
+  /** R4 を送ったか（送ろうとしたか）。**予期しない例外の `retryable` はこれで決める**（設計 §6.11）。 */
+  let publishSent = false;
 
   try {
     if (signal.aborted) {
@@ -503,16 +672,21 @@ async function publishPost(
     }
     logger.info('Instagram へ配信する', base);
 
-    // P0：外へ 1 本も出さずに断る（設計 §6.9）。
-    if (media.length === 0 || hasLink(post.link)) {
+    // P0：外へ 1 本も出さずに断る。人が直すまで直らない（設計 §6.9）。
+    if (media.length === 0) {
       log('instagram input rejected', 'input');
-      return { ok: false, reason: INPUT_REASON, retryable: false };
+      return { ok: false, reason: MEDIA_REQUIRED_REASON, retryable: false };
+    }
+    if (hasLink(post.link)) {
+      // **黙って捨てない**（設計 §6.12）。
+      log('instagram input rejected', 'input');
+      return { ok: false, reason: LINK_REASON, retryable: false };
     }
     const igUserId = credential['igUserId'];
     const accessToken = credential['accessToken'];
     if (!isValidIgUserId(igUserId) || !isValidAccessToken(accessToken)) {
       log('instagram credential rejected', 'input');
-      return { ok: false, reason: INPUT_REASON, retryable: false };
+      return { ok: false, reason: CREDENTIAL_REASON, retryable: false };
     }
 
     const clock = options.now ?? ((): Date => new Date());
@@ -556,6 +730,7 @@ async function publishPost(
       return fail(budgetFailure('publish'));
     }
 
+    publishSent = true;
     // **R4 は準備の signal ではなく外側の signal の下で送る**（設計 §6.8）。
     const published = await publishContainer({
       impl: session.impl,
@@ -571,8 +746,14 @@ async function publishPost(
 
     return await afterPublish(session, published.value.mediaId, credential, log);
   } catch {
-    logger.error('instagram publish unexpected', base);
-    return { ok: false, reason: UNEXPECTED_REASON, retryable: false };
+    // 送っていなければ `true`、送っていれば・分からなければ `false`（設計 §6.11）。
+    logger.error('instagram publish unexpected', {
+      ...base,
+      phase: publishSent ? 'publish' : 'prepare',
+    });
+    return publishSent
+      ? { ok: false, reason: UNEXPECTED_AFTER_PUBLISH_REASON, retryable: false }
+      : { ok: false, reason: UNEXPECTED_BEFORE_PUBLISH_REASON, retryable: true };
   }
 }
 
