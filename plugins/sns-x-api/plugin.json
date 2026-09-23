@@ -1,0 +1,11 @@
+{
+  "id": "sns-x-api",
+  "name": "X配信（X API）",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "description": "予約したSNS投稿を X API で自動投稿する（手動投稿も選べる）。X API の有料プランと OAuth 1.0a の資格情報が要る。sns-x-manual と同時には有効にできない。",
+  "author": "Torifune",
+  "license": "MIT",
+  "permissions": [],
+  "extensions": ["social"]
+}
