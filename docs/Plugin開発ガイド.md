@@ -507,7 +507,7 @@ Plugin を入れる側が「どの Plugin が資格情報を受け取るか」�
 
 | 項目 | 役割 |
 | --- | --- |
-| `credentialFields` | **資格情報の形の宣言だけ。** 入力欄の描画・形式検証・暗号化・保存・再表示しないことは Torifune が持つ。`kind: 'secret'` は打ち込むときに伏せる項目という意味で、保存はどの項目も暗号化される。空なら資格情報なしで `publish()` が呼ばれる（`credential` は `{}`）。**空なら `/social` に資格情報の欄を出さない**（アカウント追加にも、行の「資格情報を設定」にも出ない）。各項目の `description` は `/social` の欄の下に説明として出る（入力の時点で読ませたいこと、たとえばどこで・どの権限で発行するかを書く） |
+| `credentialFields` | **資格情報の形の宣言だけ。** 入力欄の描画・形式検証・暗号化・保存・再表示しないことは Torifune が持つ。`kind: 'secret'` は打ち込むときに伏せる項目という意味で、保存はどの項目も暗号化される。空なら資格情報なしで `publish()` が呼ばれる（`credential` は `{}`）。**空なら `/social` に資格情報の欄を出さない**（アカウント追加にも、行の「資格情報を設定」にも出ない）。各項目の `description` は `/social` の欄の下に説明として出る（入力の時点で読ませたいこと、たとえばどこで・どの権限で発行するかを書く）。空の publisher の provider で画面から作ったアカウントは `status: 'connected'`、`credentialConfigured` は通常 `false` になる。**どちらも資格情報の有無の約束ではない**（`status` は画面の表示のため、`credentialConfigured` は保存されているかだけ） |
 | `limits` | `bodyMaxLength` / `mediaRequired` / `mediaMax`。**適用するのは Torifune**（投稿の登録時に 422 で弾く）。文字数の数え方は SNS ごとに違うので、ここは早く弾くための粗い上限 |
 | `validate` | 事前検査。`field` は要求のフィールド名（`body` / `media` / `link` / `providerOptions.<key>`）。返した文言がそのまま 422 の `details` と投稿フォームに出る |
 | `publish` | 自動配信。**1 回送るだけ。** 再試行の回数・間隔・打ち切りは Torifune が決める |
@@ -570,6 +570,10 @@ return { ok: true, externalId: id, rotatedCredential: { ...credential, accessTok
 
 Torifune が暗号化して書き戻し、監査ログにも残す。
 キーは `credentialFields` のまま。宣言に合わないものは書き戻されず、警告がログに出る。
+
+**返した値が保存されない場合がある。** 配信の間に運用者が資格情報を変えた・消した場合は、返した値は保存されない（運用者の値を優先する。
+Torifune は配信の前に読んだ資格情報と、書き戻す時点の資格情報が同じときだけ書き戻す）。`credentialFields` が空の publisher が返した値も保存されない。
+どちらも警告がログに出るだけで、投稿の結果は変わらない。
 
 #### 守ること
 
