@@ -1,0 +1,11 @@
+{
+  "id": "sns-threads",
+  "name": "Threads配信",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "description": "予約したSNS投稿を Threads（Threads API）へ配信する。長期アクセストークンで動く。テキストと画像。手動投稿（投稿画面を開く）にも対応。",
+  "author": "Torifune",
+  "license": "MIT",
+  "permissions": [],
+  "extensions": ["social"]
+}

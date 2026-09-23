@@ -1,7 +1,8 @@
 /**
- * 資格情報の形の検査と、トークンの期限の判定（038-sns-instagram 設計 §5.2 / §6.2 / §6.7）。
+ * 資格情報の形の検査と、トークンの期限の判定（040-sns-threads 設計 §5.2 / §6.2 / §6.7）。
  *
- * Plugin `sns-threads` の `token.ts` にほぼ同じ中身の複製がある（040-sns-threads 設計 §4.2）。片方を直したら、もう片方も見直すこと。
+ * **Plugin `sns-instagram` の `token.ts` とほぼ同じ中身の、意識して置いた複製である**（設計 §4.2）。
+ * 片方を直したら、もう片方も見直すこと。別の SNS なので、一致はテストで強制しない。
  *
  * **純関数だけ。** HTTP も時計も持たない。時刻は引数で受ける。
  */
@@ -28,18 +29,23 @@ export const UNKNOWN_EXPIRY = 'unknown';
 
 export type TokenExpiry = Date | typeof UNKNOWN_EXPIRY;
 
-/** URL のパスに入る。`../` や `?` を入れさせない。 */
-const IG_USER_ID_PATTERN = /^[0-9]{1,64}$/;
+/**
+ * URL のパスに入る。`../` や `?` を入れさせない。
+ * **数値にしない**（16 桁を超えると `Number` で丸まる。設計 §6.2）。
+ */
+const THREADS_USER_ID_PATTERN = /^[0-9]{1,64}$/;
 
 /**
- * ヘッダ値に入る。印字可能な ASCII（`!`〜`~`）だけ。
- * 改行を含む値は HTTP の送信が同期で投げ、接続の失敗に化ける（設計 §6.2）。
+ * クエリと form の本体に入る。印字可能な ASCII（`!`〜`~`）だけ。
+ *
+ * `URLSearchParams` は何でも符号化して送ってしまうので、壊れた値は入口で理由つきで止める（設計 §6.2）。
+ * 長さの上限は、延長した値を書き戻すときに Core の資格情報の上限に収めるため。
  */
 const ACCESS_TOKEN_PATTERN = /^[\x21-\x7E]{1,2048}$/;
 
-/** Instagram のユーザー ID の形（数字だけ、64 桁まで）。 */
-export function isValidIgUserId(value: unknown): value is string {
-  return typeof value === 'string' && IG_USER_ID_PATTERN.test(value);
+/** Threads のユーザー ID の形（数字だけ、64 桁まで）。 */
+export function isValidThreadsUserId(value: unknown): value is string {
+  return typeof value === 'string' && THREADS_USER_ID_PATTERN.test(value);
 }
 
 /** アクセストークンの形（空白・制御文字・非 ASCII を含まない、2048 文字まで）。 */
@@ -51,7 +57,8 @@ export function isValidAccessToken(value: unknown): value is string {
  * 資格情報の `accessTokenExpiresAt` を読む。
  *
  * 読めない値（`unknown`・空白・日付として読めない文字列）と、
- * **いまから 61 日より先**の値は `'unknown'` を返す（設計 §5.2）。過ぎた期限はそのまま返す。
+ * **いまから 61 日より先**の値は `'unknown'` を返す（設計 §5.2）。61 日ちょうどは期限として読む。
+ * 過ぎた期限はそのまま返す（延長の判定に回す）。
  */
 export function parseExpiry(value: unknown, now: Date): TokenExpiry {
   if (typeof value !== 'string') {
