@@ -133,7 +133,15 @@ interface Attempt {
 }
 
 type CredentialResolution =
-  | { readonly ok: true; readonly values: Readonly<Record<string, string>> }
+  | {
+      readonly ok: true;
+      readonly values: Readonly<Record<string, string>>;
+      /**
+       * 読んだ時点の資格情報の版（039 設計 §6.1 の 3）。`rotatedCredential` の比較更新にだけ使う。
+       * **`PublishInput` に入れない**（`035` §6.5.5 の「渡す形」を変えない）。読んでいなければ null。
+       */
+      readonly version: string | null;
+    }
   | { readonly ok: false; readonly reason: string };
 
 // ---------------------------------------------------------------------------
@@ -282,7 +290,7 @@ async function resolveCredential(
 ): Promise<CredentialResolution> {
   // 資格情報の要らない配信手段。**読まずに `{}` を渡す**（設計 §5.7）。
   if (fields.length === 0) {
-    return { ok: true, values: {} };
+    return { ok: true, values: {}, version: null };
   }
 
   const withCredential = await socialRepository.findAccountWithCredential(connection, account.id);
@@ -309,15 +317,39 @@ async function resolveCredential(
     return { ok: false, reason: credentialMismatchReason(keys) };
   }
 
-  return { ok: true, values: parsed };
+  return { ok: true, values: parsed, version: withCredential.credentialVersion };
+}
+
+/** SQLSTATE の形（5 文字の英大文字・数字）。 */
+const SQLSTATE_PATTERN = /^[0-9A-Z]{5}$/;
+
+/**
+ * 例外が持つ SQLSTATE（039 設計 §6.1 の 4、実装プラン §8 の 26）。
+ *
+ * **例外の文言は使わない。** DB のエラーの文言は SQL の値を含みうる。
+ * 文字列の `code` が SQLSTATE の形のときだけ返し、それ以外は null。
+ */
+function sqlStateOf(error: unknown): string | null {
+  if (typeof error !== 'object' || error === null || !('code' in error)) {
+    return null;
+  }
+  const { code } = error as { code: unknown };
+  return typeof code === 'string' && SQLSTATE_PATTERN.test(code) ? code : null;
 }
 
 /**
- * `rotatedCredential` を書き戻す（設計 §6.5.6）。
+ * `rotatedCredential` を書き戻す（`035` 設計 §6.5.6、039 設計 §6.1）。
  *
- * **投稿の書き戻しとは別のトランザクションで、先に行う**（実装プラン §7 の 9）。
+ * **投稿の書き戻しとは別に、先に行う**（実装プラン §7 の 9）。
  * 投稿側が 0 行でも、トークンが更新された事実は変わらない。
- * 宣言に合わないものは書かずに警告するだけで、投稿の結果には影響しない。
+ *
+ * **配信の前に読んだ暗号文（`version`）と DB の暗号文が同じときだけ書く**（比較更新。039 §6.1）。
+ * 配信の間に運用者が差し替えた・消した（同じ値の入れ直しを含む）なら捨てる。運用者の値が正である。
+ *
+ * **どこで止まっても投稿の結果は変えない。** 例外もここで受け止める。外へ出すと
+ * その行が `unrecorded` になり、次の実行で「中断」の `failed` に落ちる（実際には投稿されている）。
+ *
+ * ログに載せるのは `accountId` / `pluginId`（と SQLSTATE）だけ。値・暗号文・版を載せない。
  */
 async function rotateCredential(
   connection: Connection,
@@ -326,9 +358,20 @@ async function rotateCredential(
     readonly pluginId: string;
     readonly fields: readonly CredentialField[];
     readonly rotated: Readonly<Record<string, string>>;
+    readonly version: string | null;
   },
 ): Promise<void> {
   const { accountId, pluginId } = params;
+
+  // `[]` は「資格情報を使わない」宣言。読まない値を保存すると画面と配信が食い違う。
+  // 比べる版も読んでいない（039 §6.1 の 4）。
+  if (params.fields.length === 0) {
+    log.warn('rotated credential ignored for publisher without credential fields', {
+      accountId,
+      pluginId,
+    });
+    return;
+  }
 
   if (validateCredentialAgainstFields(params.rotated, params.fields).length > 0) {
     log.warn('rotated credential does not match the declared fields', { accountId, pluginId });
@@ -341,12 +384,38 @@ async function rotateCredential(
     return;
   }
 
-  const encryptedCredential = encryptSecret(plaintext);
-  const updated = await connection.transaction((tx) =>
-    socialRepository.updateAccount(tx, accountId, { encryptedCredential }),
-  );
-  if (updated === null) {
-    log.warn('rotated credential could not be saved', { accountId, pluginId });
+  // 未設定は走査の a で飛ばしてあるので、通常は起きない（実装プラン §8 の 30）。
+  if (params.version === null) {
+    log.warn('rotated credential was discarded', { accountId, pluginId });
+    return;
+  }
+
+  let replaced: boolean;
+  try {
+    const encryptedCredential = encryptSecret(plaintext);
+    replaced = await socialRepository.replaceCredentialIfUnchanged(
+      connection,
+      accountId,
+      params.version,
+      encryptedCredential,
+    );
+  } catch (error) {
+    // **例外の文言を載せない**（SQL の値を含みうる）。SQLSTATE があればそれだけ。
+    const code = sqlStateOf(error);
+    log.error('rotated credential could not be saved', {
+      accountId,
+      pluginId,
+      ...(code === null ? {} : { code }),
+    });
+    return;
+  }
+
+  if (!replaced) {
+    // 何も変わっていないので監査は出さない。運用者の変更はその要求の `updated` が残している。
+    log.warn(
+      'rotated credential was discarded because the account credential changed during publish',
+      { accountId, pluginId },
+    );
     return;
   }
 
@@ -677,13 +746,14 @@ async function publishOne(input: PublishOneInput): Promise<RowOutcome> {
     new Date(),
   );
 
-  // e: 更新後の資格情報は**投稿の書き戻しより先に**、別のトランザクションで。
+  // e: 更新後の資格情報は**投稿の書き戻しより先に**、別に。配信の前に読んだ版と比べて書く（039 §6.1）。
   if (outcome.rotated !== null) {
     await rotateCredential(connection, {
       accountId: account.id,
       pluginId: publisher.pluginId,
       fields,
       rotated: outcome.rotated,
+      version: resolved.version,
     });
   }
 

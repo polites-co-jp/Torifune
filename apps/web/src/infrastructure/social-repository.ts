@@ -249,13 +249,18 @@ export const socialRepository: SocialRepository = {
     const account = toAccount(typed);
 
     if (typed.credential === null || typed.credential === '') {
-      return { ...account, credential: null };
+      return { ...account, credential: null, credentialVersion: null };
     }
 
     const decrypted = decryptSecret(typed.credential);
     // 復号できない資格情報は「無い」として扱う。
     // 例外にすると、鍵を入れ替えた直後に一覧すら開けなくなる。
-    return { ...account, credential: decrypted.ok ? decrypted.secret : null };
+    // **版は復号の成否に関わらず、読んだ暗号文そのものを載せる**（039 設計 §6.1 の 2）。
+    return {
+      ...account,
+      credential: decrypted.ok ? decrypted.secret : null,
+      credentialVersion: typed.credential,
+    };
   },
 
   async insertAccount(connection: Connection, account: NewSocialAccount): Promise<SocialAccount> {
@@ -307,6 +312,26 @@ export const socialRepository: SocialRepository = {
       .where('id', '=', id)
       .executeTakeFirst();
     return Number(result.numDeletedRows) > 0;
+  },
+
+  async replaceCredentialIfUnchanged(
+    connection: Connection,
+    id: string,
+    expectedVersion: string,
+    encryptedCredential: string,
+  ): Promise<boolean> {
+    if (!UUID_PATTERN.test(id)) return false;
+
+    // **1 文の比較更新**（039 設計 §6.1 の 2）。読みと書きの間に他の書き込みが割り込まない。
+    // `credential` が NULL の行は `=` が真にならないので置き換わらない。
+    const result = await connection.db
+      .updateTable('social_accounts')
+      .set({ credential: encryptedCredential, updated_at: new Date() })
+      .where('id', '=', id)
+      .where('credential', '=', expectedVersion)
+      .executeTakeFirst();
+
+    return Number(result.numUpdatedRows) === 1;
   },
 
   async listPosts(connection: Connection, query: SocialPostListQuery): Promise<SocialPostPage> {

@@ -144,6 +144,18 @@ export interface SocialRepository {
     patch: SocialAccountUpdate,
   ): Promise<SocialAccount | null>;
   deleteAccount(connection: Connection, id: string): Promise<boolean>;
+  /**
+   * 資格情報を、保存されている版が expectedVersion のときだけ置き換える（039 設計 §6.1）。
+   * 置き換えたら true。版が違う（その間に人が変えた・消した）、アカウントが無い、id の形が不正なら false で、何も変えない。
+   *
+   * **読みと書きを 1 つの操作で行う。** 読み直してから書く 2 段にすると、その間の人の変更を上書きする。
+   */
+  replaceCredentialIfUnchanged(
+    connection: Connection,
+    id: string,
+    expectedVersion: string,
+    encryptedCredential: string,
+  ): Promise<boolean>;
 
   listPosts(connection: Connection, query: SocialPostListQuery): Promise<SocialPostPage>;
   findPostById(connection: Connection, id: string): Promise<SocialPost | null>;

@@ -77,6 +77,11 @@ export interface SocialAccount {
 /** 内部処理が資格情報を必要とするときだけ使う形。 */
 export interface SocialAccountWithCredential extends SocialAccount {
   readonly credential: Secret | null;
+  /**
+   * 読んだ時点の資格情報の版（039 設計 §6.1）。比較更新にだけ使う不透明な値で、中身は保存されている暗号文。
+   * **復号しない・ログ／監査／summary／Plugin へ渡さない。** 保存されていなければ null。
+   */
+  readonly credentialVersion: string | null;
 }
 
 export const DISPLAY_NAME_MAX_LENGTH = 200;
