@@ -1,0 +1,11 @@
+{
+  "id": "sns-bluesky",
+  "name": "Bluesky配信",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "description": "予約したSNS投稿を Bluesky（AT Protocol）へ配信する。App Password で動く。",
+  "author": "Torifune",
+  "license": "MIT",
+  "permissions": [],
+  "extensions": ["social", "ui"]
+}
