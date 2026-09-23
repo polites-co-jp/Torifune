@@ -231,3 +231,110 @@ describe('#74 検査の述語の判別力', () => {
     expect(callCount('mySetCredentialBody(a)', 'setCredentialBody')).toBe(0);
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* #74 build…Request の第 1 引数は props.providers ちょうど（2026-09-24 に追加）   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 呼び出しの回数だけでは、部品が書き換えた選択肢を渡す変異
+ * （`buildClearCredentialRequest(props.providers.map((o) => ({ ...o, publisherRegistered: false })), …)`。
+ * `none` が `free` として送られる）を見逃す（039 の検証 2 回目 軽微-2）。
+ * 設計 §7.7.1 の「第 1 引数には部品の props の `providers` を `props.providers` のまま渡す」を、
+ * すべての `build…Request(` の呼び出しの第 1 引数の字面で見る。
+ */
+
+/** 第 1 引数に許す字面（部品の props の選択肢そのもの）。 */
+const PROVIDERS_ARGUMENT = 'props.providers';
+
+/**
+ * `name(` の各呼び出しの第 1 引数の字面（前後の空白を除く）。コメントを外してから見る。
+ * 括弧（`()` / `[]` / `{}`）の入れ子と文字列リテラルの中の `,` / `)` は区切りにしない。
+ */
+function firstArguments(text: string, name: string): string[] {
+  const code = stripComments(text);
+  const pattern = new RegExp(`(?<![\\w$])${escapeRegExp(name)}\\s*\\(`, 'g');
+  const found: string[] = [];
+
+  for (const match of code.matchAll(pattern)) {
+    let depth = 0;
+    let quote: string | null = null;
+    let index = (match.index ?? 0) + match[0].length;
+    const start = index;
+
+    for (; index < code.length; index += 1) {
+      const char = code[index] as string;
+      if (quote !== null) {
+        if (char === '\\') index += 1;
+        else if (char === quote) quote = null;
+        continue;
+      }
+      if (char === "'" || char === '"' || char === '`') quote = char;
+      else if (char === '(' || char === '[' || char === '{') depth += 1;
+      else if (char === ')' || char === ']' || char === '}') {
+        if (depth === 0) break;
+        depth -= 1;
+      } else if (char === ',' && depth === 0) break;
+    }
+    found.push(code.slice(start, index).trim());
+  }
+
+  return found;
+}
+
+describe('#74 social-accounts.tsx の build…Request の第 1 引数は props.providers ちょうど', () => {
+  const component = source('social-accounts.tsx');
+
+  it.each(REQUEST_BUILDERS)('#74 %s( のすべての呼び出しの第 1 引数が props.providers', (name) => {
+    const args = firstArguments(component, name);
+
+    expect(args.length).toBeGreaterThanOrEqual(1);
+    expect(args).toEqual(args.map(() => PROVIDERS_ARGUMENT));
+  });
+});
+
+describe('#74 第 1 引数の検査の判別力', () => {
+  const component = source('social-accounts.tsx');
+
+  /** 書き換えた一覧。`publisherRegistered` を偽にすると `none` が `free` になる。 */
+  const REWRITTEN = 'props.providers.map((o) => ({ ...o, publisherRegistered: false }))';
+
+  it.each(REQUEST_BUILDERS)(
+    '#74 実物の %s( の第 1 引数を書き換えた写しを、回数の検査は通し、第 1 引数の検査は落とす',
+    (name) => {
+      const original = `${name}(${PROVIDERS_ARGUMENT}`;
+      // 前提：実物に書き換える箇所がある（空振りしない）。
+      expect(component).toContain(original);
+      const mutated = component.replace(original, `${name}(${REWRITTEN}`);
+
+      // 回数の検査だけでは見逃す（直す前の #74 の穴）。
+      expect(callCount(mutated, name)).toBeGreaterThanOrEqual(1);
+      // 第 1 引数の検査は見分ける。
+      expect(firstArguments(mutated, name)).toContain(REWRITTEN);
+      expect(firstArguments(mutated, name).every((arg) => arg === PROVIDERS_ARGUMENT)).toBe(false);
+    },
+  );
+
+  it('#74 別の変数に移した一覧を渡す写しを見分ける', () => {
+    const text = [
+      'const providers = props.providers.filter((o) => o.publisherRegistered);',
+      'body: buildClearCredentialRequest(providers, target),',
+    ].join('\n');
+
+    expect(firstArguments(text, 'buildClearCredentialRequest')).toEqual(['providers']);
+  });
+
+  it('#74 第 1 引数の区切りは入れ子の括弧・文字列の中の , と ) を数えない', () => {
+    const text = [
+      "buildSetCredentialRequest(pick(props.providers, 'a,b)'), target, values, '')",
+      'buildCreateAccountRequest(props.providers, { provider, values: { a: 1, b: 2 } })',
+      '// buildClearCredentialRequest(rewritten, target)',
+    ].join('\n');
+
+    expect(firstArguments(text, 'buildSetCredentialRequest')).toEqual([
+      "pick(props.providers, 'a,b)')",
+    ]);
+    expect(firstArguments(text, 'buildCreateAccountRequest')).toEqual([PROVIDERS_ARGUMENT]);
+    expect(firstArguments(text, 'buildClearCredentialRequest')).toEqual([]);
+  });
+});
