@@ -125,6 +125,91 @@ const CASES: readonly TextCase[] = [
     manual: [],
     auto: [],
   },
+  /*
+   * #14 の続き：**URL は ASCII の表示文字の並びで終わる**（設計 §9.4 の 2。2026-09-23 の訂正）。
+   * 日本語の文では URL の直後に空白を置かないことが多い。空白までを URL とすると、後ろの日本語が 23 に潰れる。
+   */
+  {
+    // 見て(2*2) + URL 23 + をご覧ください(2*7) = 41。
+    label: '#14 URL の直後に空白なしで日本語が続いても、日本語は URL に含めない',
+    body: '見てhttps://example.com/aをご覧ください',
+    link: null,
+    weight: 41,
+    manual: [],
+    auto: [],
+  },
+  {
+    // 詳しくは(2*4) + URL 23 + をご覧ください(2*7) + あ×200(400) = 445。初版の規則では 31 と数えていた（検証の中-1）。
+    label: '#14 検証の例：URL の後ろの日本語 207 文字を 23 に潰さず 445 と数える',
+    body: `詳しくはhttps://example.com/aをご覧ください${'あ'.repeat(200)}`,
+    link: null,
+    weight: 445,
+    manual: ['body'],
+    auto: ['body'],
+  },
+  {
+    // URL 23 + 、(2) + 次へ(2*2) + 。(2) = 31。
+    label: '#14 URL の直後の全角の読点・句点を URL に含めない',
+    body: 'https://example.com/a、次へ。',
+    link: null,
+    weight: 31,
+    manual: [],
+    auto: [],
+  },
+  {
+    // （(2) + URL 23 + ）(2) + です(2*2) = 31。
+    label: '#14 全角の括弧で囲んだ URL の閉じ括弧を URL に含めない',
+    body: '（https://example.com/a）です',
+    link: null,
+    weight: 31,
+    manual: [],
+    auto: [],
+  },
+  {
+    // 見て(2*2) + 空白 1 + URL 23 + )(1) + .(1) = 30。ASCII の句読点・閉じ括弧は従来どおり末尾から外す。
+    label: '#14 URL の末尾の ASCII の閉じ括弧と句点を外す',
+    body: '見て https://example.com/x).',
+    link: null,
+    weight: 30,
+    manual: [],
+    auto: [],
+  },
+  {
+    // URL 23 + 日本語(2*3) = 29。
+    label: '#14 URL の後ろの CJK は 2 ずつ数える',
+    body: 'https://example.com/日本語',
+    link: null,
+    weight: 29,
+    manual: [],
+    auto: [],
+  },
+  {
+    // URL 23 + 👍(2) + ok(2) = 27。
+    label: '#14 URL の直後の絵文字は URL に含めず 2 と数える',
+    body: 'https://example.com/a👍ok',
+    link: null,
+    weight: 27,
+    manual: [],
+    auto: [],
+  },
+  {
+    // 設計 §11 #3 (b)①：twitter-text は 23。ここでは全体を平文として 8 + 日本(2*2) + .jp(3) = 15。
+    label: '#14（§11 #3 の b①）国際化ドメイン名は URL と数えない',
+    body: 'https://日本.jp',
+    link: null,
+    weight: 15,
+    manual: [],
+    auto: [],
+  },
+  {
+    // 設計 §11 #3 (b)②：twitter-text は path に含めて 23。ここでは URL 23 + é(1) + /menu(5) = 29。
+    label: '#14（§11 #3 の b②）path のラテン文字の拡張の所で URL を終える',
+    body: 'https://example.com/café/menu',
+    link: null,
+    weight: 29,
+    manual: [],
+    auto: [],
+  },
   {
     label: '#15 分解された é は NFC で 1',
     body: 'e\u0301',

@@ -43,8 +43,14 @@ export const X_MANUAL_NOTE =
  */
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 
-/** 本文中の URL らしき並び。空白までを 1 つとみなし、末尾は後で削る（036 の数え方と同じ規則）。 */
-const URL_PATTERN = /https?:\/\/[^\s]+/g;
+/**
+ * 本文中の URL らしき並び。**ASCII の表示文字（`\x21`〜`\x7E`）が続く限り**を 1 つとみなし、末尾は後で削る（設計 §9.4 の 2）。
+ *
+ * **空白だけでなく、非 ASCII の文字でも終わる。** 日本語の文では URL の直後に空白を置かないことが多く、
+ * 空白までを URL とすると後ろの日本語が 23 に潰れて少なく数える（2026-09-23 の訂正）。
+ * 国際化ドメイン名と path の非 ASCII の文字は X の数え方と食い違う（設計 §11 #3）。
+ */
+const URL_PATTERN = /https?:\/\/[\x21-\x7E]+/g;
 
 /** ホスト名まで揃っているか（末尾を削った結果 `https://` だけになったものは URL と数えない）。 */
 const URL_WITH_HOST_PATTERN = /^https?:\/\/[^\s/?#]+/;
@@ -70,26 +76,10 @@ const EMOJI_PATTERN = /\p{Extended_Pictographic}|\p{Regional_Indicator}/u;
 /**
  * URL の末尾から外す文字。
  *
- * 句読点・閉じ括弧は文の一部であって URL の一部ではない（036 の数え方と同じ集合）。
+ * 句読点・閉じ括弧は文の一部であって URL の一部ではない（036 の数え方の集合のうち ASCII のもの）。
+ * 全角の句読点・括弧は非 ASCII なので、もともと `URL_PATTERN` の並びに入らない。
  */
-const TRAILING_CHARS = new Set([
-  '.',
-  ',',
-  ';',
-  ':',
-  '!',
-  '?',
-  ')',
-  ']',
-  '」',
-  '）',
-  '。',
-  '、',
-  '！',
-  '？',
-  '：',
-  '；',
-]);
+const TRAILING_CHARS = new Set(['.', ',', ';', ':', '!', '?', ')', ']']);
 
 /**
  * 重み 1 で数えるコードポイントの範囲（両端を含む）。それ以外は 2。
@@ -141,7 +131,8 @@ function weightOfPlainText(text: string): number {
  * X の数え方による重み付きの長さ（設計 §9.4 の 1〜4）。
  *
  * 1. NFC に正規化する
- * 2. `https?://` から空白までを URL とし（末尾の句読点・閉じ括弧を外す）、1 つにつき 23 と数えて取り除く
+ * 2. `https?://` から ASCII の表示文字が続く限りを URL とし（空白・非 ASCII の文字で終わる。末尾の句読点・閉じ括弧を外す）、
+ *    1 つにつき 23 と数えて取り除く
  * 3. 残りを grapheme に分け、絵文字なら 2、それ以外はコードポイントごとに 1 か 2
  *
  * **`https://` の無いドメインを 23 と数えない**（公式の数え方とは食い違う。設計 §11 #3）。
