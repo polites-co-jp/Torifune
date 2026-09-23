@@ -90,6 +90,28 @@ for (const name of ['X配信（手動投稿）', 'X配信（X API）']) {
 }
 
 /**
+ * 040 Threads 配信 Plugin 受け入れ条件 #103。
+ *
+ * **画面の拡張点を宣言しない**ので、握る拡張点は「SNS配信」だけが読める。
+ * 行は Manifest の `name` の全体（「Threads配信」）で絞り、各ロケータが 1 件だけに当たることを確かめる
+ * （037 #87 と同じ。`.first()` で黙って解決しない）。spec に Plugin ID を書かない（#104）。
+ * **ここでは導入も有効化もしない。**
+ */
+test('検出済みに「Threads配信」が導入前から並び、SNS配信だけを握ると読める', async ({ page }) => {
+  await page.goto('/plugins');
+
+  const detected = page.locator('section[aria-labelledby="detected-heading"]');
+  const heading = detected.getByRole('heading', { name: 'Threads配信' });
+  await expect(heading).toHaveCount(1);
+  await expect(heading).toBeVisible();
+
+  const card = detected.locator('section').filter({ hasText: 'Threads配信' });
+  await expect(card).toHaveCount(1);
+  await expect(card.getByText('SNS配信（SNSアカウントの資格情報を受け取ります）')).toBeVisible();
+  await expect(card.getByText('画面の拡張')).toHaveCount(0);
+});
+
+/**
  * Registry タブ（020-plugin-registry 設計 §2.7）。
  *
  * E2E の環境では Registry を設定していない。
