@@ -1243,6 +1243,13 @@ export const resolveManualHandoff = defineUseCase<ManualHandoffInput, ManualHand
       return { ok: false, reason: 'invalid_url' };
     }
 
-    return { ok: true, url: handoff.url, note: handoff.note ?? null };
+    // **`note` も Plugin 由来の自由文**（設計 §6.6。4 回目の検証の低-3）。
+    // `url` は `isValidManualUrl` が、`reason` 系は `redactSecrets` が見ているのに、
+    // `note` だけが素通しで `social.read` の面（手動投稿待ち一覧）へ出ていた。
+    return {
+      ok: true,
+      url: handoff.url,
+      note: typeof handoff.note === 'string' ? redactSecrets(handoff.note) : null,
+    };
   },
 });

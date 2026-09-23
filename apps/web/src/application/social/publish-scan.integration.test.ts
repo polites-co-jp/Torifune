@@ -608,6 +608,89 @@ describe('#115 カーソルが進まない周期は打ち切る', () => {
     expect(summary).toMatchObject({ due: 2, attempted: 2 });
     expect(publish).toHaveBeenCalledTimes(2);
   }, 60_000);
+
+  /**
+   * #115（2026-09-23 に足した。4 回目の検証の低-1）。
+   * **打ち切りは「直前のカーソルと同値の行」しか見ない。**
+   *
+   * 端数を持つ行が**同じミリ秒に 2 行以上**あると、カーソルは行から行へ進むので
+   * 打ち切りが発火しないまま同じページが返り続け、`ready` に同じ行が何度も積まれる。
+   * `retry` で着手印が外れた行は、**そのまま同じ実行の中で二度以上 claim されうる**。
+   *
+   * **本体の書き込み経路からは作れない**（`scheduled_at` はミリ秒までの値で入る）が、
+   * Database Provider を差し替えた Plugin 経由なら作れる。
+   * **再 claim そのものを塞ぐ**（`claimForPublish` が待ち時刻を見る。設計 §6.5.4）。
+   */
+  describe('#115 同じミリ秒に端数つきの行が 2 つ', () => {
+    /** 2 行を**まったく同じ** `scheduled_at`（ミリ秒未満の端数つき）にそろえる。 */
+    async function shareSubMillisecond(postIds: readonly string[]): Promise<void> {
+      await withConnection(async (connection) => {
+        // 同じトランザクションの `now()` は 1 つの値なので、全行が同値になる。
+        await connection.transaction(async (tx) => {
+          for (const id of postIds) {
+            await sql`
+              UPDATE social_posts
+                 SET scheduled_at = date_trunc('milliseconds', now() - interval '1 second')
+                                    + interval '400 microseconds'
+               WHERE id = ${id}
+            `.execute(tx.db);
+          }
+        });
+      });
+    }
+
+    it('#115 端数つきの 2 行でも publish() は 1 行あたり 1 回だけ', async () => {
+      const publish = useRetryingPublisher();
+      const accountId = await accountFor();
+      await shareSubMillisecond([await makePost(accountId, 1), await makePost(accountId, 1)]);
+
+      await run();
+
+      expect(publish, '同じ投稿が同じ実行の中で二度以上送られている').toHaveBeenCalledTimes(2);
+    }, 60_000);
+
+    it('#115 端数つきの 2 行の summary は attempted 2 / retried 2', async () => {
+      const accountId = await accountFor();
+      useRetryingPublisher();
+      await shareSubMillisecond([await makePost(accountId, 1), await makePost(accountId, 1)]);
+
+      expect(await run()).toMatchObject({ attempted: 2, retried: 2 });
+    }, 60_000);
+
+    /** 再 claim を塞ぐのは待ち時刻の条件そのもの（走査の形は変えていない）。 */
+    it('#115 待ち時刻が未来の行は claimForPublish が掴まない', async () => {
+      const postId = await makePost(await accountFor(), 1);
+      await withConnection(async (connection) => {
+        await sql`
+          UPDATE social_posts SET next_attempt_at = now() + interval '1 hour' WHERE id = ${postId}
+        `.execute(connection.db);
+      });
+
+      const claimed = await withConnection(async (connection) =>
+        socialRepository.claimForPublish(connection, postId),
+      );
+
+      expect(claimed, '待ち時刻が未来の行を掴んでいる').toBeNull();
+    }, 60_000);
+
+    it('#115 待ち時刻が無い／過ぎている行は従来どおり掴める', async () => {
+      const accountId = await accountFor();
+      const fresh = await makePost(accountId, 1);
+      const past = await makePost(accountId, 1);
+      await withConnection(async (connection) => {
+        await sql`
+          UPDATE social_posts SET next_attempt_at = now() - interval '1 hour' WHERE id = ${past}
+        `.execute(connection.db);
+      });
+
+      const claimed = await withConnection(async (connection) => [
+        await socialRepository.claimForPublish(connection, fresh),
+        await socialRepository.claimForPublish(connection, past),
+      ]);
+
+      expect(claimed.map((post) => post?.id ?? null)).toEqual([fresh, past]);
+    }, 60_000);
+  });
 });
 
 // ---------------------------------------------------------------------------

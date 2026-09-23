@@ -648,6 +648,14 @@ export const socialRepository: SocialRepository = {
         .where('id', '=', id)
         .where('status', '=', 'scheduled')
         .where('publish_started_at', 'is', null)
+        // **待ち時刻が未来の行は claim しない**（設計 §6.5.4。4 回目の検証の低-1）。
+        // `listDue` と同じ条件をここでも見る。カーソル停滞の打ち切り（§6.5.3）は
+        // 「直前のカーソルと同値の行」しか見ないので、**同じミリ秒に 2 行以上**あると
+        // 素通りする。そのとき `retry` で着手印が外れた行（`next_attempt_at` は未来）を
+        // 同じ実行の中でもう一度 claim しうる——**SNS の投稿は取り消せない**。
+        .where((eb) =>
+          eb.or([eb('next_attempt_at', 'is', null), eb('next_attempt_at', '<=', sql<Date>`now()`)]),
+        )
         .returning(POST_COLUMNS)
         .executeTakeFirst();
 

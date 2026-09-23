@@ -377,6 +377,46 @@ describe('#61 投稿画面の URL を publisher に作らせる', () => {
     });
   });
 
+  /**
+   * #61（2026-09-23 に足した。4 回目の検証の低-3）。
+   * **`note` も Plugin 由来の自由文なので秘匿を通る**（設計 §6.6）。
+   *
+   * `url` は `isValidManualUrl` が、`reason` 系は `redactSecrets` が見ているのに、
+   * `note` だけが素通しで **`social.read` で読める面（手動投稿待ち一覧）へ出ていた**。
+   */
+  describe('#61 note の秘匿', () => {
+    /** 接続文字列の形の生きた値。`redactSecrets` の (a) が credential 部を伏せる。 */
+    const LIVE_VALUE = 'postgresql://plugin:s3cretpw@db.internal:5432/appdb';
+
+    async function noteFor(note: string): Promise<string | null> {
+      useManualPublisher(() => ({ url: 'https://bsky.app/intent/compose', note }));
+      const id = await makePost();
+      const outcome = await resolveManualHandoff(admin, { id });
+
+      return outcome.ok ? outcome.note : null;
+    }
+
+    it('#61 note に混じった接続文字列が平文で出ない', async () => {
+      const note = await noteFor(`投稿画面が開けないときは ${LIVE_VALUE} を確認してください`);
+
+      expect(note, 'note が redactSecrets を通っていない').not.toContain('s3cretpw');
+    });
+
+    it('#61 伏せても note の残りの文は消えない', async () => {
+      const note = await noteFor(`投稿画面が開けないときは ${LIVE_VALUE} を確認してください`);
+
+      expect(note).toContain('投稿画面が開けないときは');
+      expect(note).toContain('***');
+    });
+
+    it('#61 秘匿に掛からない note はそのまま返る', async () => {
+      // 伏せ字は接続情報の形にだけ効く。普通の案内文を壊さない。
+      expect(await noteFor('画像は投稿画面で添付してください')).toBe(
+        '画像は投稿画面で添付してください',
+      );
+    });
+  });
+
   it('#61 manual() が Promise を返してもよい', async () => {
     useManualPublisher(async () => Promise.resolve({ url: 'https://bsky.app/intent/compose' }));
     const id = await makePost();
