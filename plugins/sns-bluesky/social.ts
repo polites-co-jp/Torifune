@@ -14,8 +14,10 @@ import type {
 import {
   ACCOUNT_STATE_ERROR_CODES,
   type AtprotoFailure,
+  type AtprotoPhase,
   type FetchImpl,
   MEDIA_TOTAL_BUDGET_MS,
+  PUBLISH_TOTAL_BUDGET_MS,
   createRecord,
   createSession,
   fetchMedia,
@@ -72,6 +74,15 @@ const APP_VIEW_URL = 'https://bsky.app';
 
 /** `app.bsky.feed.post` のレコード種別。 */
 const POST_COLLECTION = 'app.bsky.feed.post';
+
+/**
+ * `externalId` に載せてよい長さ（設計 §6.3）。
+ *
+ * **Core の `social_posts.external_id` は 200 文字以内**（`migrations/022` の CHECK）で、
+ * `publish()` の経路にこの検査は無い。超える値を返すと Core の記録が例外で落ち、
+ * **着手印だけが残って投稿は Bluesky に存在する**＝次の周期で二重投稿になる。
+ */
+const EXTERNAL_ID_MAX_LENGTH = 200;
 
 export interface BlueskyPublisherOptions {
   /** `pds-url` を読むためだけに使う。**資格情報はここへ写さない**（設計 §6.5）。 */
@@ -249,20 +260,31 @@ function sessionReason(failure: AtprotoFailure, detail: string): string {
   return `Bluesky へのログインを断られました${detail}。PDS の URL と App Password を確認してください。`;
 }
 
-function mediaReason(failure: AtprotoFailure, detail: string): string {
+/**
+ * 媒体の失敗の文言（設計 §6.11）。
+ *
+ * **`detailOf` を使わない。HTTP の status を外へ出さない。**
+ * 取得先は `social.write` を持つ誰かが書いた任意の URL であり（設計 §8.2）、
+ * この文言は `social_posts.failure_reason` に保存されて **`social.read` で読める。**
+ * status を載せると、**投稿を1件ずつ積むだけで内部ホストの生死と応答の別を列挙できる。**
+ *
+ * 残す粒度は「**一時的な失敗**」か「**`media[].url` を直す必要がある失敗**」かの二分まで。
+ * **`retryable` の判断には status を使い続ける**（判断に使うことと外へ出すことは別）。
+ */
+function mediaReason(failure: AtprotoFailure): string {
   switch (failure.kind) {
     case 'redirect':
-      return `画像の URL が転送されています${detail}。転送先の URL を直接指定してください。`;
+      return '画像の URL が転送されています。転送先の URL を直接指定してください。';
     case 'contentType':
-      return '画像ではないファイルが返されました。画像の URL を指定してください。';
+      return '画像ではないファイルが返されました。PNG・JPEG・GIF・WebP の URL を指定してください。';
     case 'tooLarge':
       return '画像が大きすぎます（1MB まで）。小さい画像を指定してください。';
     case 'budget':
       return '画像の取得に時間がかかりすぎました。時間をおいて再試行します。';
     case 'http':
       return failure.retryable
-        ? `画像を取得できませんでした${detail}。時間をおいて再試行します。`
-        : `画像を取得できませんでした${detail}。画像の URL が公開されているか確認してください。`;
+        ? '画像を取得できませんでした。時間をおいて再試行します。'
+        : '画像を取得できませんでした。画像の URL が公開されているか確認してください。';
     default:
       return '画像を取得できませんでした。時間をおいて再試行します。';
   }
@@ -305,7 +327,8 @@ function reasonFor(failure: AtprotoFailure): string {
     case 'createSession':
       return sessionReason(failure, detailOf(failure));
     case 'media':
-      return mediaReason(failure, detailOf(failure));
+      // **媒体だけは `detailOf` を渡さない**（設計 §6.11）。
+      return mediaReason(failure);
     case 'uploadBlob':
       return uploadReason(failure, detailOf(failure));
     case 'createRecord':
@@ -374,14 +397,38 @@ async function publishPost(
     const media = post.media;
     logger.info('Bluesky へ配信する', { postId: post.id, attempt, mediaCount: media.length });
 
-    const fail = (failure: AtprotoFailure): PublishResult => {
+    // **この Plugin が見る時計**（設計 §10.1）。期限の「いま」もここから取る。
+    const clock = options.now ?? ((): Date => new Date());
+    const startedAt = clock().getTime();
+
+    /**
+     * `publish()` 全体の期限（設計 §6.6）。
+     *
+     * **要求ごとの制限時間だけでは合計を縛れない**（10 ＋ 20 ＋ 15 は Core の 30 秒を超える）。
+     * すべての要求はこの signal を外側に持つ。
+     */
+    const totalDeadline = startedAt + PUBLISH_TOTAL_BUDGET_MS;
+    const deadline = AbortSignal.any([signal, AbortSignal.timeout(PUBLISH_TOTAL_BUDGET_MS)]);
+
+    /**
+     * 失敗をログに残す。
+     *
+     * **`media` フェーズだけ `status` を落とす**（設計 §6.11）。取得先は利用者が指した任意の URL で、
+     * ログは `system.manage` で読める。`createSession` / `uploadBlob` / `createRecord` の status は
+     * **運用者が自分で設定した PDS の応答**なので、そのまま残す。
+     */
+    const warn = (phase: AtprotoPhase, status?: number): void => {
       logger.warn('Bluesky への配信に失敗した', {
         postId: post.id,
         attempt,
-        phase: failure.phase,
-        status: failure.status,
+        phase,
+        ...(phase === 'media' || status === undefined ? {} : { status }),
         mediaCount: media.length,
       });
+    };
+
+    const fail = (failure: AtprotoFailure): PublishResult => {
+      warn(failure.phase, failure.status);
       const result = {
         ok: false as const,
         reason: reasonFor(failure),
@@ -411,6 +458,8 @@ async function publishPost(
     // **`embed` は1つしか持てない。** 片方を黙って捨てない（設計 §6.8）。
     const link = linkOf(post);
     if (media.length > 0 && link !== null) {
+      // **早期 return でもログを残す**（設計 §6.8）。`fail()` を通らないので明示的に呼ぶ。
+      warn('embed');
       return { ok: false, reason: EMBED_CONFLICT_REASON, retryable: false };
     }
 
@@ -422,7 +471,7 @@ async function publishPost(
       pdsUrl,
       identifier: credential['identifier'] ?? '',
       password: credential['appPassword'] ?? '',
-      signal,
+      signal: deadline,
     });
     if (!session.ok) {
       return fail(session.failure);
@@ -431,17 +480,24 @@ async function publishPost(
 
     // **媒体は1件ずつ順に処理する。** 並行に取りに行くと相手側の Rate Limit を自分で踏む（設計 §6.6）。
     const images: { readonly image: unknown; readonly alt: string }[] = [];
-    const mediaDeadline = Date.now() + MEDIA_TOTAL_BUDGET_MS;
+    // **`createSession` の後の残り時間から取る**（合計の期限を超えない。設計 §6.6）。
+    const mediaDeadline = Math.min(clock().getTime() + MEDIA_TOTAL_BUDGET_MS, totalDeadline);
     for (const item of media) {
-      if (Date.now() > mediaDeadline) {
+      if (clock().getTime() > mediaDeadline) {
         // まだ `createRecord` を呼んでいないので、諦めても投稿は作られていない。
         return fail({ phase: 'media', kind: 'budget', retryable: true });
       }
-      const fetched = await fetchMedia({ impl, url: item.url, signal });
+      const fetched = await fetchMedia({ impl, url: item.url, signal: deadline });
       if (!fetched.ok) {
         return fail(fetched.failure);
       }
-      const uploaded = await uploadBlob({ impl, pdsUrl, accessJwt, media: fetched.value, signal });
+      const uploaded = await uploadBlob({
+        impl,
+        pdsUrl,
+        accessJwt,
+        media: fetched.value,
+        signal: deadline,
+      });
       if (!uploaded.ok) {
         return fail(uploaded.failure);
       }
@@ -452,7 +508,7 @@ async function publishPost(
       $type: POST_COLLECTION,
       text: post.body,
       // **実際に送った時刻。** `post.scheduledAt` は使わない（設計 §6.3）。
-      createdAt: (options.now ?? (() => new Date()))().toISOString(),
+      createdAt: clock().toISOString(),
     };
 
     const langs = langsOf(post);
@@ -480,7 +536,7 @@ async function publishPost(
       pdsUrl,
       accessJwt,
       body: { repo: did, collection: POST_COLLECTION, record },
-      signal,
+      signal: deadline,
     });
     if (!created.ok) {
       return fail(created.failure);
@@ -489,6 +545,18 @@ async function publishPost(
     logger.info('Bluesky へ配信した', { postId: post.id, attempt, mediaCount: media.length });
 
     const rkey = created.value.rkey;
+    if (rkey.length > EXTERNAL_ID_MAX_LENGTH) {
+      // **失敗にしない。投稿は作られている**（`createRecord` は 200 を返した）。
+      // 失敗にすると再試行で二重投稿になる。`externalUrl` も rkey を含むので、片方だけ残さない（設計 §6.3）。
+      logger.warn('Bluesky の投稿の識別子が長すぎて記録できない', {
+        postId: post.id,
+        attempt,
+        phase: 'createRecord',
+        mediaCount: media.length,
+      });
+      return { ok: true };
+    }
+
     return {
       ok: true,
       externalId: rkey,

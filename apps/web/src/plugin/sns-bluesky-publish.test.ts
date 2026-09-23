@@ -541,6 +541,95 @@ describe('publish()：正常系（#33〜#43）', () => {
     ]);
   });
 
+  it('#77 rkey が200文字ちょうどなら externalId と externalUrl が付く', async () => {
+    const rkey = 'a'.repeat(200);
+    const fake = createFakePds({
+      record: () => json({ uri: `at://${SESSION_DID}/app.bsky.feed.post/${rkey}`, cid: 'c' }),
+    });
+
+    const result = await publish({ fetch: fake.fetch });
+
+    expect(result).toEqual({
+      ok: true,
+      externalId: rkey,
+      externalUrl: `https://bsky.app/profile/${SESSION_HANDLE}/post/${rkey}`,
+    });
+  });
+
+  it('#77 rkey が200文字を超えたら externalId も externalUrl も付けずに ok: true', async () => {
+    // **失敗にしない。** `createRecord` は 200 を返しており、**投稿は Bluesky に作られている**。
+    // 失敗にすると再試行で二重投稿になる。`social_posts.external_id` の CHECK は 200 文字（設計 §6.3）。
+    const rkey = 'a'.repeat(201);
+    const fake = createFakePds({
+      record: () => json({ uri: `at://${SESSION_DID}/app.bsky.feed.post/${rkey}`, cid: 'c' }),
+    });
+
+    const result = await publish({ fetch: fake.fetch });
+
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('#79 既知でない Content-Type は断る（retryable: false）', async () => {
+    // 取得先の応答ヘッダをそのまま PDS への要求ヘッダへ転記しない（設計 §6.2）。
+    const fake = createFakePds({
+      media: () =>
+        new Response(new Uint8Array([1, 2, 3, 4]), {
+          status: 200,
+          headers: { 'content-type': 'image/svg+xml' },
+        }),
+    });
+
+    const result = await publish({
+      fetch: fake.fetch,
+      post: { media: [{ url: 'https://cdn.example.com/a.svg', alt: null }] },
+    });
+
+    expect(result).toMatchObject({ ok: false, retryable: false });
+    expect(fake.calls.filter((call) => call.url.includes(UPLOAD_NSID))).toHaveLength(0);
+  });
+
+  it.each([['image/png'], ['image/jpeg'], ['image/gif'], ['image/webp']])(
+    '#79 既知の画像（%s）は受け付ける',
+    async (contentType) => {
+      const fake = createFakePds({
+        media: () =>
+          new Response(new Uint8Array([1, 2, 3, 4]), {
+            status: 200,
+            headers: { 'content-type': contentType },
+          }),
+      });
+
+      const result = await publish({
+        fetch: fake.fetch,
+        post: { media: [{ url: 'https://cdn.example.com/a', alt: null }] },
+      });
+
+      expect(result.ok).toBe(true);
+      expect(callAt(fake, 2).headers.get('content-type')).toBe(contentType);
+    },
+  );
+
+  it.each([
+    ['引数つき', 'image/png; charset=utf-8'],
+    ['大文字', 'IMAGE/PNG'],
+  ])('#79 %s の Content-Type は丸めた値で uploadBlob へ送る', async (_label, contentType) => {
+    const fake = createFakePds({
+      media: () =>
+        new Response(new Uint8Array([1, 2, 3, 4]), {
+          status: 200,
+          headers: { 'content-type': contentType },
+        }),
+    });
+
+    const result = await publish({
+      fetch: fake.fetch,
+      post: { media: [{ url: 'https://cdn.example.com/a.png', alt: null }] },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(callAt(fake, 2).headers.get('content-type')).toBe('image/png');
+  });
+
   it('#50 input.signal が既に abort 済みなら fetch を1度も呼ばずに戻る', async () => {
     const fake = createFakePds();
     const controller = new AbortController();
@@ -607,6 +696,20 @@ describe('PDS の URL（#53〜#57、#62）', () => {
 
     expect(result).toMatchObject({ ok: false, retryable: false });
     expect(fake.calls).toHaveLength(0);
+  });
+
+  it.each([
+    ['クエリの ? だけ', 'https://pds.example.com/?'],
+    ['フラグメントの # だけ', 'https://pds.example.com/#'],
+  ])('#78 %s が付いた pds-url でも /xrpc/ の下を叩く', async (_label, value) => {
+    // **検査は `new URL()` の解析結果を見るのに、組み立てが生の文字列の連結だと抜け道になる**
+    // （`https://pds.example.com/?/xrpc/…` になり、パスがクエリに化ける。設計 §7.2）。
+    const fake = createFakePds();
+    const store = fakeStore(new Map([['pds-url', value]]));
+
+    await publish({ fetch: fake.fetch, store });
+
+    expect(callAt(fake, 0).url).toBe(`https://pds.example.com/xrpc/${SESSION_NSID}`);
   });
 
   it('#62 publish() は pds-url を毎回読む', async () => {

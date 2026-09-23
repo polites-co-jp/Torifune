@@ -86,6 +86,19 @@ function sessionOk(): Response {
   });
 }
 
+/**
+ * 偽の PDS を用意していないテストが、**素の `globalThis.fetch` のまま走らない**ようにする（#83）。
+ *
+ * `useFakePds()` を呼んだテストだけが偽物を持つ形だと、**呼び忘れたテストは本物で走る。**
+ * いまは `publish()` まで到達しないので外へは出ないが、**到達するようになったときに気づけない。**
+ * `beforeEach` で一律にこれを置き、`useFakePds()` がそのうえから上書きする（#52 の結合側）。
+ */
+function throwingFetch(): typeof globalThis.fetch {
+  return ((): never => {
+    throw new Error('偽の PDS を用意していない fetch が呼ばれた');
+  }) as typeof globalThis.fetch;
+}
+
 /** `globalThis.fetch` を偽の PDS に差し替える。要求した URL の列を返す。 */
 function useFakePds(options: { readonly session?: Route; readonly record?: Route } = {}): string[] {
   const urls: string[] = [];
@@ -275,6 +288,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   realFetch = globalThis.fetch;
+  // **偽の PDS を置く前に、まず投げる `fetch` を置く**（#83）。`useFakePds()` がこれを上書きする。
+  globalThis.fetch = throwingFetch();
   admin = await contextFor(['administrator']);
 });
 

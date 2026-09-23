@@ -309,6 +309,28 @@ describe('#52 単体テストは本物の fetch を呼ばない', () => {
   });
 });
 
+describe('#83 結合テストも素の fetch のまま走らない', () => {
+  function integrationSource(): string {
+    return readFileSync(join(import.meta.dirname, `${PLUGIN_ID}.integration.test.ts`), 'utf8');
+  }
+
+  it('#83 beforeEach で「呼ばれたら投げる」fetch を置いている', () => {
+    // 偽の PDS を用意しないテストが本物の `fetch` のまま走ると、
+    // **将来 `publish()` へ到達したときに外へ出ても気づけない**（設計 §10 #83）。
+    const source = integrationSource();
+
+    expect(source).toMatch(/beforeEach\(/);
+    expect(source).toMatch(/globalThis\.fetch\s*=\s*throwingFetch\(\)/);
+    expect(source).toMatch(/throwingFetch[\s\S]{0,200}?throw new Error\(/);
+  });
+
+  it('#83 afterEach で元の fetch へ戻す', () => {
+    expect(integrationSource()).toMatch(
+      /afterEach\([\s\S]{0,400}?globalThis\.fetch\s*=\s*realFetch/,
+    );
+  });
+});
+
 describe('#71 既存の Plugin の検査を壊さない', () => {
   it('#71 plugins/ に example-plugin と sns-bluesky が並ぶ', () => {
     const directories = readdirSync(PLUGINS_DIR).filter((name) =>

@@ -38,11 +38,39 @@ export const MEDIA_FETCH_TIMEOUT_MS = 10_000;
 export const UPLOAD_BLOB_TIMEOUT_MS = 10_000;
 export const CREATE_RECORD_TIMEOUT_MS = 15_000;
 
-/** 媒体の処理に使ってよい合計時間。超えたら諦める（まだ `createRecord` を呼んでいない）。 */
+/**
+ * `publish()` 1 回に使ってよい合計時間（設計 §6.6）。
+ *
+ * **要求ごとの制限時間だけでは合計を縛れない。** 10（session）＋ 20（媒体）＋ 15（record）は
+ * Core の 30 秒を超える。**この期限をすべての要求の外側の signal に混ぜて、合計を縛る。**
+ * 値は `createSession`（10 秒）＋ `createRecord`（15 秒）＝ 媒体なしの最悪の形に、
+ * 打ち切りを検知して結果を組み立てるための余白を足したもの。
+ */
+export const PUBLISH_TOTAL_BUDGET_MS = 25_000;
+
+/**
+ * 媒体の処理に使ってよい合計時間。超えたら諦める（まだ `createRecord` を呼んでいない）。
+ *
+ * **実際の期限は `createSession` の後の残り時間から取る**（`PUBLISH_TOTAL_BUDGET_MS` を超えない。設計 §6.6）。
+ */
 export const MEDIA_TOTAL_BUDGET_MS = 20_000;
 
 /** 媒体の上限サイズ。Bluesky の `uploadBlob` が受ける画像の上限に合わせる（設計 §6.2）。 */
 export const MEDIA_MAX_BYTES = 1_000_000;
+
+/**
+ * 受け付ける画像の種別（設計 §6.2）。
+ *
+ * **`image/` で始まるものを素通しにしない。** ここで丸めた値がそのまま
+ * PDS への要求の `Content-Type` になる。取得先は利用者が指した任意のサーバであり、
+ * **その応答ヘッダを、資格情報を添えた要求のヘッダへ転記しない。**
+ */
+const ALLOWED_IMAGE_TYPES: ReadonlySet<string> = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+]);
 
 /** 知らない `error` コードの代わりに `reason` へ出す値（設計 §6.11）。 */
 export const UNKNOWN_ERROR_CODE = 'unknown';
@@ -82,8 +110,14 @@ const CREDENTIAL_ERROR_CODES: ReadonlySet<string> = new Set([
   'AuthFactorTokenRequired',
 ]);
 
-/** どの段階で失敗したか。`retryable` はこれで決まる（設計 §6.9）。 */
-export type AtprotoPhase = 'config' | 'createSession' | 'media' | 'uploadBlob' | 'createRecord';
+/**
+ * どの段階で失敗したか。`retryable` はこれで決まる（設計 §6.9）。
+ *
+ * `embed` は「画像とリンクカードの同居」を断る段（`createSession` より前。設計 §6.8）。
+ * 外へ要求を出していないので `status` を持たない。
+ */
+export type AtprotoPhase =
+  'config' | 'embed' | 'createSession' | 'media' | 'uploadBlob' | 'createRecord';
 
 export type AtprotoFailureKind =
   /** 接続できない（DNS・TCP・TLS。`fetch` が reject）。 */
@@ -128,6 +162,7 @@ export interface AtprotoSession {
 export interface FetchedMedia {
   /** **`ArrayBuffer` を持つものに固定する。** `BodyInit` が `ArrayBufferLike` を受けない。 */
   readonly bytes: Uint8Array<ArrayBuffer>;
+  /** **既知の値へ丸めた種別**（取得先の応答ヘッダそのままではない。設計 §6.2）。 */
   readonly contentType: string;
 }
 
@@ -135,8 +170,25 @@ function failed(failure: AtprotoFailure): AtprotoResult<never> {
   return { ok: false, failure };
 }
 
+/**
+ * XRPC の宛先を組み立てる（設計 §7.2）。
+ *
+ * **文字列の連結にしない。** 検査（`validatePdsUrl`）は `new URL()` の解析結果を見るので、
+ * 組み立ても同じ解析を通す。生で繋ぐと `https://example.com/?` が
+ * `https://example.com/?/xrpc/…` になり、**パスがクエリ文字列に化ける。**
+ */
 function endpointOf(pdsUrl: string, nsid: string): string {
-  return `${pdsUrl}/xrpc/${nsid}`;
+  return new URL(`/xrpc/${nsid}`, pdsUrl).href;
+}
+
+/**
+ * 応答の `Content-Type` を既知の画像へ丸める。知らない値なら `undefined`。
+ *
+ * `; charset=…` のような引数は落とし、大文字小文字と前後の空白を均す。
+ */
+function imageTypeOf(header: string | null): string | undefined {
+  const essence = (header ?? '').split(';')[0]?.trim().toLowerCase() ?? '';
+  return ALLOWED_IMAGE_TYPES.has(essence) ? essence : undefined;
 }
 
 function isAbortLike(error: unknown): boolean {
@@ -359,7 +411,10 @@ export async function fetchMedia(params: {
     params.impl,
     params.url,
     // 検査を通った URL から、検査していない URL へ移らせない。
-    { method: 'GET', redirect: 'error' },
+    // **`'error'` にしない。** `'error'` の `fetch` は 3xx を `Response` として返さず reject するので、
+    // 下の 3xx の分岐が本番で1度も通らず、リダイレクトが `kind: 'network'`（`retryable: true`）に
+    // 落ちて設計 §6.9 の P2 と逆になる。`'manual'` は**追わずに 3xx を観測できる**（設計 §6.2）。
+    { method: 'GET', redirect: 'manual' },
     MEDIA_FETCH_TIMEOUT_MS,
     params.signal,
   );
@@ -383,9 +438,10 @@ export async function fetchMedia(params: {
     });
   }
 
-  const contentType = (response.headers.get('content-type') ?? '').toLowerCase();
-  if (!contentType.startsWith('image/')) {
-    // 画像以外を blob にしても投稿に載らない。
+  // **既知の画像へ丸める。** 画像以外を blob にしても投稿に載らないうえ、
+  // 取得先の応答ヘッダをそのまま PDS への要求ヘッダへ転記しないため（設計 §6.2）。
+  const contentType = imageTypeOf(response.headers.get('content-type'));
+  if (contentType === undefined) {
     return failed({ phase: 'media', kind: 'contentType', retryable: false });
   }
 

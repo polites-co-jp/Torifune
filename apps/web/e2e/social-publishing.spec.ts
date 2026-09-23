@@ -1145,9 +1145,15 @@ test.describe('#104 Plugin マネージャの拡張点', () => {
    * **`036` が 2 つ目の `social` Plugin を足した時点で strict mode に触れて落ちた**。
    * テスト名は「サンプル Plugin の**行に**」と言っているのに、ロケータがそれを守っていなかった
    * （Plugin が 1 つしか無いあいだだけ通っていた）。**絞るのは弱めることではなく、名前どおりにすること。**
+   *
+   * **`.last()` は使わない。** `section` を総なめにすると「区画の外枠」と「中のカード」の
+   * どちらにも当たり、`.last()` がその曖昧さを**黙って**解決してしまう。区画が増減すれば
+   * 黙って別のものを指す。`plugin-manager.spec.ts` の `#72` と同じく、
+   * **`aria-labelledby` という安定した足場から辿る。**
    */
   function examplePluginCard(page: Page) {
-    return page.locator('section').filter({ hasText: 'サンプルPlugin' }).last();
+    const installed = page.locator('section[aria-labelledby="installed-heading"]');
+    return installed.locator('section').filter({ hasText: 'サンプルPlugin' });
   }
 
   test('#104 サンプル Plugin の行に「SNS配信」が出る', async ({ page }) => {
@@ -1165,9 +1171,11 @@ test.describe('#104 Plugin マネージャの拡張点', () => {
 
   test('#104 有効化した後は登録済みの provider として example が出る', async ({ page }) => {
     // どちらの Plugin が provider を握ったかを確かめる場所（検証レポート §6 の 3）。
+    // **ここも行に絞る。** ページ全体を見て `.first()` で拾うと、
+    // 「どちらの Plugin の行に出たか」を確かめていないことになる。
     await page.goto('/plugins');
 
-    await expect(page.getByText(/登録済み[\s\S]{0,60}example/).first()).toBeVisible();
+    await expect(examplePluginCard(page).getByText(/登録済み[\s\S]{0,60}example/)).toBeVisible();
   });
 });
 

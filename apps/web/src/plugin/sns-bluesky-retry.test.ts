@@ -5,13 +5,16 @@ import type {
   SocialAccountView,
   SocialPostView,
 } from '@torifune/plugin-api';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import {
   CREATE_RECORD_TIMEOUT_MS,
   CREATE_SESSION_TIMEOUT_MS,
   MEDIA_FETCH_TIMEOUT_MS,
   MEDIA_MAX_BYTES,
   MEDIA_TOTAL_BUDGET_MS,
+  PUBLISH_TOTAL_BUDGET_MS,
   UPLOAD_BLOB_TIMEOUT_MS,
 } from '../../../../plugins/sns-bluesky/atproto';
 import { createBlueskyPublisher } from '../../../../plugins/sns-bluesky/social';
@@ -264,13 +267,15 @@ interface PublishOptions {
   readonly fetch?: typeof globalThis.fetch;
   readonly signal?: AbortSignal;
   readonly logger?: PluginLogger;
+  /** この Plugin が見る時計（設計 §10.1）。**媒体の期限の判定もここを見る**（#80）。 */
+  readonly now?: () => Date;
 }
 
 async function publish(options: PublishOptions = {}): Promise<PublishResult> {
   const registration = createBlueskyPublisher({
     store: options.store ?? fakeStore(),
     fetch: options.fetch,
-    now: () => FIXED_NOW,
+    now: options.now ?? (() => FIXED_NOW),
   });
   if (registration.publish === undefined) {
     throw new Error('publish() が実装されていない');
@@ -483,14 +488,16 @@ describe('P1 createSession（表 8 行）', () => {
 });
 
 describe('P2 媒体の取得（表 2 行）', () => {
-  it('媒体の GET はリダイレクトを追わない（redirect: error で出す）', async () => {
+  it('#74 媒体の GET はリダイレクトを追わない（redirect: manual で出す）', async () => {
     // 検査を通った URL から、検査していない URL へ移らせない（設計 §6.2）。
+    // **`'error'` ではない。** `'error'` だと 3xx が `Response` として返らず、
+    // 下の「302 → retryable: false」が本番では成立しない（#74 の後半で直に見る）。
     const fake = createFakePds();
 
     await publish({ fetch: fake.fetch, post: WITH_MEDIA });
 
     const mediaCall = fake.calls.find((call) => call.url === MEDIA_URL);
-    expect(mediaCall?.init.redirect).toBe('error');
+    expect(mediaCall?.init.redirect).toBe('manual');
   });
 
   it.each([
@@ -579,6 +586,141 @@ describe('P2 媒体の取得（表 2 行）', () => {
     const result = failureOf(await publish({ fetch: fake.fetch, post: WITH_MEDIA }));
 
     expect(result.retryable).toBe(false);
+  });
+
+  it.each([
+    ['404', new Response('', { status: 404 }), false],
+    ['403', new Response('', { status: 403 }), false],
+    ['500', new Response('', { status: 500 }), true],
+  ])(
+    '#75 媒体が %s でも reason に HTTP の status を載せない（判断には使う）',
+    async (status, response, retryable) => {
+      // **取得先は利用者が指した任意の URL**（設計 §8.2）。status を `failure_reason` へ出すと、
+      // 投稿を積むだけで内部ホストの生死と応答の別を列挙できる（設計 §6.11）。
+      const fake = createFakePds({ media: () => response });
+
+      const result = failureOf(await publish({ fetch: fake.fetch, post: WITH_MEDIA }));
+
+      expect(result.reason).not.toContain(status);
+      expect(result.reason).not.toMatch(/\d{3}/);
+      // **判断に使うことと外へ出すことは別。** retryable は status で決まり続ける。
+      expect(result.retryable).toBe(retryable);
+    },
+  );
+
+  it('#75 媒体の reason は「再試行する」か「URL を直す」かが読める', async () => {
+    const temporary = createFakePds({ media: () => new Response('', { status: 500 }) });
+    const permanent = createFakePds({ media: () => new Response('', { status: 404 }) });
+
+    const retried = failureOf(await publish({ fetch: temporary.fetch, post: WITH_MEDIA }));
+    const fixed = failureOf(await publish({ fetch: permanent.fetch, post: WITH_MEDIA }));
+
+    expect(retried.reason).toContain('再試行');
+    expect(fixed.reason).toContain('URL');
+  });
+
+  it('#76 媒体の失敗では logger の detail に status を渡さない', async () => {
+    // ログは `system.manage` で読める。`reason` と同じ理由で、媒体だけ落とす（設計 §6.11）。
+    const entries: LogEntry[] = [];
+    const fake = createFakePds({ media: () => new Response('', { status: 404 }) });
+
+    await publish({ fetch: fake.fetch, post: WITH_MEDIA, logger: captureLogger(entries) });
+
+    const warned = entries.filter((entry) => entry.level === 'warn');
+    expect(warned.length).toBeGreaterThan(0);
+    for (const entry of warned) {
+      expect(entry.detail).toMatchObject({ phase: 'media' });
+      expect(entry.detail).not.toHaveProperty('status');
+    }
+  });
+
+  it.each([
+    [
+      'createSession',
+      createFakePds({ session: () => json({ error: 'InvalidRequest' }, 400) }),
+      400,
+    ],
+    ['uploadBlob', createFakePds({ upload: () => json({ error: 'BlobTooLarge' }, 400) }), 400],
+    ['createRecord', createFakePds({ record: () => json({ error: 'InvalidRequest' }, 400) }), 400],
+  ])('#76 %s の失敗では logger の detail に status を渡す', async (phase, fake, status) => {
+    // 送り先は運用者が設定した PDS ただ1つ。**運用者が自分の設定を直すための情報**である。
+    const entries: LogEntry[] = [];
+
+    await publish({ fetch: fake.fetch, post: WITH_MEDIA, logger: captureLogger(entries) });
+
+    expect(entries.filter((entry) => entry.level === 'warn')).toContainEqual(
+      expect.objectContaining({ detail: expect.objectContaining({ phase, status }) }),
+    );
+  });
+});
+
+/**
+ * #74 の後半。**偽の `fetch` が本番と同じ振る舞いをしていることの担保。**
+ *
+ * この Plugin のテストはすべて偽の `fetch` を注入している。**偽物が本番と違う振る舞いをすると、
+ * 表の行が緑のまま本番で逆に倒れる**（`redirect: 'error'` がまさにそれだった。設計 §6.2 の引用枠）。
+ * ここだけは**自分で立てたループバックのサーバへ本物の `fetch` で当てて**、
+ * `init` の綴りに対して本番が何を返すかを直に見る。**外部への通信は 1 本も出ない。**
+ */
+describe('#74 本番の fetch が redirect: manual で 3xx を返すこと（設計 §6.2）', () => {
+  let server: Server;
+  let origin: string;
+
+  beforeAll(async () => {
+    server = createServer((request, response) => {
+      if (request.url === '/redirect.png') {
+        response.writeHead(302, { location: '/moved.png' }).end();
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'image/png' }).end(Buffer.from([137, 80, 78, 71]));
+    });
+    // listen は非同期。待たずに address() を読むと null になる。
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  it('#74 redirect: manual は 302 を Response として返す（追わない）', async () => {
+    const response = await realFetch(`${origin}/redirect.png`, {
+      method: 'GET',
+      redirect: 'manual',
+    });
+
+    expect(response.status).toBe(302);
+    // 追っていない（追っていれば 200 になる）。ブラウザの opaque-redirect とも違い、中身が読める。
+    expect(response.headers.get('location')).toBe('/moved.png');
+  });
+
+  it('#74 redirect: error は 3xx を Response として返さず reject する', async () => {
+    // **これが `kind: "network"` に落ち、設計 §6.9 の P2 と逆の retryable: true になっていた。**
+    await expect(
+      realFetch(`${origin}/redirect.png`, { method: 'GET', redirect: 'error' }),
+    ).rejects.toThrow();
+  });
+
+  it('#74 本物の fetch で本物の 302 を踏んでも retryable: false になる', async () => {
+    // 偽の PDS へは偽物を、媒体の取得だけは**本物の `fetch`** を通す。
+    const fake = createFakePds();
+    const mixed = (async (input: unknown, init: RequestInit = {}): Promise<Response> => {
+      const url = String(input);
+      return url.startsWith(origin)
+        ? await realFetch(url, init)
+        : await fake.fetch(url as string, init);
+    }) as typeof globalThis.fetch;
+
+    const result = failureOf(
+      await publish({
+        fetch: mixed,
+        post: { media: [{ url: `${origin}/redirect.png`, alt: null }] },
+      }),
+    );
+
+    // 偽の 302 を返したときと同じ結果になる（＝偽物が本番と同じ振る舞いをしている）。
+    expect(result.retryable).toBe(false);
+    expect(fake.calls.filter((call) => call.url.includes(RECORD_NSID))).toHaveLength(0);
   });
 });
 
@@ -851,5 +993,163 @@ describe('media と link は同時に付けられない（設計 §6.8）', () =
 
     expect(result.retryable).toBe(false);
     expect(fake.calls.filter((call) => call.url.includes(RECORD_NSID))).toHaveLength(0);
+  });
+
+  it('#82 断るときも logger.warn が出る（phase: embed）', async () => {
+    // **失敗して戻るのにログに何も残らない**のは、「通常ここへは来ない」経路ほど困る（設計 §6.8）。
+    const entries: LogEntry[] = [];
+    const fake = createFakePds();
+
+    await publish({
+      fetch: fake.fetch,
+      post: { ...WITH_MEDIA, link: 'https://example.com/a' },
+      logger: captureLogger(entries),
+    });
+
+    expect(entries.filter((entry) => entry.level === 'warn')).toContainEqual(
+      expect.objectContaining({ detail: expect.objectContaining({ phase: 'embed' }) }),
+    );
+  });
+});
+
+/**
+ * #80 媒体の処理の合計時間（設計 §6.6）。
+ *
+ * **`kind: 'budget'` の分岐を実際に通す。** 実時間で 20 秒待つ代わりに、
+ * **`now()` を進める偽の時計**で期限切れを再現する（設計 §6.6 の「期限の『いま』は `now()` で数える」）。
+ */
+describe('#80 媒体の処理の合計時間（設計 §6.6）', () => {
+  /** 媒体を取りに行くたびに時計を `stepMs` 進める偽の時計つきの偽 PDS。 */
+  function advancingClock(stepMs: number, on: 'media' | 'session') {
+    let current = FIXED_NOW.getTime();
+    const now = (): Date => new Date(current);
+    const advance = (): void => {
+      current += stepMs;
+    };
+    const fake = createFakePds({
+      media: () => {
+        if (on === 'media') advance();
+        return imageOk();
+      },
+      session: () => {
+        if (on === 'session') advance();
+        return sessionOk();
+      },
+    });
+    return { now, fake };
+  }
+
+  const TWO_MEDIA: Partial<SocialPostView> = {
+    media: [
+      { url: 'https://cdn.example.com/first.png', alt: null },
+      { url: 'https://cdn.example.com/second.png', alt: null },
+    ],
+  };
+
+  it('#80 合計時間を使い切ったら kind: budget で諦める（retryable: true）', async () => {
+    const { now, fake } = advancingClock(MEDIA_TOTAL_BUDGET_MS + 1_000, 'media');
+
+    const result = failureOf(await publish({ fetch: fake.fetch, post: TWO_MEDIA, now }));
+
+    expect(result.retryable).toBe(true);
+    expect(result.reason).toContain('画像の取得に時間がかかりすぎました');
+  });
+
+  it('#80 諦めたときは残りの媒体を取りに行かず、createRecord も呼ばない', async () => {
+    // まだ `createRecord` を呼んでいないので、諦めても投稿は作られていない（設計 §6.9 の P2）。
+    const { now, fake } = advancingClock(MEDIA_TOTAL_BUDGET_MS + 1_000, 'media');
+
+    await publish({ fetch: fake.fetch, post: TWO_MEDIA, now });
+
+    expect(fake.calls.filter((call) => call.url.includes('cdn.example.com'))).toHaveLength(1);
+    expect(fake.calls.filter((call) => call.url.includes(RECORD_NSID))).toHaveLength(0);
+  });
+
+  it('#80 媒体の期限は合計の期限を超えない（createSession が食った分だけ縮む）', async () => {
+    // 媒体の 20 秒は **`createSession` の後の残り時間から取る**（設計 §6.6）。
+    const { now, fake } = advancingClock(PUBLISH_TOTAL_BUDGET_MS + 1_000, 'session');
+
+    const result = failureOf(await publish({ fetch: fake.fetch, post: TWO_MEDIA, now }));
+
+    expect(result.retryable).toBe(true);
+    expect(fake.calls.filter((call) => call.url.includes('cdn.example.com'))).toHaveLength(0);
+  });
+
+  it('#80 時間に余裕があれば2件とも配信される', async () => {
+    // 期限の判定が常に発火するようになっていないことを見る（#80 の対の条件）。
+    const { now, fake } = advancingClock(1_000, 'media');
+
+    const result = await publish({ fetch: fake.fetch, post: TWO_MEDIA, now });
+
+    expect(result.ok).toBe(true);
+    expect(fake.calls.filter((call) => call.url.includes(RECORD_NSID))).toHaveLength(1);
+  });
+});
+
+/**
+ * #81 制限時間の結線（設計 §6.6）。
+ *
+ * 値が合っていても**どの定数がどの要求へ渡るか**が入れ替われば意味が変わる。
+ * 設計 §6.6 は `AbortSignal.any([外側の signal, AbortSignal.timeout(ms)])` と綴りまで決めているので、
+ * **`AbortSignal.timeout` へ渡った値の列**を要求の列と突き合わせる。
+ */
+describe('#81 制限時間の結線（設計 §6.6）', () => {
+  it('#81 どの定数がどの要求へ渡るかが固定されている', async () => {
+    const original = AbortSignal.timeout.bind(AbortSignal);
+    const requested: number[] = [];
+    AbortSignal.timeout = ((ms: number): AbortSignal => {
+      requested.push(ms);
+      return original(ms);
+    }) as typeof AbortSignal.timeout;
+
+    const pairs: { readonly url: string; readonly timeoutMs: number | undefined }[] = [];
+    const fake = createFakePds();
+
+    try {
+      const watched = (async (input: unknown, init: RequestInit = {}): Promise<Response> => {
+        pairs.push({ url: String(input), timeoutMs: requested[requested.length - 1] });
+        return await fake.fetch(String(input), init);
+      }) as typeof globalThis.fetch;
+
+      await publish({ fetch: watched, post: WITH_MEDIA });
+    } finally {
+      AbortSignal.timeout = original as typeof AbortSignal.timeout;
+    }
+
+    expect(pairs).toEqual([
+      { url: `https://bsky.social/xrpc/${SESSION_NSID}`, timeoutMs: CREATE_SESSION_TIMEOUT_MS },
+      { url: MEDIA_URL, timeoutMs: MEDIA_FETCH_TIMEOUT_MS },
+      { url: `https://bsky.social/xrpc/${UPLOAD_NSID}`, timeoutMs: UPLOAD_BLOB_TIMEOUT_MS },
+      { url: `https://bsky.social/xrpc/${RECORD_NSID}`, timeoutMs: CREATE_RECORD_TIMEOUT_MS },
+    ]);
+  });
+
+  it('#81 publish() 全体に合計の期限が掛かる', async () => {
+    // **要求ごとの制限時間だけでは合計を縛れない**（設計 §6.6 の引用枠）。
+    const original = AbortSignal.timeout.bind(AbortSignal);
+    const requested: number[] = [];
+    AbortSignal.timeout = ((ms: number): AbortSignal => {
+      requested.push(ms);
+      return original(ms);
+    }) as typeof AbortSignal.timeout;
+
+    const fake = createFakePds();
+    try {
+      await publish({ fetch: fake.fetch, post: WITH_MEDIA });
+    } finally {
+      AbortSignal.timeout = original as typeof AbortSignal.timeout;
+    }
+
+    // 1 度だけ、**どの要求よりも先に**作られる。
+    expect(requested[0]).toBe(PUBLISH_TOTAL_BUDGET_MS);
+    expect(requested.filter((ms) => ms === PUBLISH_TOTAL_BUDGET_MS)).toHaveLength(1);
+  });
+
+  it('#81 合計の期限は Core の 30 秒より短い', async () => {
+    // 30 秒に達してから打ち切られるのは最悪の形（設計 §6.6）。自分から届かない値にする。
+    expect(PUBLISH_TOTAL_BUDGET_MS).toBeLessThan(30_000);
+    expect(PUBLISH_TOTAL_BUDGET_MS).toBeGreaterThanOrEqual(
+      CREATE_SESSION_TIMEOUT_MS + CREATE_RECORD_TIMEOUT_MS,
+    );
   });
 });
