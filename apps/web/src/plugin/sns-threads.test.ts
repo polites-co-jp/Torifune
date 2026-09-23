@@ -22,12 +22,35 @@ import {
   parseExpiry,
   shouldRefresh,
 } from '../../../../plugins/sns-threads/token';
+import {
+  CAROUSEL_CHILD_CONCURRENCY,
+  CREATE_CONTAINER_TIMEOUT_MS,
+  KNOWN_THREADS_ERROR_CODES,
+  KNOWN_THREADS_ERROR_SUBCODES,
+  PERMALINK_TIMEOUT_MS,
+  POLL_INTERVAL_MS,
+  POLL_MAX_ROUNDS,
+  PREPARE_BUDGET_MS,
+  PUBLISH_REQUEST_TIMEOUT_MS,
+  PUBLISH_TOTAL_BUDGET_MS,
+  REFRESH_TIMEOUT_MS,
+  RESPONSE_BODY_MAX_BYTES,
+  STATUS_TIMEOUT_MS,
+  THREADS_API_BASE_URL,
+  THREADS_API_VERSION,
+  classifyThreadsError,
+  isAcceptablePermalink,
+  isValidFbtraceId,
+  isValidThreadsId,
+  retryAfterMsFrom,
+} from '../../../../plugins/sns-threads/threads-api';
 
 /**
  * Threads 配信 Plugin の単体検査（040-sns-threads 設計 §5.1 / §5.2 / §9.1 / §9.2 / §9.5 / §10.3 / §10.5 / §10.6）。
  *
  * **実際の Threads を叩かない。** このファイルが見るのは
- * 登録の形（#14〜#17）・`validate()`（#30〜#38）・`manual()`（#40〜#43）・`token.ts` の純関数だけで、
+ * 登録の形（#14〜#17）・`validate()`（#30〜#38）・`manual()`（#40〜#43）・`token.ts` の純関数・
+ * `threads-api.ts` の純関数（定数・エラーの分類・`retryAfterMs`・外から来た文字列の形。実装プラン T9）だけで、
  * どれも外部 I/O を持たない。`publish()` は `sns-threads-publish.test.ts` / `sns-threads-retry.test.ts` が見る。
  *
  * #107：本物の `fetch` が呼ばれたらこのファイルのテストは落ちる。
@@ -261,6 +284,10 @@ describe('登録（#14〜#17）', () => {
 
   it('#17 manual がある', () => {
     expect(typeof publisher().manual).toBe('function');
+  });
+
+  it('#17 publish がある', () => {
+    expect(typeof publisher().publish).toBe('function');
   });
 });
 
@@ -899,5 +926,305 @@ describe('token.ts：expires_in から期限を作る（expiryFromExpiresIn）',
     const value = expiryFromExpiresIn(5_184_000, NOW);
 
     expect(parseExpiry(value, NOW)).not.toBe('unknown');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* threads-api.ts の純関数（実装プラン G4 / T9）                                   */
+/* -------------------------------------------------------------------------- */
+
+describe('threads-api.ts：宛先と版（§6.1）', () => {
+  it('宛先は https://graph.threads.net の定数（graph.threads.com ではない）', () => {
+    expect(THREADS_API_BASE_URL).toBe('https://graph.threads.net');
+  });
+
+  it('版は v1.0（2026-09-24 時点で公開されている唯一の版）', () => {
+    expect(THREADS_API_VERSION).toBe('v1.0');
+  });
+});
+
+describe('threads-api.ts：制限時間と本数の定数（§6.2 / §6.8）', () => {
+  /** [名前, 値の読み出し, 設計の値]。値は it の中で読む（未実装の間も収集で落ちないように）。 */
+  const CONSTANTS: readonly (readonly [string, () => unknown, number])[] = [
+    ['PUBLISH_TOTAL_BUDGET_MS', () => PUBLISH_TOTAL_BUDGET_MS, 25_000],
+    ['PREPARE_BUDGET_MS', () => PREPARE_BUDGET_MS, 15_000],
+    ['CREATE_CONTAINER_TIMEOUT_MS', () => CREATE_CONTAINER_TIMEOUT_MS, 10_000],
+    ['STATUS_TIMEOUT_MS', () => STATUS_TIMEOUT_MS, 5_000],
+    ['POLL_INTERVAL_MS', () => POLL_INTERVAL_MS, 1_000],
+    ['POLL_MAX_ROUNDS', () => POLL_MAX_ROUNDS, 10],
+    ['PUBLISH_REQUEST_TIMEOUT_MS', () => PUBLISH_REQUEST_TIMEOUT_MS, 10_000],
+    ['PERMALINK_TIMEOUT_MS', () => PERMALINK_TIMEOUT_MS, 3_000],
+    ['REFRESH_TIMEOUT_MS', () => REFRESH_TIMEOUT_MS, 3_000],
+    ['CAROUSEL_CHILD_CONCURRENCY', () => CAROUSEL_CHILD_CONCURRENCY, 5],
+    ['RESPONSE_BODY_MAX_BYTES', () => RESPONSE_BODY_MAX_BYTES, 64 * 1024],
+  ];
+
+  it.each(CONSTANTS)('%s は設計の値', (_name, read, expected) => {
+    expect(read()).toBe(expected);
+  });
+
+  it('PREPARE_BUDGET_MS は合計 − PUBLISH_REQUEST_TIMEOUT_MS（設計 §6.8 の表）', () => {
+    expect(PREPARE_BUDGET_MS).toBe(PUBLISH_TOTAL_BUDGET_MS - PUBLISH_REQUEST_TIMEOUT_MS);
+  });
+});
+
+describe('threads-api.ts：エラーの分類（classifyThreadsError。§6.9）', () => {
+  /** Graph API 形式の本体。 */
+  function envelope(error: Record<string, unknown>): unknown {
+    return { error: { message: 'An error occurred.', type: 'OAuthException', ...error } };
+  }
+
+  it.each([
+    ['HTTP 429（本体なし）', 429, undefined],
+    ['HTTP 429（本体が HTML の文字列）', 429, '<html></html>'],
+    ['HTTP 429 で code 190（429 を先に見る）', 429, envelope({ code: 190 })],
+    ['code 4', 400, envelope({ code: 4 })],
+    ['code 17', 400, envelope({ code: 17 })],
+    ['code 32', 400, envelope({ code: 32 })],
+    ['code 341', 400, envelope({ code: 341 })],
+    ['code 613', 400, envelope({ code: 613 })],
+    [
+      'code 4 で is_transient: true（rateLimit を先に見る）',
+      400,
+      envelope({ code: 4, is_transient: true }),
+    ],
+    ['HTTP 500 で code 17', 500, envelope({ code: 17 })],
+  ] as const)('%s は rateLimit', (_label, status, body) => {
+    expect(classifyThreadsError(status, body)).toBe('rateLimit');
+  });
+
+  it.each([
+    ['code 190', envelope({ code: 190 })],
+    ['code 190 / subcode 463', envelope({ code: 190, error_subcode: 463 })],
+    [
+      'code 190 で is_transient: true（token を先に見る）',
+      envelope({ code: 190, is_transient: true }),
+    ],
+  ] as const)('%s は token', (_label, body) => {
+    expect(classifyThreadsError(400, body)).toBe('token');
+  });
+
+  it.each([10, 200, 250, 299])('code %i は permission', (code) => {
+    expect(classifyThreadsError(403, envelope({ code }))).toBe('permission');
+  });
+
+  it('code 10 で is_transient: true でも permission（permission を先に見る）', () => {
+    expect(classifyThreadsError(400, envelope({ code: 10, is_transient: true }))).toBe(
+      'permission',
+    );
+  });
+
+  it.each([368, 506])('code %i は rejected', (code) => {
+    expect(classifyThreadsError(400, envelope({ code }))).toBe('rejected');
+  });
+
+  it('code 368 で is_transient: true でも rejected（rejected を先に見る）', () => {
+    expect(classifyThreadsError(400, envelope({ code: 368, is_transient: true }))).toBe('rejected');
+  });
+
+  it('code 100 で is_transient: true は transient', () => {
+    expect(classifyThreadsError(400, envelope({ code: 100, is_transient: true }))).toBe(
+      'transient',
+    );
+  });
+
+  it('code が無くても is_transient: true なら transient', () => {
+    expect(classifyThreadsError(500, envelope({ is_transient: true }))).toBe('transient');
+  });
+
+  it.each([
+    ['code 100（is_transient なし）', envelope({ code: 100 })],
+    [
+      'code 100 / subcode 463（subcode は分類に使わない）',
+      envelope({ code: 100, error_subcode: 463 }),
+    ],
+    ['code 199（permission の範囲の外）', envelope({ code: 199 })],
+    ['code 300（permission の範囲の外）', envelope({ code: 300 })],
+    ['code 987654（知らない値）', envelope({ code: 987654 })],
+    ['is_transient が文字列の "true"', envelope({ code: 100, is_transient: 'true' })],
+    ['文字列の code "190"（数値に直さない）', envelope({ code: '190' })],
+    ['文字列の code "4"（数値に直さない）', envelope({ code: '4' })],
+    ['文字列の code "<script>"', envelope({ code: '<script>' })],
+    [
+      '文字列の code "THREADS_API__LINK_LIMIT_EXCEEDED"',
+      envelope({ code: 'THREADS_API__LINK_LIMIT_EXCEEDED' }),
+    ],
+    ['error が無い', { message: 'x' }],
+    ['error が null', { error: null }],
+    ['error が文字列', { error: 'code 190' }],
+    ['本体が HTML の文字列', '<html>code 190</html>'],
+    ['本体が null', null],
+    ['本体が無い', undefined],
+    ['本体が配列', [{ error: { code: 190 } }]],
+  ] as const)('%s は other', (_label, body) => {
+    expect(classifyThreadsError(400, body)).toBe('other');
+  });
+});
+
+describe('threads-api.ts：reason に出してよい code / error_subcode の集合（§6.11）', () => {
+  /** 配列でも Set でも読めるようにする（どちらの形で持つかは設計が決めていない）。 */
+  function membersOf(known: unknown): number[] {
+    return [...new Set(known as Iterable<number>)].sort((a, b) => a - b);
+  }
+
+  function range(from: number, to: number): number[] {
+    return Array.from({ length: to - from + 1 }, (_, index) => from + index);
+  }
+
+  it('既知の code は {1, 2, 4, 10, 17, 24, 32, 100, 190, 200〜299, 341, 368, 506, 613} ちょうど', () => {
+    expect(membersOf(KNOWN_THREADS_ERROR_CODES)).toEqual([
+      1,
+      2,
+      4,
+      10,
+      17,
+      24,
+      32,
+      100,
+      190,
+      ...range(200, 299),
+      341,
+      368,
+      506,
+      613,
+    ]);
+  });
+
+  it('既知の error_subcode は {458, 459, 460, 463, 464, 467, 492} ちょうど', () => {
+    expect(membersOf(KNOWN_THREADS_ERROR_SUBCODES)).toEqual([458, 459, 460, 463, 464, 467, 492]);
+  });
+
+  it('集合は数値だけを持つ（文字列の "190" を既知として扱わない）', () => {
+    expect(membersOf(KNOWN_THREADS_ERROR_CODES).length).toBeGreaterThan(0);
+    expect(membersOf(KNOWN_THREADS_ERROR_SUBCODES).length).toBeGreaterThan(0);
+    for (const value of new Set(KNOWN_THREADS_ERROR_CODES as Iterable<unknown>)) {
+      expect(typeof value).toBe('number');
+    }
+    for (const value of new Set(KNOWN_THREADS_ERROR_SUBCODES as Iterable<unknown>)) {
+      expect(typeof value).toBe('number');
+    }
+  });
+});
+
+describe('threads-api.ts：retryAfterMs（retryAfterMsFrom。§6.10）', () => {
+  it.each([
+    ['30', 30_000],
+    ['1', 1_000],
+    ['3600', 3_600_000],
+  ])('Retry-After: %s なら %i', (value, expected) => {
+    expect(retryAfterMsFrom(new Headers({ 'retry-after': value }))).toBe(expected);
+  });
+
+  it('64 文字ちょうどの正の整数（先頭の 0 を含む）なら読む', () => {
+    const value = `${'0'.repeat(62)}30`;
+
+    expect(value).toHaveLength(64);
+    expect(retryAfterMsFrom(new Headers({ 'retry-after': value }))).toBe(30_000);
+  });
+
+  it.each([
+    ['ヘッダなし', {}],
+    ['数字でない（abc）', { 'retry-after': 'abc' }],
+    ['負（-1）', { 'retry-after': '-1' }],
+    ['0（正でない）', { 'retry-after': '0' }],
+    ['小数', { 'retry-after': '1.5' }],
+    ['HTTP の日付', { 'retry-after': 'Wed, 21 Oct 2026 07:28:00 GMT' }],
+    ['65 文字', { 'retry-after': '1'.repeat(65) }],
+    [
+      'X-Business-Use-Case-Usage だけ（読まない）',
+      {
+        'x-business-use-case-usage': JSON.stringify({
+          '27183140000000001': [{ type: 'threads', estimated_time_to_regain_access: 7 }],
+        }),
+      },
+    ],
+  ] as const)('%s なら付けない（undefined）', (_label, headers) => {
+    expect(retryAfterMsFrom(new Headers(headers))).toBeUndefined();
+  });
+});
+
+describe('threads-api.ts：Threads が返した ID の形（isValidThreadsId。§6.2）', () => {
+  it.each(['1', '18000000000000001', '9'.repeat(64)])('%j は形に合う', (value) => {
+    expect(isValidThreadsId(value)).toBe(true);
+  });
+
+  it.each([
+    ['空文字', ''],
+    ['65 桁', '9'.repeat(65)],
+    ['スラッシュ', 'x/y'],
+    ['パスの移動', '123/../456'],
+    ['クエリ', '1?x=1'],
+    ['英字を含む', '1a'],
+    ['前に空白', ' 1'],
+    ['数値型', 180000000001],
+    ['null', null],
+    ['undefined', undefined],
+  ] as const)('%s は形に合わない', (_label, value) => {
+    expect(isValidThreadsId(value)).toBe(false);
+  });
+});
+
+describe('threads-api.ts：permalink を載せてよいか（isAcceptablePermalink。§6.6）', () => {
+  function permalinkOfLength(length: number): string {
+    const prefix = 'https://www.threads.net/@u/post/';
+    return `${prefix}${'a'.repeat(length - prefix.length)}`;
+  }
+
+  it.each([
+    'https://www.threads.net/@u/post/AbC',
+    'https://www.threads.com/@u/post/AbC',
+    'https://threads.com/@u/post/AbC',
+    'https://threads.net/@u/post/AbC',
+  ])('%s は載せてよい（threads.net と threads.com の両方を受ける）', (value) => {
+    expect(isAcceptablePermalink(value)).toBe(true);
+  });
+
+  it('2048 文字ちょうどは載せてよい', () => {
+    const value = permalinkOfLength(2048);
+
+    expect(value).toHaveLength(2048);
+    expect(isAcceptablePermalink(value)).toBe(true);
+  });
+
+  it.each([
+    ['http:', 'http://www.threads.net/@u/post/AbC'],
+    ['別のホスト', 'https://evil.test/@u/post/AbC'],
+    ['資格情報つき', 'https://user:pw@www.threads.net/@u/post/AbC'],
+    ['利用者名だけの資格情報つき', 'https://user@www.threads.com/@u/post/AbC'],
+    ['threads.net で始まる別のホスト', 'https://threads.net.evil.test/'],
+    ['threads.net で終わるがサブドメインでない', 'https://evilthreads.net/@u/post/AbC'],
+    ['threads.com で終わるがサブドメインでない', 'https://evilthreads.com/@u/post/AbC'],
+    ['Instagram', 'https://www.instagram.com/p/x/'],
+    ['2049 文字', permalinkOfLength(2049)],
+    ['URL でない', 'not a url'],
+    ['空文字', ''],
+  ])('%s は載せない', (_label, value) => {
+    expect(isAcceptablePermalink(value)).toBe(false);
+  });
+
+  it.each([
+    ['数値', 12345],
+    ['null', null],
+    ['undefined', undefined],
+    ['オブジェクト', { href: 'https://www.threads.net/@u/post/AbC' }],
+  ] as const)('文字列でない値（%s）は載せない', (_label, value) => {
+    expect(isAcceptablePermalink(value)).toBe(false);
+  });
+});
+
+describe('threads-api.ts：fbtrace_id の形（isValidFbtraceId。§6.11）', () => {
+  it.each(['AbC_1', 'A-b_9', 'x'.repeat(64)])('%j は形に合う', (value) => {
+    expect(isValidFbtraceId(value)).toBe(true);
+  });
+
+  it.each([
+    ['空白を含む', 'a b'],
+    ['65 文字', 'x'.repeat(65)],
+    ['空文字', ''],
+    ['スラッシュ', 'a/b'],
+    ['数値型', 123],
+    ['null', null],
+  ] as const)('%s は形に合わない', (_label, value) => {
+    expect(isValidFbtraceId(value)).toBe(false);
   });
 });
