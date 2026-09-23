@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useId, useState, type CSSProperties, type ReactNode } from 'react';
 import { Button } from './primitives';
 
 /**
@@ -217,6 +217,14 @@ export interface SecretFieldProps {
   readonly configured: boolean;
   readonly onChange: (value: string) => void;
   readonly placeholder?: string;
+  /**
+   * 欄の説明（任意。039-social-credential-fields 設計 §7.1.2）。
+   *
+   * ラベルの下・入力の上に出し、`aria-describedby` で入力と結ぶ（`FormField` と同じ位置と見た目）。
+   * **省略・空文字なら現行と同じ HTML**（説明の要素も `aria-describedby` も描かない）。
+   * 文字列はテキストとして描く（HTML として解釈しない）。
+   */
+  readonly description?: string;
 }
 
 /**
@@ -225,8 +233,16 @@ export interface SecretFieldProps {
  * **設定済みの値を再表示しない。** マスクした固定文字列を出すだけで、
  * 平文を DOM へ載せない。載せると、開発者ツールから読める。
  */
-export function SecretField({ label, configured, onChange, placeholder }: SecretFieldProps) {
+export function SecretField({
+  label,
+  configured,
+  onChange,
+  placeholder,
+  description,
+}: SecretFieldProps) {
   const [editing, setEditing] = useState(!configured);
+  // Hooks の規則のため条件の外で毎回呼ぶ。説明が無いときの HTML には現れない。
+  const id = useId();
 
   if (!editing) {
     return (
@@ -244,26 +260,60 @@ export function SecretField({ label, configured, onChange, placeholder }: Secret
     );
   }
 
+  const inputStyle: CSSProperties = {
+    width: '100%',
+    height: 'var(--tf-size-input)',
+    padding: 'var(--tf-space-2) var(--tf-space-4)',
+    border: '1px solid var(--tf-color-border)',
+    borderRadius: 'var(--tf-radius-lg)',
+    font: 'inherit',
+    marginTop: 'var(--tf-space-1)',
+  };
+
+  if (description === undefined || description === '') {
+    // 現行の形（`<label>` の中に入力を入れ子にする）。既存の呼び出し元の見た目を変えない。
+    return (
+      <div style={{ marginBottom: 'var(--tf-space-4)' }}>
+        <label style={{ display: 'block', marginBottom: 'var(--tf-space-1)' }}>
+          {label}
+          <input
+            type="password"
+            autoComplete="off"
+            placeholder={placeholder}
+            onChange={(event) => onChange(event.currentTarget.value)}
+            style={inputStyle}
+          />
+        </label>
+      </div>
+    );
+  }
+
+  // 説明を `<label>` の中へ入れない。入れると入力のアクセシブルな名前に説明が混ざる。
+  const descriptionId = `${id}-description`;
   return (
     <div style={{ marginBottom: 'var(--tf-space-4)' }}>
-      <label style={{ display: 'block', marginBottom: 'var(--tf-space-1)' }}>
+      <label htmlFor={id} style={{ display: 'block', marginBottom: 'var(--tf-space-1)' }}>
         {label}
-        <input
-          type="password"
-          autoComplete="off"
-          placeholder={placeholder}
-          onChange={(event) => onChange(event.currentTarget.value)}
-          style={{
-            width: '100%',
-            height: 'var(--tf-size-input)',
-            padding: 'var(--tf-space-2) var(--tf-space-4)',
-            border: '1px solid var(--tf-color-border)',
-            borderRadius: 'var(--tf-radius-lg)',
-            font: 'inherit',
-            marginTop: 'var(--tf-space-1)',
-          }}
-        />
       </label>
+      <p
+        id={descriptionId}
+        style={{
+          margin: `0 0 var(--tf-space-1)`,
+          color: 'var(--tf-color-text-muted)',
+          fontSize: '0.875rem',
+        }}
+      >
+        {description}
+      </p>
+      <input
+        id={id}
+        type="password"
+        autoComplete="off"
+        placeholder={placeholder}
+        aria-describedby={descriptionId}
+        onChange={(event) => onChange(event.currentTarget.value)}
+        style={inputStyle}
+      />
     </div>
   );
 }
