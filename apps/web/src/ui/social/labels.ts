@@ -93,3 +93,60 @@ export const POST_FORM_DELIVERY_NOTE =
  */
 export const POST_FORM_SCHEDULE_NOTE =
   '空欄なら予約しません。いますぐ出したいときは、過去の日時ではなく数分後の日時を指定してください。';
+
+// ---------------------------------------------------------------------------
+// 資格情報の欄の出し分けと入れ直し（039-social-credential-fields 設計 §7.2〜§7.4、§7.8）
+// ---------------------------------------------------------------------------
+
+/** publisher が無い provider の汎用の欄（035-social-publishing 設計 §7.5）。 */
+export const CREDENTIAL_GENERIC_FIELD_LABEL = '資格情報（アクセストークン等）';
+
+/** 行のボタンと、入れ直しの Modal のタイトル。 */
+export const CREDENTIAL_SET_LABEL = '資格情報を設定';
+
+export const CREDENTIAL_STATE_CONFIGURED = '現在の状態：設定済み';
+export const CREDENTIAL_STATE_NOT_CONFIGURED = '現在の状態：未設定';
+
+export const CREDENTIAL_CLEAR_LABEL = '資格情報を消す';
+export const CREDENTIAL_CLEAR_CONFIRM_TITLE = '資格情報を消しますか？';
+export const CREDENTIAL_CLEAR_CONFIRM_LABEL = '消す';
+
+export const CREDENTIAL_SAVED = '資格情報を保存しました。';
+export const CREDENTIAL_CLEARED = '資格情報を消しました。';
+
+/** 入れ直しの画面での確かめ（設計 §7.3.3 の 1）。正はサーバ。 */
+export const CREDENTIAL_ALL_FIELDS_REQUIRED = 'すべての項目を入力してください。';
+export const CREDENTIAL_REQUIRED = '資格情報を入力してください。';
+
+/**
+ * publisher が資格情報を使わない（`credentialFields: []`）provider の説明（設計 §7.2 / §7.3.2）。
+ *
+ * `setCredentialBody('none', …)` の `message` にも使う。`none` の Modal には「保存」が無く、
+ * 画面に出る経路は無い（039 実装プラン §8 の 5）。
+ */
+export const CREDENTIAL_NONE_NOTE =
+  'この SNS の配信 Plugin は資格情報を使いません。入力は要りません。';
+
+/** 入れ直し・項目ごとの欄の説明（設計 §7.3.2）。**丸ごと置き換える**ことを書く。 */
+export const CREDENTIAL_FIELDS_NOTE =
+  '保存済みの値は表示しません。保存すると、保存済みの資格情報はすべてここで入力した値に置き換わります（一部の項目だけを変えることはできません）。';
+
+/** 入れ直し・汎用の欄の説明（設計 §7.1.1 / §7.3.2）。形式を確かめないことを書く。 */
+export const CREDENTIAL_FREE_NOTE =
+  'この SNS の配信 Plugin が有効になっていないため、入力した値を形式を確かめずにそのまま保存します。配信 Plugin を有効にした後は、その Plugin の項目で入れ直してください。';
+
+/** 資格情報を使わない provider に保存済みの値が残っているときの警告（設計 §7.3.2 / §7.5）。 */
+export const CREDENTIAL_NONE_WARNING = [
+  '保存済みの資格情報がありますが、いまの配信 Plugin では使われません。',
+  '同じ SNS の別の配信 Plugin に入れ替えるとその Plugin が読み、形式が合わなければ自動配信が失敗します。不要なら消してください。',
+] as const;
+
+/** 入れ直しの Modal の対象の行（設計 §7.3.2）。 */
+export function credentialTargetLabel(displayName: string, providerName: string): string {
+  return `対象：${displayName}（${providerName}）`;
+}
+
+/** 消去の確認の本文（設計 §7.4）。 */
+export function credentialClearMessage(displayName: string): string {
+  return `「${displayName}」の保存済みの資格情報を消します。消した値は元に戻せません。`;
+}

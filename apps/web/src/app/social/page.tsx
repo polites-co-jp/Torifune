@@ -7,17 +7,14 @@ import {
   resolveManualHandoff,
 } from '@/application/social/social-use-cases';
 import { MANUAL_HANDOFF_BUDGET_MS } from '@/domain/social/publishing';
-import { isManualPending, KNOWN_PROVIDERS, providerLabel } from '@/domain/social/social';
+import { isManualPending, providerLabel } from '@/domain/social/social';
 import { Button } from '@/ui/components';
 import { AppShell } from '@/ui/layout/app-shell';
 import { ExtensionPoint, PluginActions } from '@/ui/plugin/plugin-slot';
 import { requirePageSession } from '@/ui/server/page-session';
 import { ManualPending, type ManualPendingRow } from '@/ui/social/manual-pending';
-import {
-  SocialAccounts,
-  type ProviderOption,
-  type SocialAccountsProps,
-} from '@/ui/social/social-accounts';
+import { buildProviderOptions } from '@/ui/social/provider-options';
+import { SocialAccounts, type SocialAccountsProps } from '@/ui/social/social-accounts';
 import {
   SocialPosts,
   type AccountProvider,
@@ -116,27 +113,9 @@ export default async function SocialPage({
     ]),
   );
 
-  // 「サービス」の選択肢は Core が知る provider ＋ publisher を登録した provider（設計 §7.5）。
-  const providerValues = [
-    ...new Set([
-      ...KNOWN_PROVIDERS,
-      ...publishers.map((publisher) => publisher.registration.provider),
-    ]),
-  ];
-  const providers: readonly ProviderOption[] = providerValues.map((value) => {
-    const registration = publishers.find(
-      (publisher) => publisher.registration.provider === value,
-    )?.registration;
-    return {
-      value,
-      label: providerLabel(value, labels),
-      credentialFields: (registration?.credentialFields ?? []).map((field) => ({
-        key: field.key,
-        label: field.label,
-        kind: field.kind,
-      })),
-    };
-  });
+  // 「サービス」の選択肢は Core が知る provider ＋ publisher を登録した provider（035 設計 §7.5）。
+  // publisher の有無と宣言の項目（説明を含む）も持たせる（039 設計 §7.1）。
+  const providers = buildProviderOptions(publishers);
 
   // 「いま」はここで一度だけ決める。行ごとに `Date.now()` を見ると値がばらつく。
   const now = new Date();
