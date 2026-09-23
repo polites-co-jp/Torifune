@@ -357,3 +357,505 @@ export function isAcceptablePermalink(value: unknown): value is string {
 export function isValidFbtraceId(value: unknown): value is string {
   return typeof value === 'string' && FBTRACE_ID_PATTERN.test(value);
 }
+
+/* -------------------------------------------------------------------------- */
+/* 外部への HTTP（設計 §6.2）                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 外部への HTTP。
+ *
+ * **Node の global を直に見るのは、この型宣言と下の既定値の解決だけ**（設計 §10.1 の 2）。
+ * ほかのファイルはこの型と `resolveFetch()` を通してしか外へ出られない。
+ */
+export type FetchImpl = typeof globalThis.fetch;
+
+/**
+ * 実際に使う関数を決める。
+ *
+ * **既定値の解決はここだけ。** 呼び出しはすべて `impl(url, init)` の形で行う。
+ * **毎回引き直す。** モジュールの読み込み時に閉じ込めると、差し替えが効かなくなる。
+ */
+export function resolveFetch(injected?: FetchImpl): FetchImpl {
+  return injected ?? globalThis.fetch;
+}
+
+/** 応答の本体はここまでしか読まない。相手が何を返しても Plugin のメモリを食わせない。 */
+export const RESPONSE_BODY_MAX_BYTES = 64 * 1024;
+
+/**
+ * 1 本の要求の結果。
+ *
+ * - `ok`：2xx で本体が JSON として読めた
+ * - `malformed`：2xx だが本体が JSON として読めない（大きすぎるものを含む）
+ * - `http`：2xx 以外（**3xx を含む**。転送は追わない）。本体は JSON として読めたときだけ持つ
+ * - `network`：接続できない（`fetch` が reject）
+ * - `timeout`：制限時間（`AbortSignal.timeout`）で打ち切られた
+ * - `aborted`：呼び出し側が打ち切った（`input.signal`・carousel の子どうしの打ち切り）
+ *
+ * **要求の URL も例外の文面も持たない**（R6 の URL にはトークンが入る。設計 §6.11）。
+ */
+export type GraphOutcome =
+  | { readonly kind: 'ok'; readonly status: number; readonly body: unknown }
+  | { readonly kind: 'malformed'; readonly status: number }
+  | {
+      readonly kind: 'http';
+      readonly status: number;
+      readonly body: unknown;
+      readonly headers: Headers;
+    }
+  | { readonly kind: 'network' | 'timeout' | 'aborted' };
+
+export interface GraphRequest {
+  readonly impl: FetchImpl;
+  readonly method: 'GET' | 'POST';
+  /** 宛先のパス。**形の検査を通した値だけで組む**（設計 §6.1）。 */
+  readonly path: string;
+  readonly query?: Readonly<Record<string, string>>;
+  /** POST の本体（`application/x-www-form-urlencoded`）。 */
+  readonly form?: Readonly<Record<string, string>>;
+  /** `Authorization: Bearer` に載せるトークン。R6 は持たない（クエリで渡す）。 */
+  readonly bearerToken?: string;
+  /** この要求 1 本の制限時間。 */
+  readonly timeoutMs: number;
+  /** 外側の signal（合計の期限・準備の期限・子どうしの打ち切りを混ぜたもの）。 */
+  readonly signal: AbortSignal;
+}
+
+function errorNameOf(value: unknown): unknown {
+  return typeof value === 'object' && value !== null
+    ? (value as { readonly name?: unknown }).name
+    : undefined;
+}
+
+/** 例外を `timeout` / `aborted` / `network` に分ける。**文面は読まない。** */
+function thrownKind(error: unknown, signal: AbortSignal): 'network' | 'timeout' | 'aborted' {
+  const name = errorNameOf(error);
+  if (name === 'TimeoutError') {
+    return 'timeout';
+  }
+  if (name === 'AbortError') {
+    return 'aborted';
+  }
+  if (signal.aborted) {
+    return errorNameOf(signal.reason) === 'TimeoutError' ? 'timeout' : 'aborted';
+  }
+  return 'network';
+}
+
+/** 上限まで読み、超えたら `undefined`（JSON として扱わない）。 */
+async function readBoundedText(response: Response): Promise<string | undefined> {
+  const body = response.body;
+  if (body === null) {
+    return '';
+  }
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    total += value.byteLength;
+    if (total > RESPONSE_BODY_MAX_BYTES) {
+      await reader.cancel().catch(() => undefined);
+      return undefined;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
+const NOT_JSON: unique symbol = Symbol('not-json');
+
+function parseJson(text: string | undefined): unknown {
+  if (text === undefined) {
+    return NOT_JSON;
+  }
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return NOT_JSON;
+  }
+}
+
+/**
+ * 1 本の要求を出して分類する（設計 §10.9 #66 が名指しする関数）。
+ *
+ * - URL は `new URL(path, GRAPH_API_BASE_URL)` の解析結果から組む（文字列の連結にしない）
+ * - **`redirect: 'manual'`**。`'error'` にすると 3xx が観測できず `network` に化ける
+ * - **要求ごとの `AbortSignal.timeout` は `impl()` の直前に同期で作る**（`await` を挟まない。実装プラン §7 の 3）
+ * - **例外を投げない。**
+ */
+export async function sendGraphRequest(request: GraphRequest): Promise<GraphOutcome> {
+  let signal: AbortSignal = request.signal;
+  try {
+    const url = new URL(request.path, GRAPH_API_BASE_URL);
+    for (const [key, value] of Object.entries(request.query ?? {})) {
+      url.searchParams.set(key, value);
+    }
+    const headers: Record<string, string> = {};
+    if (request.bearerToken !== undefined) {
+      headers['authorization'] = `Bearer ${request.bearerToken}`;
+    }
+    let body: string | undefined;
+    if (request.form !== undefined) {
+      headers['content-type'] = 'application/x-www-form-urlencoded';
+      body = new URLSearchParams(request.form).toString();
+    }
+
+    signal = AbortSignal.any([request.signal, AbortSignal.timeout(request.timeoutMs)]);
+    const response = await request.impl(url.href, {
+      method: request.method,
+      headers,
+      ...(body === undefined ? {} : { body }),
+      redirect: 'manual',
+      signal,
+    });
+
+    const status = response.status;
+    const parsed = parseJson(await readBoundedText(response));
+    if (status >= 200 && status < 300) {
+      return parsed === NOT_JSON
+        ? { kind: 'malformed', status }
+        : { kind: 'ok', status, body: parsed };
+    }
+    return {
+      kind: 'http',
+      status,
+      body: parsed === NOT_JSON ? undefined : parsed,
+      headers: response.headers,
+    };
+  } catch (error) {
+    return { kind: thrownKind(error, signal) };
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* 要求 R1〜R6 と応答の解釈（設計 §6.3〜§6.7 / §6.9）                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * どの段階の失敗か。`retryable` と `reason` はこれで決まる（設計 §6.9）。
+ *
+ * `container` = R1 / R2、`status` = R3（とその状態・準備の期限）、`publish` = R4、
+ * `permalink` = R5、`refresh` = R6。
+ */
+export type GraphPhase = 'container' | 'status' | 'publish' | 'permalink' | 'refresh';
+
+export type GraphFailureKind =
+  | 'network'
+  | 'timeout'
+  | 'aborted'
+  | 'http'
+  /** 2xx だが本体が読めない・要る項目が無い・形に合わない。 */
+  | 'shape'
+  /** container の状態が `FINISHED` / `IN_PROGRESS` 以外。 */
+  | 'state'
+  /** 準備の期限・round の上限・R4 を送るだけの残り時間が無い。 */
+  | 'budget';
+
+/** container の状態のうち、`reason` に出してよい既知の値。知らない値は `unknown`。 */
+export type ContainerState = 'ERROR' | 'EXPIRED' | 'PUBLISHED' | 'unknown';
+
+export interface GraphFailure {
+  readonly phase: GraphPhase;
+  readonly kind: GraphFailureKind;
+  readonly status?: number;
+  readonly errorClass?: GraphErrorClass;
+  /** `reason` に出す `code`（既知の数値か `unknown`）。エラーの本体に `code` が無ければ持たない。 */
+  readonly code?: string;
+  /** `reason` に出す `error_subcode`（既知の数値か `unknown`）。 */
+  readonly subcode?: string;
+  /** ログにだけ出す。 */
+  readonly fbtraceId?: string;
+  readonly state?: ContainerState;
+  readonly retryable: boolean;
+  readonly retryAfterMs?: number;
+}
+
+export type GraphResult<T> =
+  { readonly ok: true; readonly value: T } | { readonly ok: false; readonly failure: GraphFailure };
+
+function failure(value: GraphFailure): GraphResult<never> {
+  return { ok: false, failure: value };
+}
+
+function versioned(...segments: readonly string[]): string {
+  return `/${[GRAPH_API_VERSION, ...segments].join('/')}`;
+}
+
+function errorObjectOf(body: unknown): Record<string, unknown> | undefined {
+  const error = isRecord(body) ? body['error'] : undefined;
+  return isRecord(error) ? error : undefined;
+}
+
+/**
+ * 失敗の `retryable`（設計 §6.9 の支配的な規則）。
+ *
+ * `container` / `status`（R4 の前）は既定で `true`、直らないものだけ `false`。
+ * `publish`（R4）は既定で `false`、レート制限だけ `true`。
+ */
+export function retryableFor(
+  phase: GraphPhase,
+  kind: GraphFailureKind,
+  status?: number,
+  errorClass?: GraphErrorClass,
+  state?: ContainerState,
+): boolean {
+  void phase;
+  void kind;
+  void status;
+  void errorClass;
+  void state;
+  return false;
+}
+
+function transportFailure(
+  phase: GraphPhase,
+  kind: 'network' | 'timeout' | 'aborted' | 'shape',
+  status?: number,
+): GraphResult<never> {
+  return failure({
+    phase,
+    kind,
+    ...(status === undefined ? {} : { status }),
+    retryable: retryableFor(phase, kind, status),
+  });
+}
+
+/** 2xx 以外の応答を失敗にする。本体から読むのは数値の `code` / `error_subcode` と `is_transient` だけ。 */
+function httpFailure(
+  phase: GraphPhase,
+  outcome: Extract<GraphOutcome, { kind: 'http' }>,
+): GraphResult<never> {
+  const errorClass = classifyGraphError(outcome.status, outcome.body);
+  const error = errorObjectOf(outcome.body);
+  const { fbtraceId } = readGraphError(outcome.body);
+  const retryable = retryableFor(phase, 'http', outcome.status, errorClass);
+  const retryAfterMs =
+    retryable && errorClass === 'rateLimit' ? retryAfterMsFrom(outcome.headers) : undefined;
+  return failure({
+    phase,
+    kind: 'http',
+    status: outcome.status,
+    errorClass,
+    ...(error !== undefined && 'code' in error ? { code: describeGraphCode(error['code']) } : {}),
+    ...(error !== undefined && 'error_subcode' in error
+      ? { subcode: describeGraphSubcode(error['error_subcode']) }
+      : {}),
+    ...(fbtraceId === undefined ? {} : { fbtraceId }),
+    retryable,
+    ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+  });
+}
+
+/** `ok` 以外の結果を失敗にする。 */
+function notOk(phase: GraphPhase, outcome: GraphOutcome): GraphResult<never> {
+  switch (outcome.kind) {
+    case 'http':
+      return httpFailure(phase, outcome);
+    case 'malformed':
+    case 'ok':
+      return transportFailure(phase, 'shape', outcome.status);
+    default:
+      return transportFailure(phase, outcome.kind);
+  }
+}
+
+interface ContainerRequestBase {
+  readonly impl: FetchImpl;
+  readonly igUserId: string;
+  readonly accessToken: string;
+  readonly signal: AbortSignal;
+}
+
+async function createContainer(
+  base: ContainerRequestBase,
+  form: Readonly<Record<string, string>>,
+): Promise<GraphResult<string>> {
+  const outcome = await sendGraphRequest({
+    impl: base.impl,
+    method: 'POST',
+    path: versioned(base.igUserId, 'media'),
+    form,
+    bearerToken: base.accessToken,
+    timeoutMs: CREATE_CONTAINER_TIMEOUT_MS,
+    signal: base.signal,
+  });
+  if (outcome.kind !== 'ok') {
+    return notOk('container', outcome);
+  }
+  const id: unknown = isRecord(outcome.body) ? outcome.body['id'] : undefined;
+  if (!isValidGraphId(id)) {
+    // **次の要求を出していない。** container ができていても公開されない（設計 §6.9 の P1）。
+    return transportFailure('container', 'shape', outcome.status);
+  }
+  return { ok: true, value: id };
+}
+
+/**
+ * R1：画像の container を作る（単体、または carousel の子）。
+ *
+ * 単体は `caption` を持ち、子は `is_carousel_item=true` を持って `caption` を持たない（設計 §6.3）。
+ * **`alt_text` も `video_url` も送らない**（設計 §6.12 / 画像のみ）。
+ */
+export async function createImageContainer(
+  params: ContainerRequestBase & {
+    readonly imageUrl: string;
+    /** 単体のときだけ。carousel の子は `undefined`。 */
+    readonly caption?: string;
+  },
+): Promise<GraphResult<string>> {
+  const form: Record<string, string> =
+    params.caption === undefined
+      ? { image_url: params.imageUrl, is_carousel_item: 'true' }
+      : { image_url: params.imageUrl, caption: params.caption };
+  return await createContainer(params, form);
+}
+
+/** R2：carousel の親 container を作る。`children` は **`media` の添字の順**（設計 §6.3）。 */
+export async function createCarouselContainer(
+  params: ContainerRequestBase & {
+    readonly children: readonly string[];
+    readonly caption: string;
+  },
+): Promise<GraphResult<string>> {
+  return await createContainer(params, {
+    media_type: 'CAROUSEL',
+    children: params.children.join(','),
+    caption: params.caption,
+  });
+}
+
+/** 準備が済んだか、まだ処理中か。 */
+export type ContainerProgress = 'FINISHED' | 'IN_PROGRESS';
+
+const FAILED_STATES: ReadonlySet<string> = new Set(['ERROR', 'EXPIRED', 'PUBLISHED']);
+
+/**
+ * R3：container の状態を読む（設計 §6.4）。
+ *
+ * **取るのは `status_code` だけ。** `status`（自由文）は要求しない（`fields=status_code`）。
+ */
+export async function readContainerStatus(params: {
+  readonly impl: FetchImpl;
+  readonly accessToken: string;
+  readonly containerId: string;
+  readonly signal: AbortSignal;
+}): Promise<GraphResult<ContainerProgress>> {
+  const outcome = await sendGraphRequest({
+    impl: params.impl,
+    method: 'GET',
+    path: versioned(params.containerId),
+    query: { fields: 'status_code' },
+    bearerToken: params.accessToken,
+    timeoutMs: STATUS_TIMEOUT_MS,
+    signal: params.signal,
+  });
+  if (outcome.kind !== 'ok') {
+    return notOk('status', outcome);
+  }
+  const code: unknown = isRecord(outcome.body) ? outcome.body['status_code'] : undefined;
+  if (code === 'FINISHED' || code === 'IN_PROGRESS') {
+    return { ok: true, value: code };
+  }
+  const state: ContainerState =
+    typeof code === 'string' && FAILED_STATES.has(code) ? (code as ContainerState) : 'unknown';
+  return failure({
+    phase: 'status',
+    kind: 'state',
+    state,
+    retryable: retryableFor('status', 'state', undefined, undefined, state),
+  });
+}
+
+/** 準備の期限・round の上限・R4 の残り時間の不足（`kind: 'budget'`）。 */
+export function budgetFailure(phase: 'status' | 'publish'): GraphFailure {
+  return { phase, kind: 'budget', retryable: retryableFor(phase, 'budget') };
+}
+
+/**
+ * R4：公開する。**ここが「送る」**（設計 §6.5）。
+ *
+ * 応答の `id` が無い・JSON でない → 失敗（公開されたか分からない）。
+ * `id` があって形に合わない → **失敗にしない**（`mediaId: undefined`）。200 を返した以上、公開されている。
+ */
+export async function publishContainer(
+  params: ContainerRequestBase & { readonly creationId: string },
+): Promise<GraphResult<{ readonly mediaId: string | undefined }>> {
+  const outcome = await sendGraphRequest({
+    impl: params.impl,
+    method: 'POST',
+    path: versioned(params.igUserId, 'media_publish'),
+    form: { creation_id: params.creationId },
+    bearerToken: params.accessToken,
+    timeoutMs: MEDIA_PUBLISH_TIMEOUT_MS,
+    signal: params.signal,
+  });
+  if (outcome.kind !== 'ok') {
+    return notOk('publish', outcome);
+  }
+  const id: unknown = isRecord(outcome.body) ? outcome.body['id'] : undefined;
+  if (id === undefined || id === null) {
+    return transportFailure('publish', 'shape', outcome.status);
+  }
+  return { ok: true, value: { mediaId: isValidGraphId(id) ? id : undefined } };
+}
+
+/** R5：投稿の URL。`isAcceptablePermalink` に通らなければ `undefined`（設計 §6.6）。 */
+export async function readPermalink(params: {
+  readonly impl: FetchImpl;
+  readonly accessToken: string;
+  readonly mediaId: string;
+  readonly signal: AbortSignal;
+}): Promise<GraphResult<string | undefined>> {
+  const outcome = await sendGraphRequest({
+    impl: params.impl,
+    method: 'GET',
+    path: versioned(params.mediaId),
+    query: { fields: 'permalink' },
+    bearerToken: params.accessToken,
+    timeoutMs: PERMALINK_TIMEOUT_MS,
+    signal: params.signal,
+  });
+  if (outcome.kind !== 'ok') {
+    return notOk('permalink', outcome);
+  }
+  const permalink: unknown = isRecord(outcome.body) ? outcome.body['permalink'] : undefined;
+  return { ok: true, value: isAcceptablePermalink(permalink) ? permalink : undefined };
+}
+
+/**
+ * R6：トークンを延長する（設計 §6.7）。
+ *
+ * **版の付かないパス**で、トークンは**クエリ**に入る（公開ドキュメントの形）。
+ * **この URL をログにも `reason` にも渡さない。** 結果にも URL を持たせない。
+ * 値の形の検査は呼び出し側（`token.ts`）が行う。
+ */
+export async function refreshAccessToken(params: {
+  readonly impl: FetchImpl;
+  readonly accessToken: string;
+  readonly signal: AbortSignal;
+}): Promise<GraphResult<{ readonly accessToken: unknown; readonly expiresIn: unknown }>> {
+  const outcome = await sendGraphRequest({
+    impl: params.impl,
+    method: 'GET',
+    path: '/refresh_access_token',
+    query: { grant_type: 'ig_refresh_token', access_token: params.accessToken },
+    timeoutMs: REFRESH_TIMEOUT_MS,
+    signal: params.signal,
+  });
+  if (outcome.kind !== 'ok') {
+    return notOk('refresh', outcome);
+  }
+  const body = isRecord(outcome.body) ? outcome.body : {};
+  return { ok: true, value: { accessToken: body['access_token'], expiresIn: body['expires_in'] } };
+}

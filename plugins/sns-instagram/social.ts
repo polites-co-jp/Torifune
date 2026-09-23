@@ -1,11 +1,43 @@
 import type {
+  PluginLogger,
   PluginSettingsField,
+  PublishInput,
+  PublishResult,
   PublisherLimits,
   PublisherRegistration,
   PublisherValidationProblem,
+  SocialMediaView,
   SocialPostDraftView,
 } from '@torifune/plugin-api';
 import { countHashtags, countMentions } from './caption';
+import {
+  CAROUSEL_CHILD_CONCURRENCY,
+  MEDIA_PUBLISH_TIMEOUT_MS,
+  PERMALINK_TIMEOUT_MS,
+  POLL_INTERVAL_MS,
+  POLL_MAX_ROUNDS,
+  PREPARE_BUDGET_MS,
+  PUBLISH_TOTAL_BUDGET_MS,
+  REFRESH_TIMEOUT_MS,
+  budgetFailure,
+  createCarouselContainer,
+  createImageContainer,
+  publishContainer,
+  readContainerStatus,
+  readPermalink,
+  refreshAccessToken,
+  resolveFetch,
+  type FetchImpl,
+  type GraphFailure,
+  type GraphResult,
+} from './graph';
+import {
+  expiryFromExpiresIn,
+  isValidAccessToken,
+  isValidIgUserId,
+  parseExpiry,
+  shouldRefresh,
+} from './token';
 
 /**
  * Instagram（Graph API の Content Publishing）の publisher（038-sns-instagram 設計 §9）。
@@ -29,11 +61,34 @@ export interface InstagramPublisherOptions {
    * 外部への HTTP。既定は Node の標準実装。**テストはここを差し替える**（設計 §10.1）。
    * `index.ts` は与えない。
    */
-  readonly fetch?: typeof globalThis.fetch;
+  readonly fetch?: FetchImpl;
   /** この Plugin が見る時計。既定は現在時刻。期限の判定とトークンの期限がこれを見る。 */
   readonly now?: () => Date;
   /** 状態の確認の待ち。既定は `setTimeout` を signal で打ち切る実装。**テストは実時間を待たない。** */
   readonly wait?: (ms: number, signal: AbortSignal) => Promise<void>;
+}
+
+/**
+ * 既定の待ち。`ms` 待って解決し、`signal` が発火したらその場で `signal.reason` で reject する。
+ *
+ * HTTP ではないので `graph.ts` に置かない（実装プラン §8 の 4）。
+ */
+export function defaultWait(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 /**
@@ -128,13 +183,406 @@ function validateDraft(post: SocialPostDraftView): readonly PublisherValidationP
   return problems;
 }
 
+/* -------------------------------------------------------------------------- */
+/* publish()：失敗したときの文言（設計 §6.11）                                   */
+/* -------------------------------------------------------------------------- */
+
+const ABORTED_REASON = 'Instagram への配信が打ち切られました。';
+
+/** `reason` の文言。**Graph API の自由文を載せない**（設計 §6.11）。 */
+function reasonFor(failure: GraphFailure): string {
+  void failure;
+  return 'Instagram への配信に失敗しました。';
+}
+
+const INPUT_REASON = 'Instagram への配信の入力が正しくありません。';
+
+const UNEXPECTED_REASON = 'Instagram への配信で予期しない問題が起きました。';
+
+/* -------------------------------------------------------------------------- */
+/* publish()：段取り（設計 §6.3〜§6.8）                                           */
+/* -------------------------------------------------------------------------- */
+
+type Wait = (ms: number, signal: AbortSignal) => Promise<void>;
+
+/** 1 回の配信のあいだ持ち回る値。 */
+interface Session {
+  readonly impl: FetchImpl;
+  readonly clock: () => Date;
+  readonly wait: Wait;
+  readonly igUserId: string;
+  readonly accessToken: string;
+  /** Core から渡された signal。発火したらその場で抜ける。 */
+  readonly input: AbortSignal;
+  /** 外側の signal（`input` ＋ 合計の期限）。R4〜R6 はこの下で送る。 */
+  readonly outer: AbortSignal;
+  /** 準備の signal（外側 ＋ 準備の期限）。R1〜R3 と待ちはこの下で行う。 */
+  readonly prepare: AbortSignal;
+  readonly prepareDeadline: number;
+  readonly totalDeadline: number;
+}
+
+function remainingMs(session: Session): number {
+  return session.totalDeadline - session.clock().getTime();
+}
+
+function pastPrepareDeadline(session: Session): boolean {
+  return session.clock().getTime() >= session.prepareDeadline;
+}
+
+/**
+ * 複数の要求を同時に `CAROUSEL_CHILD_CONCURRENCY` 本まで飛ばす（**空いたら次を出す**）。
+ *
+ * 1 つが失敗したら、共有の controller で**飛んでいる残りを打ち切り**、まだ出していないものは出さない。
+ * 結果は **`items` の添字の順**に並ぶ（完了の順ではない）。
+ */
+async function runGroup<T, R>(
+  items: readonly T[],
+  send: (item: T, signal: AbortSignal) => Promise<GraphResult<R>>,
+): Promise<GraphResult<R[]>> {
+  const siblings = new AbortController();
+  const values: R[] = new Array<R>(items.length);
+  const failures: { readonly index: number; readonly failure: GraphFailure }[] = [];
+  let next = 0;
+
+  const worker = async (): Promise<void> => {
+    while (!siblings.signal.aborted && next < items.length) {
+      const index = next;
+      next += 1;
+      const result = await send(items[index] as T, siblings.signal);
+      if (result.ok) {
+        values[index] = result.value;
+      } else {
+        failures.push({ index, failure: result.failure });
+        siblings.abort();
+      }
+    }
+  };
+
+  const workers = Array.from({ length: Math.min(CAROUSEL_CHILD_CONCURRENCY, items.length) }, () =>
+    worker(),
+  );
+  await Promise.all(workers);
+
+  const first = failures.sort((a, b) => a.index - b.index)[0];
+  if (first !== undefined) {
+    return { ok: false, failure: first.failure };
+  }
+  return { ok: true, value: values };
+}
+
+/**
+ * container が `FINISHED` になるまで待つ（設計 §6.4）。
+ *
+ * **最初の確認は作成の直後。** round の上限は `POLL_MAX_ROUNDS` と準備の期限の早いほうで、
+ * 期限は **`now()` で数える**（実時間の打ち切りは `AbortSignal.timeout` が別に効く）。
+ */
+async function waitUntilFinished(
+  session: Session,
+  containerIds: readonly string[],
+): Promise<GraphResult<true>> {
+  let pending = [...containerIds];
+  let round = 0;
+  for (;;) {
+    const checked = await runGroup(pending, (containerId, siblings) =>
+      readContainerStatus({
+        impl: session.impl,
+        accessToken: session.accessToken,
+        containerId,
+        signal: AbortSignal.any([session.prepare, siblings]),
+      }),
+    );
+    if (!checked.ok) {
+      return checked;
+    }
+    pending = pending.filter((_, index) => checked.value[index] !== 'FINISHED');
+    if (pending.length === 0) {
+      return { ok: true, value: true };
+    }
+
+    round += 1;
+    if (round >= POLL_MAX_ROUNDS || pastPrepareDeadline(session)) {
+      return { ok: false, failure: budgetFailure('status') };
+    }
+    try {
+      await session.wait(POLL_INTERVAL_MS, session.prepare);
+    } catch {
+      return { ok: false, failure: budgetFailure('status') };
+    }
+    if (session.input.aborted || pastPrepareDeadline(session)) {
+      return { ok: false, failure: budgetFailure('status') };
+    }
+  }
+}
+
+/** 公開する container を用意する。単体なら R1、2 枚以上なら子 R1 × N → 親 R2（設計 §6.3）。 */
+async function prepareContainer(
+  session: Session,
+  media: readonly SocialMediaView[],
+  caption: string,
+): Promise<GraphResult<string>> {
+  const base = {
+    impl: session.impl,
+    igUserId: session.igUserId,
+    accessToken: session.accessToken,
+  };
+
+  if (media.length === 1) {
+    const created = await createImageContainer({
+      ...base,
+      imageUrl: (media[0] as SocialMediaView).url,
+      caption,
+      signal: session.prepare,
+    });
+    if (!created.ok) {
+      return created;
+    }
+    const finished = await waitUntilFinished(session, [created.value]);
+    return finished.ok ? created : finished;
+  }
+
+  const children = await runGroup(media, (item, siblings) =>
+    createImageContainer({
+      ...base,
+      imageUrl: item.url,
+      signal: AbortSignal.any([session.prepare, siblings]),
+    }),
+  );
+  if (!children.ok) {
+    return children;
+  }
+  const childrenFinished = await waitUntilFinished(session, children.value);
+  if (!childrenFinished.ok) {
+    return childrenFinished;
+  }
+  if (pastPrepareDeadline(session)) {
+    return { ok: false, failure: budgetFailure('status') };
+  }
+
+  const parent = await createCarouselContainer({
+    ...base,
+    children: children.value,
+    caption,
+    signal: session.prepare,
+  });
+  if (!parent.ok) {
+    return parent;
+  }
+  const parentFinished = await waitUntilFinished(session, [parent.value]);
+  return parentFinished.ok ? parent : parentFinished;
+}
+
+/** ログが投げても `publish()` を投げさせない。 */
+function safeLogger(logger: PluginLogger): PluginLogger {
+  const guard =
+    (method: keyof PluginLogger) =>
+    (message: string, detail?: Record<string, unknown>): void => {
+      try {
+        logger[method](message, detail);
+      } catch {
+        // ログが出せないことを理由に例外を投げない。
+      }
+    };
+  return { debug: guard('debug'), info: guard('info'), warn: guard('warn'), error: guard('error') };
+}
+
+/** `link` が指定されているか（空文字は「無し」）。 */
+function hasLink(link: unknown): boolean {
+  return link !== null && link !== undefined && link !== '';
+}
+
+interface AfterPublish {
+  externalId?: string;
+  externalUrl?: string;
+  rotatedCredential?: Readonly<Record<string, string>>;
+}
+
+/**
+ * 公開の後（R5 / R6）。**何が起きても `ok: true` を覆さない**（設計 §6.9 の P5）。
+ *
+ * 例外もここで握る。R5 / R6 の例外が外側の `catch` に落ちて `ok: false` にならないようにする。
+ */
+async function afterPublish(
+  session: Session,
+  mediaId: string | undefined,
+  credential: Readonly<Record<string, string>>,
+  log: (message: string, phase: string, detail?: Record<string, unknown>) => void,
+): Promise<PublishResult> {
+  const result: AfterPublish = {};
+  try {
+    if (mediaId === undefined) {
+      // **失敗にしない。** 200 を返した以上、公開されている（設計 §6.5）。
+      log('instagram media id rejected', 'publish');
+    } else {
+      result.externalId = mediaId;
+      if (remainingMs(session) >= PERMALINK_TIMEOUT_MS) {
+        const permalink = await readPermalink({
+          impl: session.impl,
+          accessToken: session.accessToken,
+          mediaId,
+          signal: session.outer,
+        });
+        if (permalink.ok && permalink.value !== undefined) {
+          result.externalUrl = permalink.value;
+        } else {
+          log(
+            'instagram permalink skipped',
+            'permalink',
+            permalink.ok ? {} : failureFields(permalink.failure),
+          );
+        }
+      } else {
+        log('instagram permalink skipped', 'permalink');
+      }
+    }
+
+    const now = session.clock();
+    if (shouldRefresh(parseExpiry(credential['accessTokenExpiresAt'], now), now)) {
+      if (remainingMs(session) < REFRESH_TIMEOUT_MS) {
+        log('instagram token refresh skipped', 'refresh');
+      } else {
+        const refreshed = await refreshAccessToken({
+          impl: session.impl,
+          accessToken: session.accessToken,
+          signal: session.outer,
+        });
+        if (refreshed.ok && isValidAccessToken(refreshed.value.accessToken)) {
+          // **3 つを明示して組む。** `...credential` で写さない（設計 §6.7）。
+          result.rotatedCredential = {
+            igUserId: session.igUserId,
+            accessToken: refreshed.value.accessToken,
+            accessTokenExpiresAt: expiryFromExpiresIn(refreshed.value.expiresIn, session.clock()),
+          };
+        } else {
+          log(
+            'instagram token refresh skipped',
+            'refresh',
+            refreshed.ok ? {} : failureFields(refreshed.failure),
+          );
+        }
+      }
+    }
+  } catch {
+    log('instagram after publish failed', 'publish');
+  }
+  return { ok: true, ...result };
+}
+
+/** ログに渡してよい失敗の素性（設計 §6.11）。**値・URL・自由文を渡さない。** */
+function failureFields(failure: GraphFailure): Record<string, unknown> {
+  return {
+    ...(failure.status === undefined ? {} : { status: failure.status }),
+    ...(failure.code === undefined ? {} : { code: failure.code }),
+    ...(failure.subcode === undefined ? {} : { subcode: failure.subcode }),
+    ...(failure.fbtraceId === undefined ? {} : { fbtraceId: failure.fbtraceId }),
+  };
+}
+
+/**
+ * 1 回配信する。
+ *
+ * **例外を投げない。** すべての経路を `try` で包み、`PublishResult` として返す（設計 §6.11）。
+ * **「R4 を送ったか」を 1 つの変数で持ち**、予期しない例外の分類はそれで決める。
+ */
+async function publishPost(
+  options: InstagramPublisherOptions,
+  input: PublishInput,
+): Promise<PublishResult> {
+  const { post, credential, attempt, signal } = input;
+  const logger = safeLogger(input.logger);
+  const media: readonly SocialMediaView[] = Array.isArray(post.media) ? post.media : [];
+  const base = { postId: post.id, attempt, mediaCount: media.length };
+  const log = (message: string, phase: string, detail: Record<string, unknown> = {}): void => {
+    logger.warn(message, { ...base, phase, ...detail });
+  };
+
+  try {
+    if (signal.aborted) {
+      // Core は既に「結果不明」として確定させている。何を返しても記録されない（設計 §6.8）。
+      return { ok: false, reason: ABORTED_REASON, retryable: false };
+    }
+    logger.info('Instagram へ配信する', base);
+
+    // P0：外へ 1 本も出さずに断る（設計 §6.9）。
+    if (media.length === 0 || hasLink(post.link)) {
+      log('instagram input rejected', 'input');
+      return { ok: false, reason: INPUT_REASON, retryable: false };
+    }
+    const igUserId = credential['igUserId'];
+    const accessToken = credential['accessToken'];
+    if (!isValidIgUserId(igUserId) || !isValidAccessToken(accessToken)) {
+      log('instagram credential rejected', 'input');
+      return { ok: false, reason: INPUT_REASON, retryable: false };
+    }
+
+    const clock = options.now ?? ((): Date => new Date());
+    const startedAt = clock().getTime();
+    // **入口で合計の期限を 1 つ作り、すべての要求の外側に混ぜる**（設計 §6.8）。
+    const outer = AbortSignal.any([signal, AbortSignal.timeout(PUBLISH_TOTAL_BUDGET_MS)]);
+    const prepare = AbortSignal.any([outer, AbortSignal.timeout(PREPARE_BUDGET_MS)]);
+    const session: Session = {
+      impl: resolveFetch(options.fetch),
+      clock,
+      wait: options.wait ?? defaultWait,
+      igUserId,
+      accessToken,
+      input: signal,
+      outer,
+      prepare,
+      prepareDeadline: startedAt + PREPARE_BUDGET_MS,
+      totalDeadline: startedAt + PUBLISH_TOTAL_BUDGET_MS,
+    };
+
+    const fail = (failure: GraphFailure): PublishResult => {
+      if (signal.aborted) {
+        return { ok: false, reason: ABORTED_REASON, retryable: false };
+      }
+      log('instagram publish failed', failure.phase, failureFields(failure));
+      return {
+        ok: false,
+        reason: reasonFor(failure),
+        retryable: failure.retryable,
+        ...(failure.retryAfterMs === undefined ? {} : { retryAfterMs: failure.retryAfterMs }),
+      };
+    };
+
+    const prepared = await prepareContainer(session, media, post.body);
+    if (!prepared.ok) {
+      return fail(prepared.failure);
+    }
+
+    // **途中で切られる見込みの R4 は始めない**（設計 §6.5）。
+    if (remainingMs(session) < MEDIA_PUBLISH_TIMEOUT_MS) {
+      return fail(budgetFailure('publish'));
+    }
+
+    // **R4 は準備の signal ではなく外側の signal の下で送る**（設計 §6.8）。
+    const published = await publishContainer({
+      impl: session.impl,
+      igUserId,
+      accessToken,
+      creationId: prepared.value,
+      signal: outer,
+    });
+    if (!published.ok) {
+      return fail(published.failure);
+    }
+    logger.info('Instagram へ配信した', base);
+
+    return await afterPublish(session, published.value.mediaId, credential, log);
+  } catch {
+    logger.error('instagram publish unexpected', base);
+    return { ok: false, reason: UNEXPECTED_REASON, retryable: false };
+  }
+}
+
 /**
  * Instagram の publisher を組み立てる。
  *
  * **状態を 1 つも持たない**ので、Key-Value Store を受け取らない（設計 §5.3）。
  */
 export function createInstagramPublisher(
-  _options: InstagramPublisherOptions = {},
+  options: InstagramPublisherOptions = {},
 ): PublisherRegistration {
   return {
     provider: INSTAGRAM_PROVIDER,
@@ -142,5 +590,7 @@ export function createInstagramPublisher(
     credentialFields: CREDENTIAL_FIELDS,
     limits: LIMITS,
     validate: ({ post }) => validateDraft(post),
+    // **例外を投げない。** すべての経路を `try` で包み、`PublishResult` として返す（設計 §6.11）。
+    publish: async (input) => await publishPost(options, input),
   };
 }

@@ -204,6 +204,10 @@ describe('登録（#12〜#15）', () => {
   it('#15 validate がある', () => {
     expect(typeof publisher().validate).toBe('function');
   });
+
+  it('#15 publish がある', () => {
+    expect(typeof publisher().publish).toBe('function');
+  });
 });
 
 /* -------------------------------------------------------------------------- */
