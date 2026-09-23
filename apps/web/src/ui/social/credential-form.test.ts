@@ -1,15 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildClearCredentialRequest,
+  buildCreateAccountRequest,
+  buildSetCredentialRequest,
   clearCredentialBody,
   createCredentialBody,
   credentialInputOf,
   setCredentialBody,
 } from './credential-form';
+import { buildProviderOptions } from './provider-options';
 import type { ProviderCredentialField, ProviderOption } from './social-accounts';
 
 /**
- * 資格情報の入力の形と、画面が送る本文（039-social-credential-fields 設計 §7.1 / §7.2 / §7.7、
- * 受け入れ条件 #1〜#4、#9〜#15）。
+ * 資格情報の入力の形と、画面が送る本文（039-social-credential-fields 設計 §7.1 / §7.2 / §7.7 / §7.7.1、
+ * 受け入れ条件 #1〜#4、#9〜#15、#67〜#72）。
  *
  * **判定と本文の組み立てを純関数で固定する**（設計 §4）。単体テストの環境には DOM が無く、
  * Modal のボタンを押して送信の中身を見られないため。
@@ -264,5 +268,260 @@ describe('clearCredentialBody', () => {
 
   it('#15 none の本文には status のキーが無い', () => {
     expect(Object.keys(clearCredentialBody('none'))).toEqual(['credentials']);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* §10.11 #72 項目が 0 件の fields                                                */
+/* -------------------------------------------------------------------------- */
+
+describe('setCredentialBody の項目が 0 件の fields', () => {
+  it('#72 setCredentialBody(fields, [], {}, "") は ok: false「すべての項目を入力してください。」', () => {
+    // そのまま組むと `credentials: {}`（＝消去）になり、入れ直しが黙って消去に変わる（設計 §7.7）。
+    expect(setCredentialBody('fields', [], {}, '')).toStrictEqual({
+      ok: false,
+      message: ALL_FIELDS_REQUIRED,
+    });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* §10.11 部品が送る本文（providers・対象・入力値 → 本文）                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 設計 §10.11 の `PROVIDERS`：`fields`（`example`、2 項目）・`none`（`x`）・`free`（`bluesky`）。
+ * `mastodon` は選択肢に無い provider（`free` 扱い。設計 §7.1）。
+ *
+ * **入力の形を決めるところ（`providers` から選択肢を引く → `credentialInputOf`）から本文までを固定する**
+ * （設計 §7.7.1）。部品で `none` を `free` 扱いにする・消去の形を `fields` に固定する、という変異を落とす。
+ */
+const PROVIDERS: readonly ProviderOption[] = [
+  { value: 'example', label: 'サンプルSNS', credentialFields: FIELDS, publisherRegistered: true },
+  { value: 'x', label: 'X', credentialFields: [], publisherRegistered: true },
+  { value: 'bluesky', label: 'Bluesky', credentialFields: [], publisherRegistered: false },
+];
+
+/** 入力値が残っている状態（「サービス」を切り替える前の入力の残り。設計 §7.2）。 */
+const STALE_VALUES = { handle: 'stale-handle', appPassword: 'stale-password' } as const;
+
+describe('buildCreateAccountRequest', () => {
+  it("#67 none（x）は { provider, displayName, handle, status: 'connected' } ちょうど", () => {
+    expect(
+      buildCreateAccountRequest(PROVIDERS, {
+        provider: 'x',
+        displayName: 'n',
+        handle: 'h',
+        values: { appPassword: 'stale' },
+        credential: 'stale',
+      }),
+    ).toStrictEqual({ provider: 'x', displayName: 'n', handle: 'h', status: 'connected' });
+  });
+
+  it('#67 none（x）の本文には credential / credentials のキーが無い', () => {
+    const body = buildCreateAccountRequest(PROVIDERS, {
+      provider: 'x',
+      displayName: 'n',
+      handle: 'h',
+      values: STALE_VALUES,
+      credential: 'stale',
+    });
+
+    expect(Object.keys(body).sort()).toEqual(['displayName', 'handle', 'provider', 'status']);
+  });
+
+  it("#68 fields（example）で 2 項目とも入れたら credentials と 'connected' を足したものちょうど", () => {
+    expect(
+      buildCreateAccountRequest(PROVIDERS, {
+        provider: 'example',
+        displayName: 'n',
+        handle: 'h',
+        values: { handle: 'eh', appPassword: 'ep' },
+        credential: 'stale',
+      }),
+    ).toStrictEqual({
+      provider: 'example',
+      displayName: 'n',
+      handle: 'h',
+      credentials: { handle: 'eh', appPassword: 'ep' },
+      status: 'connected',
+    });
+  });
+
+  it("#68 fields（example）で 1 つも入れなければ credentials: {} と 'disconnected'", () => {
+    expect(
+      buildCreateAccountRequest(PROVIDERS, {
+        provider: 'example',
+        displayName: 'n',
+        handle: 'h',
+        values: {},
+        credential: '',
+      }),
+    ).toStrictEqual({
+      provider: 'example',
+      displayName: 'n',
+      handle: 'h',
+      credentials: {},
+      status: 'disconnected',
+    });
+  });
+
+  it("#68 free（bluesky）で入れたら credential と 'connected' を足したものちょうど", () => {
+    expect(
+      buildCreateAccountRequest(PROVIDERS, {
+        provider: 'bluesky',
+        displayName: 'n',
+        handle: 'h',
+        values: STALE_VALUES,
+        credential: 'abc',
+      }),
+    ).toStrictEqual({
+      provider: 'bluesky',
+      displayName: 'n',
+      handle: 'h',
+      credential: 'abc',
+      status: 'connected',
+    });
+  });
+
+  it("#68 free（bluesky）で空なら credential: '' と 'disconnected'", () => {
+    expect(
+      buildCreateAccountRequest(PROVIDERS, {
+        provider: 'bluesky',
+        displayName: 'n',
+        handle: 'h',
+        values: {},
+        credential: '',
+      }),
+    ).toStrictEqual({
+      provider: 'bluesky',
+      displayName: 'n',
+      handle: 'h',
+      credential: '',
+      status: 'disconnected',
+    });
+  });
+
+  it('#68 選択肢に無い provider（mastodon）は free として組む', () => {
+    expect(
+      buildCreateAccountRequest(PROVIDERS, {
+        provider: 'mastodon',
+        displayName: 'n',
+        handle: 'h',
+        values: STALE_VALUES,
+        credential: 'abc',
+      }),
+    ).toStrictEqual({
+      provider: 'mastodon',
+      displayName: 'n',
+      handle: 'h',
+      credential: 'abc',
+      status: 'connected',
+    });
+  });
+
+  it('#68 displayName / handle を加工しない（整えるのはサーバの UseCase。実装プラン T21）', () => {
+    const body = buildCreateAccountRequest(PROVIDERS, {
+      provider: 'x',
+      displayName: '  とりふね  ',
+      handle: ' @torifune ',
+      values: {},
+      credential: '',
+    });
+
+    expect(body.displayName).toBe('  とりふね  ');
+    expect(body.handle).toBe(' @torifune ');
+  });
+});
+
+describe('buildSetCredentialRequest', () => {
+  it('#69 none（x）は入力があっても ok: false', () => {
+    expect(buildSetCredentialRequest(PROVIDERS, { provider: 'x' }, STALE_VALUES, 'stale').ok).toBe(
+      false,
+    );
+  });
+
+  it("#69 fields（example）で 2 項目とも入れたら ok: true、body が { credentials: <2 項目ちょうど>, status: 'connected' }", () => {
+    expect(
+      buildSetCredentialRequest(
+        PROVIDERS,
+        { provider: 'example' },
+        { handle: 'h', appPassword: 'p', stale: 'old' },
+        'stale',
+      ),
+    ).toStrictEqual({
+      ok: true,
+      body: { credentials: { handle: 'h', appPassword: 'p' }, status: 'connected' },
+    });
+  });
+
+  it('#69 fields（example）で 1 項目が空なら ok: false（要求を作らない）', () => {
+    expect(
+      buildSetCredentialRequest(PROVIDERS, { provider: 'example' }, { handle: 'h' }, 'abc'),
+    ).toStrictEqual({ ok: false, message: ALL_FIELDS_REQUIRED });
+  });
+
+  it("#69 選択肢に無い provider（mastodon）で credential: 'abc' → { credential: 'abc', status: 'connected' }", () => {
+    expect(
+      buildSetCredentialRequest(PROVIDERS, { provider: 'mastodon' }, STALE_VALUES, 'abc'),
+    ).toStrictEqual({ ok: true, body: { credential: 'abc', status: 'connected' } });
+  });
+
+  it("#69 free（bluesky）で credential: 'abc' → { credential: 'abc', status: 'connected' }", () => {
+    expect(
+      buildSetCredentialRequest(PROVIDERS, { provider: 'bluesky' }, STALE_VALUES, 'abc'),
+    ).toStrictEqual({ ok: true, body: { credential: 'abc', status: 'connected' } });
+  });
+});
+
+describe('buildClearCredentialRequest', () => {
+  it('#70 none（x）は { credentials: {} } ちょうど', () => {
+    expect(buildClearCredentialRequest(PROVIDERS, { provider: 'x' })).toStrictEqual({
+      credentials: {},
+    });
+  });
+
+  it('#70 none（x）の本文には status のキーが無い', () => {
+    expect(Object.keys(buildClearCredentialRequest(PROVIDERS, { provider: 'x' }))).toEqual([
+      'credentials',
+    ]);
+  });
+
+  it.each(['example', 'bluesky', 'mastodon'])(
+    "#70 %s は { credentials: {}, status: 'disconnected' } ちょうど",
+    (provider) => {
+      expect(buildClearCredentialRequest(PROVIDERS, { provider })).toStrictEqual({
+        credentials: {},
+        status: 'disconnected',
+      });
+    },
+  );
+});
+
+/**
+ * #71。**画面が実際に通る組み立て**（`buildProviderOptions` で作った選択肢）でも #67 と #70 が成り立つ。
+ * 手で書いた `PROVIDERS` だけで見ると、`buildProviderOptions` と組み合わせたときの食い違いを見逃す。
+ */
+describe('buildProviderOptions で作った選択肢', () => {
+  const OPTIONS = buildProviderOptions([
+    { registration: { provider: 'x', label: 'X（手動）', credentialFields: [] } },
+  ]);
+
+  it('#71 credentialFields: [] の publisher（x）で #67 が成り立つ（資格情報のキーが無い本文ちょうど）', () => {
+    expect(
+      buildCreateAccountRequest(OPTIONS, {
+        provider: 'x',
+        displayName: 'n',
+        handle: 'h',
+        values: { appPassword: 'stale' },
+        credential: 'stale',
+      }),
+    ).toStrictEqual({ provider: 'x', displayName: 'n', handle: 'h', status: 'connected' });
+  });
+
+  it('#71 credentialFields: [] の publisher（x）で #70 が成り立つ（{ credentials: {} } ちょうど）', () => {
+    expect(buildClearCredentialRequest(OPTIONS, { provider: 'x' })).toStrictEqual({
+      credentials: {},
+    });
   });
 });

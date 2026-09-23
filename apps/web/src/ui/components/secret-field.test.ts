@@ -4,13 +4,16 @@ import { describe, expect, it } from 'vitest';
 import { SecretField, type SecretFieldProps } from './overlays';
 
 /**
- * `SecretField` の省略できる `description`（039-social-credential-fields 設計 §7.1.2、
- * 受け入れ条件 #47、#48）。
+ * `SecretField` の省略できる `description` と `autocomplete`（039-social-credential-fields 設計
+ * §7.1.2 / §7.1.3、受け入れ条件 #47、#48、#73）。
  *
  * * 渡したときは、ラベルの下・入力の上に説明を出し、`aria-describedby` で入力と結ぶ
- * * **省略したときの HTML は現行と同じ**（既存の呼び出し元の見た目を変えない）。
+ * * **省略したときの HTML は 039 より前の版と `autocomplete` の値の 1 か所を除いて同じ**
+ *   （既存の呼び出し元の見た目を変えない）。
  *   `description: ''` も「無い」として扱う（空の要素や空の参照を残さない）
  * * 文字列はテキストとして描く（HTML として解釈しない）
+ * * password の入力は説明の有無の両方で `autocomplete="new-password"`
+ *   （ログインのパスワードの自動入力と、入れたトークンのブラウザへの保存を避ける）
  *
  * `useId` の値は決め打ちしない（実装プラン §2「aria-describedby の検査」）。
  * HTML の文字列から「説明の文字列を持つ要素の `id`」を取り出し、入力の
@@ -22,6 +25,26 @@ import { SecretField, type SecretFieldProps } from './overlays';
 
 const LABEL = 'アクセストークン';
 const DESCRIPTION = '発行した値を入れます';
+const PLACEHOLDER = '保存後は再表示されません';
+
+/**
+ * 039 より前の版（コミット 20498ff の親）の `SecretField` を `label: LABEL` / `configured: false` /
+ * `placeholder: PLACEHOLDER` で `renderToStaticMarkup` した HTML（設計 #47。2026-09-23 に書き換え）。
+ * **手で書き換えない。** 読みやすさのため区切って連結しているだけで、中身は描いた文字列そのもの。
+ */
+const PRE_039_HTML = [
+  '<div style="margin-bottom:var(--tf-space-4)">',
+  '<label style="display:block;margin-bottom:var(--tf-space-1)">',
+  'アクセストークン',
+  '<input type="password" autoComplete="off" placeholder="保存後は再表示されません" ',
+  'style="width:100%;height:var(--tf-size-input);padding:var(--tf-space-2) var(--tf-space-4);',
+  'border:1px solid var(--tf-color-border);border-radius:var(--tf-radius-lg);font:inherit;',
+  'margin-top:var(--tf-space-1)"/>',
+  '</label>',
+  '</div>',
+].join('');
+const PRE_039_AUTOCOMPLETE = 'autoComplete="off"';
+const NEW_AUTOCOMPLETE = 'autoComplete="new-password"';
 
 const BASE: SecretFieldProps = {
   label: LABEL,
@@ -77,11 +100,41 @@ describe('SecretField の description を渡さないとき', () => {
     expect(render({ description: '' })).toBe(render());
   });
 
-  it('#47 ラベルと type="password" の入力は現行どおり出る', () => {
-    const html = render({ placeholder: '保存後は再表示されません' });
+  it('#47 039 より前の版の HTML と autocomplete の値の 1 か所を除いて完全に一致する', () => {
+    // 期待値は 039 より前の版（コミット 20498ff の親の `ui/components/overlays.tsx`）の `SecretField` を
+    // 同じ props で一度だけ描いて貼ったもの（実装プラン §8 の 29。実行時に git を呼ばない）。
+    // `autocomplete` だけは設計 §7.1.3 で `off` → `new-password` に変えた。
+    expect(
+      PRE_039_HTML.split(PRE_039_AUTOCOMPLETE).length - 1,
+      '貼った期待値に autocomplete="off" がちょうど 1 か所ない（置き換えが空振りする）',
+    ).toBe(1);
 
-    expect(html).toContain(LABEL);
-    expect(passwordInput(html)).toContain('placeholder="保存後は再表示されません"');
+    expect(render({ placeholder: PLACEHOLDER })).toBe(
+      PRE_039_HTML.replace(PRE_039_AUTOCOMPLETE, NEW_AUTOCOMPLETE),
+    );
+  });
+});
+
+describe('SecretField の autocomplete（設計 §7.1.3）', () => {
+  /** 属性名は大文字小文字を区別しない（HTML の属性名。React は `autoComplete` のまま書き出す）。 */
+  function autocompleteOf(input: string): string | null {
+    return /\sautocomplete="([^"]*)"/i.exec(input)?.[1] ?? null;
+  }
+
+  it('#73 description を渡さないとき、type="password" の入力が autocomplete="new-password" を持つ', () => {
+    expect(autocompleteOf(passwordInput(render()))).toBe('new-password');
+  });
+
+  it('#73 description を渡したとき、type="password" の入力が autocomplete="new-password" を持つ', () => {
+    expect(autocompleteOf(passwordInput(render({ description: DESCRIPTION })))).toBe(
+      'new-password',
+    );
+  });
+
+  it('#73 description の有無のどちらでも autocomplete="off" を持たない', () => {
+    for (const html of [render(), render({ description: DESCRIPTION })]) {
+      expect(html).not.toMatch(/\sautocomplete="off"/i);
+    }
   });
 });
 

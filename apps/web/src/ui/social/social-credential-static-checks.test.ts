@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 /**
  * 資格情報の入れ直しの文言を部品に直書きしない（039-social-credential-fields 設計 §7.8、
- * 受け入れ条件 #46）。
+ * 受け入れ条件 #46）。部品が送る本文を `build…Request` だけで組む（設計 §7.7.1、#74。ファイルの後半）。
  *
  * 文言は `labels.ts` に置く（`labels.ts` の冒頭の方針。`02_画面デザイン方針.md` §5）。
  * `social-accounts.tsx` のソースに、下の文言が**文字列リテラルまたは JSX のテキストとして**現れないこと、
@@ -139,5 +139,95 @@ describe('#46 検査の述語の判別力', () => {
   it('#46 短い語は長い文言の部分文字列に反応しない', () => {
     expect(isHardCodedShort('<Button>{CLEAR}</Button> // 資格情報を消す', '消す')).toBe(false);
     expect(isHardCodedShort("const label = '資格情報を消す';", '消す')).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* #74 部品が送る本文は 3 つの build…Request だけで組む（設計 §7.7.1）            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 部品（`social-accounts.tsx`）の `submitCreate` / `submitEdit` / `confirmClear` は、
+ * `apiRequest` の `body` に `build…Request` の戻り値だけを渡す。入力の形の判断を部品に置かない
+ * （部品で `none` を `free` 扱いにする・消去の形を `fields` に固定する、という変異を単体で落とせるようにする）。
+ *
+ * 呼び出しは「名前の直後（空白を挟んでよい）に `(`」で数える。import の並びや型の参照は数えない。
+ * コメントの中は数えない。
+ */
+
+/** 部品の中で直接呼んではならない（本文の形を部品で決めることになる）。 */
+const LOW_LEVEL_BUILDERS = [
+  'createCredentialBody',
+  'setCredentialBody',
+  'clearCredentialBody',
+] as const;
+
+/** 部品が本文を組むのに使う（それぞれ 1 回以上呼ぶ）。 */
+const REQUEST_BUILDERS = [
+  'buildCreateAccountRequest',
+  'buildSetCredentialRequest',
+  'buildClearCredentialRequest',
+] as const;
+
+/** `name(` の呼び出しの回数（コメントを外して数える。`fooname(` のような別名の一部には当てない）。 */
+function callCount(text: string, name: string): number {
+  const pattern = new RegExp(`(?<![\\w$])${escapeRegExp(name)}\\s*\\(`, 'g');
+  return [...stripComments(text).matchAll(pattern)].length;
+}
+
+describe('#74 social-accounts.tsx は本文を build…Request で組む', () => {
+  const component = source('social-accounts.tsx');
+
+  it.each(LOW_LEVEL_BUILDERS)('#74 %s( を呼ばない', (name) => {
+    expect(callCount(component, name)).toBe(0);
+  });
+
+  it.each(REQUEST_BUILDERS)('#74 %s( を 1 つ以上呼ぶ', (name) => {
+    expect(callCount(component, name)).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('#74 検査の述語の判別力', () => {
+  it('#74 本文の関数を直接呼ぶ写しを見分ける', () => {
+    const text = [
+      "const body = createCredentialBody(credentialInputOf(optionOf(provider)), fields, values, '');",
+      'const result = setCredentialBody (input, fields, values, credential);',
+      "const clear = clearCredentialBody('fields');",
+    ].join('\n');
+
+    for (const name of LOW_LEVEL_BUILDERS) {
+      expect(callCount(text, name), name).toBe(1);
+    }
+  });
+
+  it('#74 build…Request の呼び出しを数える', () => {
+    const text = [
+      'body: buildCreateAccountRequest(props.providers, { provider, displayName, handle, values, credential }),',
+      'const result = buildSetCredentialRequest(props.providers, account, values, credential);',
+      'body: buildClearCredentialRequest(props.providers, account),',
+    ].join('\n');
+
+    for (const name of REQUEST_BUILDERS) {
+      expect(callCount(text, name), name).toBe(1);
+    }
+  });
+
+  it('#74 import の並び・型の参照・コメントの中は呼び出しに数えない', () => {
+    const text = [
+      'import { createCredentialBody, setCredentialBody } from "./credential-form";',
+      'type Body = ReturnType<typeof clearCredentialBody>;',
+      '// createCredentialBody(…) は使わない',
+      '/* setCredentialBody(…) */',
+    ].join('\n');
+
+    for (const name of LOW_LEVEL_BUILDERS) {
+      expect(callCount(text, name), name).toBe(0);
+    }
+  });
+
+  it('#74 build…Request の名前の一部（setCredentialBody を含まない）に反応しない', () => {
+    // `buildSetCredentialRequest(` は `setCredentialBody(` を含まない。別名の一部にも当てない。
+    expect(callCount('buildSetCredentialRequest(a, b, c, d)', 'setCredentialBody')).toBe(0);
+    expect(callCount('mySetCredentialBody(a)', 'setCredentialBody')).toBe(0);
   });
 });
