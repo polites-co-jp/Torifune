@@ -747,6 +747,25 @@ describe('#85 023 のマイグレーションと Domain の列挙', () => {
     expect(existsSync(join(MIGRATIONS_DIR, '023_social_publish_skip.sql'))).toBe(true);
   });
 
+  /**
+   * #116 の (E)（2026-09-23 に足した。3 回目の検証、裁定 #13-b の低-C）。
+   *
+   * `023` も適用済みになったので、`022` と同じ形で固定する。
+   * 走査の索引は `024_social_posts_due_index.sql` で足す（設計 §5.1.2）。
+   */
+  const SHA256_OF_023 = 'db24dcf1c2510d1dffd158dda04384faa33bcdc3e9920299772aba0af3485c29';
+
+  it('#116 023_social_publish_skip.sql のファイル内容が変わっていない', () => {
+    const digest = createHash('sha256')
+      .update(migrationSource('023_social_publish_skip.sql'), 'utf8')
+      .digest('hex');
+
+    expect(
+      digest,
+      '023 は適用済み。足りない索引は 024_social_posts_due_index.sql で足す（設計 §5.1.2）',
+    ).toBe(SHA256_OF_023);
+  });
+
   it('#85 SKIP_REASONS の値の集合が 023 の CHECK に書かれた値と一致する', async () => {
     // **静的 import にしない。** 未実装の段階でこのファイル全体が読めなくなると、
     // 既存の静的検査（#59 / #81〜#84）まで一緒に落ちて、何が壊れたのか読めなくなる。

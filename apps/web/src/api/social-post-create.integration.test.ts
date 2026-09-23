@@ -865,3 +865,85 @@ describe('#33 認証と認可', () => {
     expect(response.status).toBe(401);
   });
 });
+
+/**
+ * #114。**登録の 422 本文も秘匿を通る**（設計 §6.1.2。3 回目の検証、裁定 #13-b の低-A）。
+ *
+ * `checkPublisherLimits` が返す `message`（`label` を埋め込む）と `validate()` の
+ * `problem.message` / `problem.field` は**すべて Plugin が書いた文字列**で、
+ * `ValidationError` の `detail` / `details` から**そのまま応答本文へ出る**。
+ * `api/route.ts` は `ValidationError` を写すだけで秘匿を掛けない。
+ *
+ * 配信直前の再検査（#111）は同じ文字列を `redactSecrets` に通してから `failure_reason` へ書いており、
+ * 設計 §6.5.2.2 は「**経路によって差を作らない**」と宣言している。
+ * **DB とログに書くときだけ伏せて、要求元へ返すときは伏せない、では秘匿になっていない。**
+ *
+ * **秘匿の形は `redactSecrets` が実際に落とせるものに合わせる**（#111 と同じ流儀。
+ * `scheme://user:password@host` の credential 部だけを落とす。DB 名は `torifune` にしない）。
+ */
+describe('#114 登録の 422 本文も秘匿を通る', () => {
+  /** Plugin が書いた自由文に紛れ込んだ資格情報。 */
+  const LIVE_TOKEN = 'sk-livetoken-xyz';
+  const LEAKY_LABEL = `postgresql://plugin:${LIVE_TOKEN}@db.internal:5432/appdb`;
+  const REDACTED = 'postgresql://***@db.internal:5432/appdb';
+
+  /** 応答の全体（`message` も `details` も含む）を 1 本の文字列で見る。 */
+  function bodyTextOf(result: JsonResult): string {
+    return JSON.stringify(result.body);
+  }
+
+  async function limitsResult(): Promise<JsonResult> {
+    // **登録簿を空にしてから登録する**（#111 と同じ理由。同じ `it` の中で 2 回呼ぶと
+    // 先に登録したほうが勝ち、後から渡した宣言が効かない）。
+    resetPublisherRegistry();
+    registerPublisher(
+      'test-plugin',
+      publisherFor({ label: LEAKY_LABEL, limits: { bodyMaxLength: 10 } }),
+    );
+    return callCreate(minimalPost({ body: 'あ'.repeat(50) }));
+  }
+
+  async function validateResult(): Promise<JsonResult> {
+    resetPublisherRegistry();
+    registerPublisher(
+      'test-plugin',
+      publisherFor({
+        label: LEAKY_LABEL,
+        validate: () => [{ field: 'body', message: `接続に失敗しました: ${LEAKY_LABEL}` }],
+      }),
+    );
+    return callCreate(minimalPost());
+  }
+
+  it('#114 limits 経路の 422 に生の値が出ない', async () => {
+    const result = await limitsResult();
+
+    expect(result.status).toBe(422);
+    expect(bodyTextOf(result), 'Plugin の label がそのまま応答に出ている').not.toContain(
+      LIVE_TOKEN,
+    );
+  });
+
+  it('#114 limits 経路の 422 が伏せ字になっている', async () => {
+    expect(bodyTextOf(await limitsResult())).toContain(REDACTED);
+  });
+
+  it('#114 validate() 経路の 422 にも生の値が出ない', async () => {
+    const result = await validateResult();
+
+    expect(result.status).toBe(422);
+    expect(bodyTextOf(result)).not.toContain(LIVE_TOKEN);
+  });
+
+  /** #114 の要。**経路によって差が無い**（#111 の 422 版）。 */
+  it('#114 limits 経路と validate() 経路で同じ形に伏せられる', async () => {
+    expect(bodyTextOf(await limitsResult())).toContain(REDACTED);
+    expect(bodyTextOf(await validateResult())).toContain(REDACTED);
+  });
+
+  it('#114 伏せてもどのフィールドが問題かは変わらない', async () => {
+    // 秘匿を足したことで `details` のキーが壊れていない。
+    expect(Object.keys(detailsOf(await limitsResult()))).toContain('body');
+    expect(Object.keys(detailsOf(await validateResult()))).toContain('body');
+  });
+});

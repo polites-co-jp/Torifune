@@ -553,6 +553,14 @@ export const socialRepository: SocialRepository = {
     limit: number,
     after?: DueCursor | null,
   ): Promise<readonly SocialPost[]> {
+    // **形の合わないカーソルは安全側（0 行）へ倒す**（設計 §6.5.3、3 回目の検証の軽微）。
+    // 述語だけを黙って落とすと**先頭から読み直す**ことになり、
+    // 同じ行をもう一度着手する向きへ倒れる。このファイルの `deferSkipped`（0 行）/
+    // `claimForPublish`（null）/ `recordOutcome`（0 行）と揃える。
+    if (after !== undefined && after !== null && !UUID_PATTERN.test(after.id)) {
+      return [];
+    }
+
     let query = connection.db
       .selectFrom('social_posts')
       .select(POST_COLUMNS)
@@ -569,7 +577,7 @@ export const socialRepository: SocialRepository = {
 
     // **2 ページ目以降だけ。** 取り出し条件そのものは `022` のときと変わらない
     // （足したのはカーソルの比較だけ。設計 §6.5.3）。
-    if (after !== undefined && after !== null && UUID_PATTERN.test(after.id)) {
+    if (after !== undefined && after !== null) {
       query = query.where(
         sql<SqlBool>`(scheduled_at, id) > (${after.scheduledAt}::timestamptz, ${after.id}::uuid)`,
       );

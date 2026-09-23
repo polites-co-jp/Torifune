@@ -603,8 +603,15 @@ describe('#92 着手できたら skip_count / skip_reason が戻る', () => {
  * > **「予約中の投稿の日時を直す」という最も普通の操作**が最大 23 時間配信されない
  * > 欠陥をテストが通してしまった。
  * >
- * > **保証は弱めていない**（純増）：(c) が元の条件そのもので、(a)(b)(d)(e) を足した。
+ * > (a)(b)(d)(e) を足し、(c) を残した。**ただし元の条件から 1 件を取り下げている**：
+ * > 元の (c) は**過去日時**で予約し直して `skip_count` と `next_attempt_at` が戻ることを
+ * > 要求していたが、裁定 #12-a がその保証を取り下げた（取り下げないと 3 回上限の回避路が開く）。
+ * > **代償は設計 §11 #21 に記録した。**
  * > 「未来」を条件に足したのは、同じ 1 か所が 3 回上限の回避路でもあるため（R-2）。
+ *
+ * > **2026-09-23 に (f) を足した（3 回目の検証、裁定 #13-a）。** リセットの条件に
+ * > **差分**（`next.scheduledAt > current.scheduledAt`）が入り、
+ * > **「先送りする」更新だけがリセットを得る**形になった。
  */
 describe('#93 未来へ置き直すと数え直しが消える', () => {
   const TEN_MINUTES_MS = 10 * 60_000;
@@ -856,6 +863,99 @@ describe('#93 未来へ置き直すと数え直しが消える', () => {
       await update(postId);
 
       expect((await skipRow(postId)).attempt_count).toBe(before);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // (f) 前へ引き戻す更新では戻らない（差分で判定する。裁定 #13-a）
+  // -------------------------------------------------------------------------
+
+  /**
+   * #93 (f)。**「未来を挟んでから戻す」でもリセットを稼げない**（設計 §6.2 の差分）。
+   *
+   * (d) は「過去日時のまま繰り返す」形しか見ていないので、
+   * **未来を一度挟んでから引き戻す**経路を捕まえられなかった。
+   * リセットの条件が「更新後が未来」だけだと、行き先が未来でさえあれば
+   * **どれだけ手前へ引き戻してもリセットが付く**。
+   *
+   * **この describe は差分（`next.scheduledAt > current.scheduledAt`）を外すと落ちる。**
+   */
+  describe('#93 (f) 前へ引き戻す更新では戻らない', () => {
+    const TWO_HOURS_MS = 2 * HOUR_MS;
+
+    function farFuture(): Date {
+      return new Date(Date.now() + TWO_HOURS_MS);
+    }
+
+    /** 飛ばされた投稿を `draft` のまま未来（+2 時間）へ挟む。**`draft` なのでリセットされない。** */
+    async function parkedInFuture(): Promise<string> {
+      const postId = await skippedOnce();
+      await updateSocialPost(admin, { id: postId, status: 'draft', scheduledAt: farFuture() });
+      // 挟んだ時点ではまだ飛ばした履歴が残っている（ここが崩れると (f) は何も見ていない）。
+      await expectKept(postId);
+      return postId;
+    }
+
+    it('#93 (f) 未来へ挟んでから手前の未来へ戻してもリセットされない', async () => {
+      const postId = await parkedInFuture();
+
+      // +2 時間 → +10 分。行き先は未来だが、**前回の予約日時より手前**なので先送りではない。
+      await updateSocialPost(admin, { id: postId, status: 'scheduled', scheduledAt: future() });
+
+      await expectKept(postId);
+    });
+
+    it('#93 (f) 日時を送らずに予約へ戻してもリセットされない（同値）', async () => {
+      const postId = await parkedInFuture();
+
+      // `next.scheduledAt === current.scheduledAt`。未来ではあるが動いていない。
+      await updateSocialPost(admin, { id: postId, status: 'scheduled' });
+
+      await expectKept(postId);
+    });
+
+    it('#93 (f) さらに後ろ（先送り）へ動かせばリセットされる（正当な操作は通る）', async () => {
+      const postId = await parkedInFuture();
+
+      await updateSocialPost(admin, {
+        id: postId,
+        status: 'scheduled',
+        scheduledAt: new Date(Date.now() + TWO_HOURS_MS + TEN_MINUTES_MS),
+      });
+
+      await expectCleared(postId);
+    });
+
+    /** #93 (f) の要。**3 回上限を回避できない**（(d) と同じ形を、未来を挟む経路で見る）。 */
+    it('#93 (f) skip_count = 2 の投稿で 5 回繰り返しても skip_count は 2 のまま', async () => {
+      const postId = await skippedOnce();
+      await rewindNextAttempt(postId);
+      await run();
+      expect((await skipRow(postId)).skip_count).toBe(2);
+
+      for (let i = 0; i < 5; i += 1) {
+        await updateSocialPost(admin, { id: postId, status: 'draft', scheduledAt: farFuture() });
+        await updateSocialPost(admin, { id: postId, status: 'scheduled', scheduledAt: future() });
+      }
+
+      expect((await skipRow(postId)).skip_count).toBe(2);
+    });
+
+    it('#93 (f) 繰り返した後も次に飛ばされた時点で failed になる', async () => {
+      const postId = await skippedOnce();
+      await rewindNextAttempt(postId);
+      await run();
+
+      for (let i = 0; i < 5; i += 1) {
+        await updateSocialPost(admin, { id: postId, status: 'draft', scheduledAt: farFuture() });
+        await updateSocialPost(admin, { id: postId, status: 'scheduled', scheduledAt: future() });
+      }
+      await rewindScheduledAt(postId);
+      await rewindNextAttempt(postId);
+      const summary = await run();
+
+      expect(summary).toMatchObject({ skipFailed: 1, skipped: 0 });
+      expect((await skipRow(postId)).status).toBe('failed');
     });
   });
 });

@@ -1,4 +1,5 @@
 import type { PublisherRegistration } from '@torifune/plugin-api';
+import { sql } from 'kysely';
 import { uuidv7 } from 'uuidv7';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuthorizationContext } from '@/application/authorization/authorize';
@@ -11,6 +12,7 @@ import { withConnection } from '@/application/transaction';
 import type { UserIdentity } from '@/authentication/identity';
 import { resetLogger } from '@/infrastructure/logging';
 import { roleRepository } from '@/infrastructure/role-repository';
+import { socialRepository } from '@/infrastructure/social-repository';
 import { useScratchDatabase, type ScratchDatabase } from '@/test-support/database';
 
 /**
@@ -522,4 +524,134 @@ describe('#110 summary の不変条件', () => {
     expectInvariants(summary, scan, batch);
     expect(summary.attempted).toBe(batch);
   }, 120_000);
+});
+
+// ---------------------------------------------------------------------------
+// #115 カーソルが進まない周期は打ち切る（3 回目の検証、裁定 #13-b の低-B）
+// ---------------------------------------------------------------------------
+
+/**
+ * #115。**カーソルが進まないなら、その周期の走査を打ち切る**（設計 §6.5.3）。
+ *
+ * `scheduled_at` は `timestamptz`（マイクロ秒）だが、カーソルに載る値は
+ * **ミリ秒までしか持てない**。ミリ秒未満の端数を持つ行があると
+ * `(scheduled_at, id) > (切り詰めた値, id)` が**その行自身に対しても真**になり、
+ * **同じページが返り続ける**。
+ *
+ * 打ち切らないと同じ投稿が `ready` へ何度も積まれ、`retry` で書き戻された行
+ * （`publish_started_at` が NULL に戻る）は**同じ実行の中で二度以上 claim される**。
+ * **SNS の投稿は取り消せない**（要件 §4 裁定 #1）。
+ */
+describe('#115 カーソルが進まない周期は打ち切る', () => {
+  /** 送るたびに「あとでやり直す」を返す publisher（着手印が外れて行が候補へ戻る）。 */
+  function useRetryingPublisher(): ReturnType<typeof vi.fn<PublishFn>> {
+    const mock = vi.fn<PublishFn>(async () => ({
+      ok: false,
+      reason: '一時的な失敗',
+      retryable: true,
+    }));
+    registerPublisher(PLUGIN_ID, {
+      provider: PROVIDER,
+      label: 'テストSNS',
+      credentialFields: [...CREDENTIAL_FIELDS],
+      publish: mock,
+    });
+    return mock;
+  }
+
+  /**
+   * `scheduled_at` に**ミリ秒未満の端数**を持たせる。
+   *
+   * `date_trunc` でミリ秒までそろえてから 400 マイクロ秒を足すので、
+   * 端数は**必ず 400 マイクロ秒**になる（`now()` の端数に左右されない）。
+   * 400 は、切り捨てでも四捨五入でもミリ秒側が動かない値。
+   */
+  async function addSubMillisecond(postId: string): Promise<void> {
+    await withConnection(async (connection) => {
+      await sql`
+        UPDATE social_posts
+           SET scheduled_at = date_trunc('milliseconds', now() - interval '1 second')
+                              + interval '400 microseconds'
+         WHERE id = ${postId}
+      `.execute(connection.db);
+    });
+  }
+
+  it('#115 端数を持つ行でも publish() は 1 回しか呼ばれない', async () => {
+    const publish = useRetryingPublisher();
+    const postId = await makePost(await accountFor(), 1);
+    await addSubMillisecond(postId);
+
+    await run();
+
+    // 打ち切らないと、同じ行が枠ぶん積まれて `retry` のたびに claim し直される。
+    expect(publish, '同じ投稿が同じ実行の中で二度以上送られている').toHaveBeenCalledTimes(1);
+  }, 60_000);
+
+  it('#115 端数を持つ行の summary は due 1 / attempted 1 / retried 1', async () => {
+    useRetryingPublisher();
+    const postId = await makePost(await accountFor(), 1);
+    await addSubMillisecond(postId);
+
+    expect(await run()).toMatchObject({ due: 1, attempted: 1, retried: 1 });
+  }, 60_000);
+
+  /** #115 の対照。**端数が無ければ打ち切りは働かない**（#109 の読み進めが回帰しない）。 */
+  it('#115 端数の無い 2 件は両方とも送られる', async () => {
+    const publish = useRetryingPublisher();
+    const accountId = await accountFor();
+    await makePost(accountId, 2);
+    await makePost(accountId, 1);
+
+    const summary = await run();
+
+    expect(summary).toMatchObject({ due: 2, attempted: 2 });
+    expect(publish).toHaveBeenCalledTimes(2);
+  }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// #117 壊れたカーソルは安全側に倒れる（3 回目の検証、裁定 #13-b の軽微）
+// ---------------------------------------------------------------------------
+
+/**
+ * #117。**`listDue` の壊れたカーソルは 0 行**（設計 §6.5.3）。
+ *
+ * 同じファイルの `deferSkipped`（0 行）/ `claimForPublish`（null）/ `recordOutcome`（0 行）は
+ * 形の合わない ID を**安全側**に倒すのに、`listDue` だけが**述語を黙って落として
+ * 先頭から読み直す側**に倒れていた。読み直しは「同じ行をもう一度着手する」ことに繋がる向きである。
+ */
+describe('#117 listDue の壊れたカーソル', () => {
+  async function listDue(after?: { scheduledAt: Date; id: string }) {
+    return withConnection(async (connection) =>
+      socialRepository.listDue(connection, 20, after ?? null),
+    );
+  }
+
+  it('#117 id が UUID の形でないカーソルは 0 行を返す', async () => {
+    await makePost(await accountFor(), 1);
+
+    const rows = await listDue({ scheduledAt: new Date(Date.now() - 3_600_000), id: 'not-a-uuid' });
+
+    expect(rows, '述語を落として先頭から読み直している').toEqual([]);
+  });
+
+  it('#117 カーソルを渡さなければ従来どおり取り出せる', async () => {
+    await makePost(await accountFor(), 1);
+
+    expect(await listDue()).toHaveLength(1);
+  });
+
+  it('#117 正しい形のカーソルは従来どおり効く', async () => {
+    const accountId = await accountFor();
+    await makePost(accountId, 2);
+    await makePost(accountId, 1);
+    const [first] = await listDue();
+    if (first === undefined) throw new Error('取り出せていない');
+
+    const rest = await listDue({ scheduledAt: first.scheduledAt ?? new Date(0), id: first.id });
+
+    expect(rest).toHaveLength(1);
+    expect(rest[0]?.id).not.toBe(first.id);
+  });
 });

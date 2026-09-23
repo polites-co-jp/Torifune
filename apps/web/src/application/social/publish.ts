@@ -797,6 +797,15 @@ export async function publishDuePosts(
   // 飛ばした行の判定に外部 I/O の時間が混ざらない。
   const ready: ReadyRow[] = [];
   let cursor: DueCursor | null = null;
+  /**
+   * カーソルが進まないので走査を打ち切った（設計 §6.5.3、3 回目の検証の低-B）。
+   *
+   * `scheduled_at` はマイクロ秒まで持てるのに、カーソルへ載せる値はミリ秒までしか持てない。
+   * ミリ秒未満の端数を持つ行があると**同じページが返り続ける**。打ち切らないと
+   * 同じ投稿が `ready` に何度も積まれ、`retry` で着手印が外れた行を
+   * **同じ実行の中で二度以上 claim する**（SNS の投稿は取り消せない）。
+   */
+  let stalled = false;
   while (ready.length < PUBLISH_BATCH_SIZE && counters.due < scanLimit) {
     const page = await socialRepository.listDue(
       connection,
@@ -809,10 +818,20 @@ export async function publishDuePosts(
     }
 
     for (const post of page) {
-      counters.due += 1;
       // **`OFFSET` を使わない**（設計 §6.5.3）。飛ばした行・着手した行は条件から外れるので、
       // `OFFSET` だと外れた数だけ後ろの行を読み飛ばす。
-      cursor = { scheduledAt: post.scheduledAt ?? new Date(0), id: post.id };
+      const next: DueCursor = { scheduledAt: post.scheduledAt ?? new Date(0), id: post.id };
+      // **カーソルが前回と同値なら打ち切る**（設計 §6.5.3）。進んでいる限り何も変えない。
+      if (
+        cursor !== null &&
+        cursor.id === next.id &&
+        cursor.scheduledAt.getTime() === next.scheduledAt.getTime()
+      ) {
+        stalled = true;
+        break;
+      }
+      cursor = next;
+      counters.due += 1;
 
       const account = await accountOf(post.socialAccountId);
       if (account === null) {
@@ -852,6 +871,14 @@ export async function publishDuePosts(
       if (ready.length >= PUBLISH_BATCH_SIZE) {
         break;
       }
+    }
+
+    if (stalled) {
+      log.warn('social publish scan cursor did not advance', {
+        scheduledAt: cursor?.scheduledAt.toISOString() ?? null,
+        postId: cursor?.id ?? null,
+      });
+      break;
     }
   }
 

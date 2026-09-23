@@ -578,21 +578,33 @@ interface PreflightOptions {
 
 /**
  * 飛ばした履歴（`skip_count` / `skip_reason` / `next_attempt_at`）を消す更新か
- * （設計 §5.1.1 / §6.2。裁定 #12-a）。
+ * （設計 §5.1.1 / §6.2。裁定 #12-a / #13-a）。
  *
- * **条件は 1 つだけ：更新後が `scheduled` で、予約日時が現在時刻より未来。**
+ * **条件は「先送りである」の 1 つだけ**：更新後が `scheduled` で、予約日時が
+ * **現在時刻より未来**、かつ**更新前の予約日時より後ろ**。
  * `current.status` は見ないので、`draft` → `scheduled`（取りやめ → 予約し直し）も、
  * `scheduled` のまま日時だけ直す更新も、同じ判定で戻る。
+ *
+ * **差分で判定する**（裁定 #13-a）。更新後の状態だけを見ていると、
+ * **未来を一度挟むだけで「過去日時では戻さない」を迂回できた**
+ * （未来へ置いてリセットを得てから、過去へ戻す）。
+ * 前へ引き戻す更新は、行き先が未来でもリセットしない。
+ * `current.scheduledAt` が NULL（予約日時の無い行）なら、未来を指定した時点で先送りとして扱う。
  *
  * **`attempt_count` は戻さない。** あれは `publish()` を呼んだ回数で、
  * 再試行の 5 回という上限は別の話である（設計 §6.5.6）。
  */
-function resetsSkipHistory(next: Pick<PostSubject, 'status' | 'scheduledAt'>): boolean {
-  return (
-    next.status === 'scheduled' &&
-    next.scheduledAt !== null &&
-    next.scheduledAt.getTime() > Date.now()
-  );
+function resetsSkipHistory(
+  current: Pick<PostSubject, 'scheduledAt'>,
+  next: Pick<PostSubject, 'status' | 'scheduledAt'>,
+): boolean {
+  if (next.status !== 'scheduled' || next.scheduledAt === null) {
+    return false;
+  }
+  if (next.scheduledAt.getTime() <= Date.now()) {
+    return false;
+  }
+  return current.scheduledAt === null || next.scheduledAt.getTime() > current.scheduledAt.getTime();
 }
 
 /** 作成では従来どおり全部掛ける（設計 §6.1.2）。 */
@@ -661,7 +673,11 @@ async function assertPostIsDeliverable(
   );
   const firstLimit = limitProblems[0];
   if (firstLimit !== undefined) {
-    throw new ValidationError('SocialPost', firstLimit.field, firstLimit.message);
+    // **Plugin 由来の自由文は 422 の本文へそのまま出る**（設計 §6.1.2、3 回目の検証の低-A）。
+    // `message` には `checkPublisherLimits` が `registration.label` を埋め込む。
+    // `api/route.ts` は `ValidationError` を写すだけで秘匿を掛けないので、ここで通す。
+    // 配信直前の再検査（`publish.ts`）と**同じ関数**を通す（経路によって差を作らない）。
+    throw new ValidationError('SocialPost', firstLimit.field, redactSecrets(firstLimit.message));
   }
 
   // m: publisher 自身の検査。複数のフィールドを一度に返せる。
@@ -703,17 +719,22 @@ async function assertPostIsDeliverable(
     return;
   }
 
+  // **Plugin 由来の自由文は 422 の本文へそのまま出る**（設計 §6.1.2、3 回目の検証の低-A）。
+  // `message` も `field` も Plugin が書いた文字列なので、理由文を組み立てる前に伏せる。
+  // 配信直前の再検査（`publish.ts`）と**同じ関数**を通す（経路によって差を作らない）。
   const details: Record<string, string[]> = {};
   for (const problem of problems) {
     // 見慣れない形のキーをそのまま応答へ出さない。丸め先は providerOptions。
-    const key = VALIDATE_FIELD_PATTERN.test(problem.field) ? problem.field : 'providerOptions';
-    (details[key] ??= []).push(problem.message);
+    const key = VALIDATE_FIELD_PATTERN.test(problem.field)
+      ? redactSecrets(problem.field)
+      : 'providerOptions';
+    (details[key] ??= []).push(redactSecrets(problem.message));
   }
   const first = problems[0];
   throw new ValidationError(
     'SocialPost',
     Object.keys(details)[0] ?? 'providerOptions',
-    first?.message ?? '配信 Plugin の検査に通りませんでした。',
+    first === undefined ? '配信 Plugin の検査に通りませんでした。' : redactSecrets(first.message),
     details,
   );
 }
@@ -1030,7 +1051,13 @@ export const updateSocialPost = defineUseCase<UpdatePostInput, SocialPost>({
         //
         // **過去日時では戻さない**（R-2）。戻すと、過去日時のまま `draft` → `scheduled` を
         // 繰り返して飛ばした回数を 0 に保ち、期限切れの行を列の先頭に置き続けられる。
-        ...(resetsSkipHistory(next) ? { skipCount: 0, skipReason: null, nextAttemptAt: null } : {}),
+        //
+        // **判定は差分で行う**（裁定 #13-a）。更新後の状態だけを見ていると、
+        // **未来を一度挟むだけ**で上の 2 行が迂回できた（未来へ置いてリセットを得てから過去へ戻す）。
+        // 「予約を先送りする」更新だけがリセットを得る。
+        ...(resetsSkipHistory(current, next)
+          ? { skipCount: 0, skipReason: null, nextAttemptAt: null }
+          : {}),
       }),
     );
 

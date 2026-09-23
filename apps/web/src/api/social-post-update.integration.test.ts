@@ -534,3 +534,80 @@ describe('#112 壊れた validate() でも取りやめができる', () => {
     expect(response.status).toBe(401);
   });
 });
+
+/**
+ * #114（更新側）。**更新の 422 本文も秘匿を通る**（設計 §6.2 / §6.1.2。
+ * 3 回目の検証、裁定 #13-b の低-A）。
+ *
+ * 更新は `assertPostIsDeliverable` を**登録と同じ経路**で通る（設計 §6.2 の区分表）。
+ * **予約になる更新**（`next.status === 'scheduled'`）にだけ `limits` / `validate()` が掛かるので、
+ * ここで 422 になる文言も Plugin が書いた自由文である。
+ */
+describe('#114 更新の 422 本文も秘匿を通る', () => {
+  const LIVE_TOKEN = 'sk-livetoken-xyz';
+  const LEAKY_LABEL = `postgresql://plugin:${LIVE_TOKEN}@db.internal:5432/appdb`;
+  const REDACTED = 'postgresql://***@db.internal:5432/appdb';
+
+  function bodyTextOf(result: JsonResult): string {
+    return JSON.stringify(result.body);
+  }
+
+  /** **publisher を登録する前に作る**（裁定 #8 で 201）。 */
+  async function scheduledPost(): Promise<SocialPost> {
+    const { post } = await createSocialPost(admin, {
+      socialAccountId: accountId,
+      body: 'あ'.repeat(50),
+      scheduledAt: new Date(Date.now() - 60_000),
+      status: 'scheduled',
+      deliveryMode: 'auto',
+    });
+    return post;
+  }
+
+  /** `limits` 経路：`scheduled` のまま本文を直す更新（予約になる更新）。 */
+  async function limitsResult(): Promise<JsonResult> {
+    const post = await scheduledPost();
+    resetPublisherRegistry();
+    registerPublisher(
+      'test-plugin',
+      publisherFor({ label: LEAKY_LABEL, limits: { bodyMaxLength: 10 } }),
+    );
+    return callUpdate(post.id, { body: 'い'.repeat(50) });
+  }
+
+  /** `validate()` 経路：同じ文字列を `message` で返す。 */
+  async function validateResult(): Promise<JsonResult> {
+    const post = await scheduledPost();
+    resetPublisherRegistry();
+    registerPublisher(
+      'test-plugin',
+      publisherFor({
+        label: LEAKY_LABEL,
+        validate: () => [{ field: 'body', message: `接続に失敗しました: ${LEAKY_LABEL}` }],
+      }),
+    );
+    return callUpdate(post.id, { body: 'い'.repeat(50) });
+  }
+
+  it('#114 limits 経路の 422 に生の値が出ない', async () => {
+    const result = await limitsResult();
+
+    expect(result.status).toBe(422);
+    expect(bodyTextOf(result)).not.toContain(LIVE_TOKEN);
+  });
+
+  it('#114 limits 経路の 422 が伏せ字になっている', async () => {
+    expect(bodyTextOf(await limitsResult())).toContain(REDACTED);
+  });
+
+  it('#114 validate() 経路の 422 にも生の値が出ない', async () => {
+    const result = await validateResult();
+
+    expect(result.status).toBe(422);
+    expect(bodyTextOf(result)).not.toContain(LIVE_TOKEN);
+  });
+
+  it('#114 伏せてもどのフィールドが問題かは変わらない', async () => {
+    expect(Object.keys(detailsOf(await limitsResult()))).toContain('body');
+  });
+});
