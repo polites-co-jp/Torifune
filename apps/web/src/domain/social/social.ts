@@ -1,4 +1,5 @@
 import { isSafeReturnTo } from '../authorization-state';
+import { ownValue } from '../own-value';
 import type { Secret } from '../secret';
 import { containsNul } from '../text';
 import type { SkipReason } from './publishing';
@@ -54,7 +55,9 @@ export function providerLabel(
   provider: string,
   overrides?: Readonly<Record<string, string>>,
 ): string {
-  return overrides?.[provider] ?? PROVIDER_LABELS[provider] ?? provider;
+  // provider は HTTP で決められる。`constructor` などで継承した関数を拾わないよう、
+  // 自分のプロパティだけを見る（047-prototype-key-sweep 設計 §4.1）。
+  return ownValue(overrides, provider) ?? ownValue(PROVIDER_LABELS, provider) ?? provider;
 }
 
 export const ACCOUNT_STATUSES = ['connected', 'disconnected', 'error'] as const;
