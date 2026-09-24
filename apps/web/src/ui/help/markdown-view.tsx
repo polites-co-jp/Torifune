@@ -3,7 +3,12 @@ import Markdown, { type Components } from 'react-markdown';
 import rehypeSlug from 'rehype-slug';
 import remarkGfm from 'remark-gfm';
 import { HELP_HEADING_ID_PREFIX, resolveHelpLink, type HelpLinkContext } from './help-links';
-import { HELP_NEW_TAB_SR, imagePlaceholder } from './labels';
+import {
+  HELP_FOOTNOTE_BACK_LABEL,
+  HELP_FOOTNOTE_LABEL,
+  HELP_NEW_TAB_SR,
+  imagePlaceholder,
+} from './labels';
 
 /**
  * 手順書の Markdown を React の要素に描く（041-plugin-help-docs 設計 §7.3.2）。
@@ -28,7 +33,22 @@ interface HastNode {
   readonly type: string;
   readonly tagName?: string;
   readonly value?: string;
+  readonly properties?: Readonly<Record<string, unknown>>;
   children?: HastNode[];
+}
+
+/**
+ * GFM の脚注の参照・戻りのリンクか（`remark-rehype` が `data-footnote-ref` / `data-footnote-backref` を付ける）。
+ *
+ * これらの `href` は `remark-rehype` が作った `#user-content-…` で、`resolveHelpLink` に通すと
+ * `#help-user-content-…` に書き換わって行き先が無くなる（設計 §7.3.2・D10）。
+ */
+function isFootnoteLink(node: HastNode | undefined): boolean {
+  const properties = node?.properties;
+  return (
+    properties !== undefined &&
+    (properties['dataFootnoteRef'] !== undefined || properties['dataFootnoteBackref'] !== undefined)
+  );
 }
 
 /**
@@ -66,7 +86,15 @@ function componentsFor(linkContext: HelpLinkContext): Components {
   return {
     // 先頭でない見出し 1 は h2 で描く（画面に h1 を 1 つだけにする）。
     h1: ({ node: _node, ...props }) => <h2 {...props} />,
-    a: ({ href, children }) => {
+    a: ({ node, href, children, ...rest }) => {
+      if (isFootnoteLink(node as HastNode | undefined)) {
+        // 作られた href のまま、同じタブで描く（本文の中の移動。外へ出ない）。
+        return (
+          <a href={href} {...rest}>
+            {children}
+          </a>
+        );
+      }
       const resolved = resolveHelpLink(href ?? '', linkContext);
       switch (resolved.kind) {
         case 'external':
@@ -95,6 +123,10 @@ export function MarkdownView(props: MarkdownViewProps): ReactElement {
     <div className="tf-help-body">
       <Markdown
         remarkPlugins={[remarkGfm]}
+        remarkRehypeOptions={{
+          footnoteLabel: HELP_FOOTNOTE_LABEL,
+          footnoteBackLabel: HELP_FOOTNOTE_BACK_LABEL,
+        }}
         rehypePlugins={[[rehypeSlug, { prefix: HELP_HEADING_ID_PREFIX }], rehypeDropLeadingH1]}
         components={componentsFor(props.linkContext)}
       >

@@ -43,6 +43,12 @@ export function imagePlaceholder(alt: string | undefined): string {
   return alt === undefined || alt === '' ? '［画像］' : `［画像：${alt}］`;
 }
 
+/** GFM の脚注の見出し（`remark-rehype` の `footnoteLabel`。設計 §7.3.2・D10）。 */
+export const HELP_FOOTNOTE_LABEL = '脚注';
+
+/** GFM の脚注の戻りのリンクの読み上げ名（`remark-rehype` の `footnoteBackLabel`。設計 §7.3.2・D10）。 */
+export const HELP_FOOTNOTE_BACK_LABEL = '本文へ戻る';
+
 /** 設定画面の手順書の見出し。 */
 export const HELP_SETTINGS_HEADING = '手順書';
 

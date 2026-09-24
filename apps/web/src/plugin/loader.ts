@@ -2,6 +2,7 @@ import type { Plugin, PluginManifest } from '@torifune/plugin-api';
 import { validateManifest } from '@torifune/plugin-api';
 import { CORE_PERMISSIONS } from '@/domain/permission';
 import { log } from '@/infrastructure/logging';
+import { processState } from '@/infrastructure/process-state';
 import { PLUGIN_MODULES } from './generated-registry';
 
 /**
@@ -13,6 +14,26 @@ import { PLUGIN_MODULES } from './generated-registry';
  *
  * 生成物は `generated-registry.ts`。`scripts/generate-plugin-registry.mjs` が作る。
  */
+
+/**
+ * Manifest の警告（`help` の形の誤り）をログに出した Plugin ID（041 設計 §9.2・D8）。
+ *
+ * `discoverPlugins` は `/plugins` の表示や手順書の画面のたびに呼ばれるので、毎回出すとログが埋まる。
+ * **プロセスごと・Plugin ごとに 1 回**にする。プロセスに 1 つ（理由は `infrastructure/process-state.ts`）。
+ */
+const manifestWarningsLogged = processState(
+  'plugin.manifest-warnings-logged',
+  () => new Set<string>(),
+);
+
+/**
+ * テストのための口：警告を出した Plugin ID の記憶を消す。**本番のコードから呼ばない。**
+ *
+ * 同じプロセスで走るテストが、先のテストで出た警告に影響されないようにする（041 実装プラン §8 の 24）。
+ */
+export function resetManifestWarningLog(): void {
+  manifestWarningsLogged.clear();
+}
 
 export interface DiscoveredPlugin {
   readonly manifest: PluginManifest;
@@ -88,9 +109,10 @@ export function discoverPlugins(): DiscoveryResult {
     }
 
     // **Manifest を拒否しない誤り**（いまは `help` だけ。041 設計 §9.2）。
-    // Plugin は読み込み、作者が誤りに気づけるようにログにだけ残す。呼ぶたびに出す。
+    // Plugin は読み込み、作者が誤りに気づけるようにログにだけ残す。**プロセスごと・Plugin ごとに 1 回**（D8）。
     const warnings = validation.warnings;
-    if (warnings !== undefined && warnings.length > 0) {
+    if (warnings !== undefined && warnings.length > 0 && !manifestWarningsLogged.has(manifest.id)) {
+      manifestWarningsLogged.add(manifest.id);
       log.warn('plugin manifest has warnings', {
         pluginId: manifest.id,
         fields: warnings.map((w) => w.field),
