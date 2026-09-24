@@ -210,6 +210,27 @@ const UNEXPECTED_REASON =
   'Bluesky への配信で予期しない問題が起きました。二重投稿を避けるため再試行しません。' +
   'Bluesky 側で投稿を確認してから、必要なら予約し直してください。';
 
+/**
+ * App Password の形（041-plugin-help-docs 設計 §6.5.2。ユーザー裁定 U2）。**定義はここ 1 か所。**
+ *
+ * 英数字 4 文字 × 4 組を `-` で繋いだ 19 文字。根拠（2026-09-24 に確認）は Bluesky の公式の説明
+ * （atproto-ecosystem の app-passwords.md の「xxxx-xxxx-xxxx-xxxx」）と、参照実装の PDS の作り方
+ * （base32 の 16 文字を 4 文字ずつ繋ぐ）。字母は写し間違いと自前の PDS を考えて英数字（大文字を含む）に広げた。
+ * 参照実装以外の PDS がすべてこの形で作ることは確かめられなかった（設計 §11.2 #12）。
+ */
+const APP_PASSWORD_PATTERN = /^[A-Za-z0-9]{4}-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}$/;
+
+/**
+ * App Password の形でない値を送らずに止めたときの文言（設計 §6.5.3）。
+ *
+ * `createSession` はアカウントのパスワードも受け付け、全権限のセッションになる。
+ * **入れた値・長さ・どこが違うかを載せない。**
+ */
+const APP_PASSWORD_SHAPE_REASON =
+  'App Password（アプリパスワード）の形ではありません。ログイン用のパスワードは送らずに止めました。' +
+  'Bluesky の「設定 → プライバシーとセキュリティ → アプリパスワード」で発行した xxxx-xxxx-xxxx-xxxx の形の値を、' +
+  '「資格情報を設定」から入れてください。';
+
 const EMBED_CONFLICT_REASON =
   'Bluesky は画像とリンクカードを同時に付けられません。どちらかを外して登録し直してください。';
 
@@ -251,7 +272,7 @@ function sessionReason(failure: AtprotoFailure, detail: string): string {
   if (status === 401 || code === 'AuthFactorTokenRequired') {
     return (
       `Bluesky へのログインに失敗しました${detail}。App Password を確認してください` +
-      '（ログイン用のパスワードでは配信できません）。'
+      '（取り消されていないか、写し間違いがないか）。'
     );
   }
   if (status >= 500) {
@@ -455,6 +476,14 @@ async function publishPost(
     }
     const pdsUrl = resolution.url;
 
+    // **App Password の形でない値は Bluesky へ送らない**（041 設計 §6.5。ユーザー裁定 U2）。
+    // ログイン用のパスワードでも `createSession` は通り、全権限のセッションになるため。
+    // 人が直すまで直らない。**`fetch` を1度も呼ばない。値・長さ・どこが違うかをログに載せない。**
+    if (!APP_PASSWORD_PATTERN.test(credential['appPassword'] ?? '')) {
+      logger.warn('app password shape rejected', { postId: post.id, attempt, phase: 'credential' });
+      return { ok: false, reason: APP_PASSWORD_SHAPE_REASON, retryable: false };
+    }
+
     // **`embed` は1つしか持てない。** 片方を黙って捨てない（設計 §6.8）。
     const link = linkOf(post);
     if (media.length > 0 && link !== null) {
@@ -608,8 +637,8 @@ export function createBlueskyPublisher(options: BlueskyPublisherOptions): Publis
         key: 'appPassword',
         label: 'App Password（アプリパスワード）',
         description:
-          'Bluesky にログインするパスワードではありません。Bluesky の「設定 → プライバシーとセキュリティ → アプリパスワード」で発行した、xxxx-xxxx-xxxx-xxxx の形の文字列を入れます。' +
-          'ログイン用のパスワードをここへ入れないでください。App Password はいつでも個別に取り消せます。保存後は再表示されません。',
+          'Bluesky にログインするパスワードではありません。Bluesky の「設定 → プライバシーとセキュリティ → アプリパスワード」で発行した、xxxx-xxxx-xxxx-xxxx の形（英数字 4 文字を 4 組、ハイフンで繋ぐ）の文字列を入れます。' +
+          'ログイン用のパスワードは入れないでください（この形でない値は Bluesky へ送らずに止めます）。App Password はいつでも個別に取り消せます。保存後は再表示されません。',
         kind: 'secret',
       },
     ],
