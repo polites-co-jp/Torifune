@@ -112,7 +112,11 @@ function useManualPublisher(manual: ManualFn): void {
   registerPublisher(PLUGIN_ID, {
     provider: PROVIDER,
     label: 'テストSNS',
-    credentialFields: [{ key: 'identifier', label: '識別子', kind: 'text' }],
+    // accountFor() が送る資格情報のキーと揃える（宣言外のキーは 035 からの規則で作成時に断られる）
+    credentialFields: [
+      { key: 'identifier', label: '識別子', kind: 'text' },
+      { key: 'appPassword', label: 'アプリパスワード', kind: 'secret' },
+    ],
     manual,
   });
 }
