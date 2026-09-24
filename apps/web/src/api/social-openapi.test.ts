@@ -217,12 +217,15 @@ describe('#36 404・409 を宣言しない SNS の操作', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('#37 追加の応答を書かない操作の responses は 042 の前の規則どおり', () => {
-  it.each(['listSites', 'getSite'])(
-    '#37 %s の responses のキーが 200・401・403・422・429・500 ちょうど',
-    (operationId) => {
+  it.each([
+    { operationId: 'listSites', expected: ['200', '401', '403', '422', '429', '500'] },
+    { operationId: 'createSite', expected: ['201', '401', '403', '422', '429', '500'] },
+  ])(
+    '#37 $operationId の responses のキーが従来の生成の規則どおり（追加の応答なし）',
+    ({ operationId, expected }) => {
       const keys = Object.keys(operation(operationId).responses).sort();
 
-      expect(keys).toEqual(['200', '401', '403', '422', '429', '500'].sort());
+      expect(keys).toEqual([...expected].sort());
     },
   );
 });
