@@ -82,6 +82,22 @@ describe('#7 要素が UUID の形でなければ理由が「形」で失敗す�
   it('#7 形の正しい ID に 1 つだけ形の誤りが混ざる → { ok: false, reason: "shape" }', () => {
     expect(normalizeCampaignLinkIds([ID_A, 'abc', ID_B])).toEqual({ ok: false, reason: 'shape' });
   });
+
+  // 検証の指摘（security 低-2）：穴のある配列の穴は要素が無い＝UUID の形でない。
+  // `every` / `map` は穴を飛ばすので、穴を見落とさないことを確かめる（Data API から届きうる）。
+  it('#7 穴のある配列（new Array(2) の [0] だけ形の正しい ID）→ { ok: false, reason: "shape" }', () => {
+    const sparse: unknown[] = new Array<unknown>(2);
+    sparse[0] = ID_A;
+
+    expect(normalizeCampaignLinkIds(sparse)).toEqual({ ok: false, reason: 'shape' });
+  });
+
+  it('#7 穴だけの配列（new Array(1)）→ { ok: false, reason: "shape" }', () => {
+    expect(normalizeCampaignLinkIds(new Array<unknown>(1))).toEqual({
+      ok: false,
+      reason: 'shape',
+    });
+  });
 });
 
 describe('#7 配列でなければ理由が「形」で失敗する', () => {

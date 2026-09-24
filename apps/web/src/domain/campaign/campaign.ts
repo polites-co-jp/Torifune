@@ -117,9 +117,16 @@ export function normalizeCampaignLinkIds(value: unknown): CampaignLinkIdsResult 
   if (value.length > CAMPAIGN_LINK_MAX_ITEMS) {
     return { ok: false, reason: 'tooMany' };
   }
-  if (!value.every((element) => isUuidShape(element))) {
-    return { ok: false, reason: 'shape' };
+  // 添字で回す。`every` / `map` は穴のある配列の穴を飛ばすので、穴（要素が無い）を形の誤りとして
+  // 見落とす（Data API から届きうる）。
+  const lowered: string[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const element: unknown = value[index];
+    if (!isUuidShape(element)) {
+      return { ok: false, reason: 'shape' };
+    }
+    lowered.push((element as string).toLowerCase());
   }
-  const ids = [...new Set((value as readonly string[]).map((id) => id.toLowerCase()))].sort();
+  const ids = [...new Set(lowered)].sort();
   return { ok: true, ids };
 }
