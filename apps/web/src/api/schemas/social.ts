@@ -143,7 +143,14 @@ export const updateAccountSchema = z.object({
 export const postListQuerySchema = z.object({
   page: listPageSchema,
   perPage: listPerPageSchema,
-  accountId: z.string().max(64).optional(),
+  /**
+   * UUID の形（8-4-4-4-12 の 16 進。大文字・小文字を問わず、版と variant を見ない）でなければ 422
+   * （042-social-api-input-fixes 設計 §6.3）。**絞り込みを黙って外さない。** 空文字も 422。
+   *
+   * `z.uuid()` は版と variant を見るので使わない（Repository が絞り込める ID を API が断りうる）。
+   * `z.guid()` の判定は Repository の判定と同じ。値は変換しない。
+   */
+  accountId: z.guid('UUID の形で指定してください。').optional(),
   status: postStatusSchema.optional(),
 });
 
