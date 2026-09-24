@@ -216,8 +216,29 @@ await data.sites.create({ name: '…', url: 'https://…' });
 { "permissions": ["site.read"] }
 ```
 
+Data API の例外（`PluginPermissionError`・`PluginDataInputError` など）を捕まえなかったときは、
+Plugin の描画ならその枠だけが「表示できませんでした」になり、イベントのハンドラならログ（`event handler failed`）に残るだけで発火元は成功する。
+
 `permissions` には**本体の Permission** か、**自分の名前空間**（`my-plugin.…`）を書く。
 他の Plugin の名前空間は名乗れない。`system.*` は本体の予約。
+
+### 一覧の引数
+
+**`page` / `perPage` は例外にせず丸める。** `page` は 1 以上、`perPage` は 1〜100。
+小数は切り捨て、数にならない値（`NaN` など）は省略と同じ（1 / 20）に扱う。
+採った値は戻り値の `page` / `perPage` に返る。1 回で返るのは 100 件までなので、
+**全件が要るときは `total` までページを送る。**
+
+```ts
+const posts = await data.socialPosts.list({ accountId: account.id, perPage: 100 });
+const campaigns = await data.campaigns.list({ siteId: site.id });
+```
+
+`socialPosts.list` の `accountId` と `campaigns.list` の `siteId` は**UUID の形（8-4-4-4-12 の 16 進）で渡す。**
+形が違えば（空文字を含む）、返す `Promise` が `PluginDataInputError` で reject される。誤っていた引数の名前は `field` で分かる
+（渡した値は例外に載らない）。**絞らないときは空文字ではなく省略する。** UUID の形で存在しない ID なら空の一覧が返る。
+
+検査は `PluginPermissionError`（宣言）→ 利用者の Permission → `PluginDataInputError` の順で、権限の無い呼び出しには入力の誤りを返さない。
 
 ---
 
@@ -451,6 +472,9 @@ context.database.registerProvider({
 });
 ```
 
+本文を URL に埋め込む `manual()` は、URL が 2048 文字を超えうる（日本語 1 文字は URL の中で 9 文字）。
+**`validate()` で手動投稿のときに URL の長さを確かめ、登録時に断る**（`/` で始まる Torifune 内のパスも 2048 文字以内に収める）。
+
 **宣言していなければ使えない**（`PluginExtensionNotDeclaredError`）。
 差し替えると本体のすべてのデータアクセスがこの Provider を通る。
 実物の例は `plugins/example-plugin/database.ts`（ログを出すだけのダミー）。
@@ -624,7 +648,7 @@ Plugin を入れる側が「どの Plugin が資格情報を受け取るか」�
 | `limits` | `bodyMaxLength` / `mediaRequired` / `mediaMax`。**適用するのは Torifune**（投稿の登録時に 422 で弾く）。文字数の数え方は SNS ごとに違うので、ここは早く弾くための粗い上限 |
 | `validate` | 事前検査。`field` は要求のフィールド名（`body` / `media` / `link` / `providerOptions.<key>`）。返した文言がそのまま 422 の `details` と投稿フォームに出る |
 | `publish` | 自動配信。**1 回送るだけ。** 再試行の回数・間隔・打ち切りは Torifune が決める |
-| `manual` | 手動投稿。投稿内容を反映した**投稿画面の URL**（Web Intent）を返すだけ。資格情報は渡らない |
+| `manual` | 手動投稿。投稿内容を反映した**投稿画面の URL**（Web Intent）を返すだけ。資格情報は渡らない。**https の URL は 2048 文字以内**（超えると手動投稿待ちの行が「Plugin が返した URL を開けません」になる） |
 
 #### 呼ばれる場面と制限時間
 
