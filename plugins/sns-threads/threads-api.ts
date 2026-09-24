@@ -553,7 +553,9 @@ function versioned(...segments: readonly string[]): string {
  *
  * 1. **R4 を送る前は既定で `true`。** ただし時間が経っても直らないもの（`token` / `permission` / `rejected`・
  *    その他の 4xx・3xx・状態 `ERROR` / `PUBLISHED`）は、**5xx で返っても** `false`
- * 2. **R4（`publish`）は既定で `false`。** レート制限（書き込む前に断られたと読める）だけ `true`
+ * 2. **R4（`publish`）は既定で `false`。** レート制限（書き込む前に断られたと読める）だけ `true`。
+ *    ただし **4xx（429 を含む）で返ったレート制限だけ**。5xx は本体にレート制限の `code` があっても `false`
+ *    （2026-09-24 に追記。書き込みの途中で落ちた 5xx でないと言い切れない）
  *
  * R5 / R6 の失敗は `ok: true` を覆さないので、ここで決まる値は使われない。
  */
@@ -573,7 +575,9 @@ export function retryableFor(
   if (phase === 'publish') {
     // **送った後は既定で false。** 届いたか分からない。SNS の投稿は取り消せない（P4）。
     // `transient` も true にしない（「もう一度送れば通るかも」は「今回は公開されていない」を言っていない）。
-    return kind === 'http' && !redirected && errorClass === 'rateLimit';
+    // レート制限でも 5xx は false（設計 §6.9 P4。500 ＋ code 4 のような応答は、書き込んだ後に落ちた可能性を消せない）。
+    const clientError = status !== undefined && status >= 400 && status < 500;
+    return kind === 'http' && clientError && errorClass === 'rateLimit';
   }
 
   // ここから先は R4 を送る前（P1 / P2 / P3）。既定で true、直らないものだけ false。

@@ -1539,6 +1539,24 @@ describe('外部の文字列の形と長さ（#84〜#86）', () => {
     },
   );
 
+  it('#84 R4 の id が形に合わなくても、期限が近ければ R6 で延長して rotatedCredential を返す（実装プラン §8 の 12）', async () => {
+    // 延長は投稿の ID に依らない。形の合わない id で afterPublish を早く抜けると、トークンが延びないまま失効へ近づく。
+    const { result, fake } = await run({
+      fake: createFakeThreads({ R4: () => threadsPublished('123/../456') }),
+      credential: nearExpiry(),
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      rotatedCredential: {
+        threadsUserId: THREADS_USER_ID,
+        accessToken: REFRESHED_ACCESS_TOKEN,
+        accessTokenExpiresAt: new Date(START + REFRESHED_EXPIRES_IN * 1000).toISOString(),
+      },
+    });
+    expect(fake.kinds()).toEqual(['R1', 'R3', 'R4', 'R6']);
+  });
+
   it('#84 R4 の id が 64 桁の数字なら externalId が付き、R5 はその media を指す', async () => {
     const id = '9'.repeat(64);
     const { result, fake } = await run({

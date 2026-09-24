@@ -75,6 +75,46 @@ const LENGTH_CASES: readonly LengthCase[] = [
   { label: '#23 キーキャップの 1（U+0031 U+FE0F U+20E3）は 7', text: KEYCAP_ONE, expected: 7 },
   { label: '#23 著作権記号（U+00A9）は 2', text: COPYRIGHT, expected: 2 },
   { label: '#23 タグ列の旗は UTF-8 のバイト数 28', text: FLAG_SCOTLAND, expected: 28 },
+  /*
+   * 絵文字の判定の 5 種を 1 つずつ切り離す行（検証の軽微-1）。上の行はどれも Extended_Pictographic を含むか、
+   * 2 種以上が重なるので、判定から 1 種を外しても数えが変わらない。ここでは**その 1 種だけ**が絵文字の根拠になる。
+   */
+  {
+    // '#'（Extended_Pictographic ではない）＋ U+FE0F（キーキャップ無し）で 1 grapheme。1 ＋ 3 = 4。U+FE0F を外すと 2。
+    label: '#23 # ＋ U+FE0F（キーキャップ無し）は U+FE0F だけで絵文字とみなし 4',
+    text: '#\uFE0F',
+    expected: 4,
+  },
+  {
+    // U+1F3FD は Emoji_Modifier で、Extended_Pictographic ではない。4 バイト。Emoji_Modifier を外すと UTF-16 の 2。
+    label: '#23 肌の色（U+1F3FD）だけは Emoji_Modifier だけで絵文字とみなし 4',
+    text: '\u{1F3FD}',
+    expected: 4,
+  },
+  {
+    // 'a' ＋ タグ文字 U+E0067 で 1 grapheme。1 ＋ 4 = 5。タグ文字の範囲を外すと UTF-16 の 3。
+    label: '#23 a ＋ タグ文字（U+E0067）はタグ文字だけで絵文字とみなし 5',
+    text: 'a\u{E0067}',
+    expected: 5,
+  },
+  {
+    // タグ文字の範囲の下端。1 ＋ 4 = 5。
+    label: '#23 a ＋ タグ文字の下端（U+E0020）は 5',
+    text: 'a\u{E0020}',
+    expected: 5,
+  },
+  {
+    // タグ文字の範囲の上端（CANCEL TAG）。1 ＋ 4 = 5。
+    label: '#23 a ＋ タグ文字の上端（U+E007F）は 5',
+    text: 'a\u{E007F}',
+    expected: 5,
+  },
+  {
+    // 'a' ＋ U+20E3（キーキャップの囲み）で 1 grapheme。1 ＋ 3 = 4。U+20E3 を外すと 2。
+    label: '#23 a ＋ U+20E3 は U+20E3 だけで絵文字とみなし 4',
+    text: 'a\u20E3',
+    expected: 4,
+  },
   { label: '#24 𠮷（U+20BB7）は UTF-16 の長さ 2', text: CJK_SUPPLEMENTARY, expected: 2 },
   { label: '#24 分解された e ＋ U+0301 は正規化せず 2', text: DECOMPOSED_E_ACUTE, expected: 2 },
   { label: '#24 # は 1', text: '#', expected: 1 },
@@ -355,6 +395,41 @@ describe('countThreadsLinks（#27）', () => {
       expect(countThreadsLinks(`https://a.example/x${suffix} https://a.example/x`)).toBe(1);
     },
   );
+
+  /*
+   * #27 の続き：**URL は次の `https?://` の直前でも終わる**（設計 §9.4。2026-09-24 に訂正。検証の中-1）。
+   * ASCII の記号（`,` `|` `(` `)` `"`）で繋いだ URL を 1 本にまとめると、6 本を 1 本と数えて登録を通し、
+   * 配信の時刻に Threads が LINK_LIMIT_EXCEEDED で断る。
+   */
+  it.each([
+    ['カンマで繋いだ 2 本', 'https://a.example,https://b.example', 2],
+    ['縦線で繋いだ 2 本', 'https://a.example|https://b.example', 2],
+    ['丸括弧で囲んで並べた 2 本', '(https://a.example)(https://b.example)', 2],
+    ['二重引用符で囲んで並べた 2 本', '"https://a.example""https://b.example"', 2],
+    ['二重引用符とカンマで並べた 2 本', '"https://a.example","https://b.example"', 2],
+    ['空白を挟まず直に繋いだ 2 本', 'https://a.examplehttps://b.example', 2],
+    ['大文字のスキームで繋いだ 2 本', 'https://a.exampleHTTPS://b.example', 2],
+    ['http と https を繋いだ 2 本', 'http://a.example,https://b.example', 2],
+    [
+      'カンマで繋いだ 6 本は 6（検証の例）',
+      [1, 2, 3, 4, 5, 6].map((n) => `https://a.example/${n}`).join(','),
+      6,
+    ],
+    ['縦線で繋いだ 6 本は 6', [1, 2, 3, 4, 5, 6].map((n) => `https://a.example/${n}`).join('|'), 6],
+    [
+      'カンマで繋いだ同じ URL は 1（末尾のカンマを外して同じと数える）',
+      'https://a.example,https://a.example',
+      1,
+    ],
+    [
+      'クエリの中の URL も別に数える（多めの側。§11 #2 の c）',
+      'https://a.example/?u=https://b.example',
+      2,
+    ],
+    ['スキームが 2 つ続くものは後ろの 1 本', 'https://https://b.example', 1],
+  ] as const)('#27 %s → %s', (_label, text, expected) => {
+    expect(countThreadsLinks(text)).toBe(expected);
+  });
 
   it('#27 クエリと断片は URL に含める', () => {
     expect(countThreadsLinks('https://a.example/a?x=1&y=2#f https://a.example/a?x=1&y=2#f')).toBe(

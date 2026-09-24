@@ -367,6 +367,15 @@ describe('validate()：リンクの本数（#31）', () => {
 
     expect(validate(draft({ body }))).toEqual([]);
   });
+
+  it.each([',', '|', ')(', '""'])(
+    '#31 %j で繋いだ異なる URL 6 本も 6 本と数え、登録の時点で body の問題にする（設計 §9.4。2026-09-24）',
+    (separator) => {
+      const body = Array.from({ length: 6 }, (_, n) => `https://a.example/j${n}`).join(separator);
+
+      expect(fieldsOf(validate(draft({ body })))).toEqual(['body']);
+    },
+  );
 });
 
 describe('validate()：手動投稿の intent URL の長さ（#32）', () => {

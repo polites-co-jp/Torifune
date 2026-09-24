@@ -1255,6 +1255,62 @@ describe('P4 公開（§6.9。R4 の後は rateLimit だけが true）', () => {
     expect(outcome.fake.of('R5')).toHaveLength(0);
   });
 
+  /*
+   * P4 の rateLimit は **4xx（429 を含む）で返ったときだけ** true（設計 §6.9。2026-09-24 に追記。検証の security 低-1）。
+   * 5xx は本体にレート制限の code があっても「届いたか分からない」で false。書き込みの途中で落ちた 5xx が
+   * レート制限の code を返すことを否定できず、true にすると二重投稿になりうる。
+   */
+  it.each([4, 17, 32, 341, 613])(
+    '#65 P4 R4 が 500 で code %s（5xx のレート制限）なら retryable: false・phase: publish',
+    async (code) => {
+      const outcome = await run(withRoutes({ R4: error({ status: 500, code }) }));
+
+      expectFailure(outcome, { retryable: false, phase: 'publish' });
+      expect(outcome.fake.of('R5')).toHaveLength(0);
+    },
+  );
+
+  it.each([
+    ['502 code 4', error({ status: 502, code: 4 })],
+    ['503 code 613', error({ status: 503, code: 613 })],
+  ])(
+    '#65 P4 R4 が %s（5xx のレート制限）なら retryable: false・phase: publish',
+    async (_label, route) => {
+      const outcome = await run(withRoutes({ R4: route }));
+
+      expectFailure(outcome, { retryable: false, phase: 'publish' });
+    },
+  );
+
+  it('#65 P1（対の条件）R1 が 500 で code 4 なら、R4 を送る前なので retryable: true・phase: container', async () => {
+    const outcome = await run(withRoutes({ R1: error({ status: 500, code: 4 }) }));
+
+    expectFailure(outcome, { retryable: true, phase: 'container' });
+  });
+
+  it('#65 P4 R4 が 500 で code 4 なら、Retry-After があっても retryAfterMs を付けない', async () => {
+    const outcome = await run(
+      withRoutes({ R4: error({ status: 500, code: 4, headers: { 'retry-after': '30' } }) }),
+    );
+
+    expectFailure(outcome, { retryable: false, phase: 'publish' });
+    expect(retryAfterOf(outcome.result)).toBeUndefined();
+  });
+
+  it.each([
+    ['429（本体に code なし）', error({ status: 429 })],
+    ['429 で code 4', error({ status: 429, code: 4 })],
+    ['400 で code 4', error({ status: 400, code: 4 })],
+    ['403 で code 613', error({ status: 403, code: 613 })],
+  ])(
+    '#65 P4 R4 が %s（4xx のレート制限）なら retryable: true・phase: publish',
+    async (_label, route) => {
+      const outcome = await run(withRoutes({ R4: route }));
+
+      expectFailure(outcome, { retryable: true, phase: 'publish' });
+    },
+  );
+
   it.each([
     ['接続断（reject）', networkDown as Route],
     ['制限時間', timedOut as Route],
