@@ -47,13 +47,13 @@ X への配信 Plugin は 2 つあります。**どちらも provider は `x` �
 
 **OAuth 1.0a（User Context）の 4 つの値だけを使います。OAuth 2.0 のトークン（Bearer Token や OAuth 2.0 の Access Token）は使えません。**
 
-X の開発者向け画面（Developer Console）で、次の手順で用意します（画面の名前は X 側の変更で変わることがあります）。
+X の開発者向け画面（Developer Console）でアプリを作り、権限を **Read and write** にしてから、投稿に使う自分のアカウントの Access Token を発行します。
 
-1. アプリを作ります。**API Key と API Key Secret** が発行されます
-2. アプリの権限を **Read and write** にします
-3. 投稿に使う自分のアカウントの **Access Token と Access Token Secret** を発行します
-4. **権限を Read and write に変えたのが Access Token の発行より後なら、Access Token を発行し直してください。**
-   読み取り専用のまま発行したトークンでは、投稿が HTTP 403 で断られます
+詳しい手順は [help/credentials.md](help/credentials.md) にあります。Torifune では、`/social` のヘルプボタン、または `/plugins/sns-x-api/help/credentials` から読めます（有効にする前は `plugin.manage` を持つ管理者だけが読めます）。
+
+- **権限を Read and write に変えたのが Access Token の発行より後なら、Access Token を発行し直してください。**
+  読み取り専用のまま発行したトークンでは、投稿が HTTP 403 で断られます
+- 4 つの値は発行した画面で一度しか表示されません。チャット・メールなど Torifune 以外に貼らないでください。コマンドラインにも直書きしないでください
 
 ### Torifune に入れる 4 項目
 
