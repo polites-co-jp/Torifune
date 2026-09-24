@@ -38,7 +38,12 @@ export const campaignListQuerySchema = z.object({
   q: z.string().max(200, '検索語が長すぎます。').optional(),
   /** この日に実施中のものだけを返す。 */
   activeOn: dateOnly.optional(),
-  siteId: z.string().optional(),
+  /**
+   * このサイトを対象に含むものだけを返す。**UUID の形でなければ 422**（空文字も）。
+   * 形の誤りで絞り込みが外れて全件が返ると、打ち間違いに気づけない（043-api-input-fixes-rest 設計 §6.3）。
+   * 判定は 8-4-4-4-12 の 16 進で、大文字・小文字を問わず版と variant を見ない（`z.guid()`）。
+   */
+  siteId: z.guid('UUID の形で指定してください。').optional(),
   sort: z.string().optional(),
 });
 
