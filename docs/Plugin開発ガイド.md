@@ -99,6 +99,8 @@ context.ui.registerPage({
 ```
 
 ページのルートは `/plugins/<plugin-id>/…` の名前空間に置く。
+ただし `/plugins/<plugin-id>/settings`（§6）と `/plugins/<plugin-id>/help`（§6.1）は Core が使う。
+登録しても Core の画面が出る（登録そのものは拒否されない）。
 前方一致で最も長いものが選ばれるため、`/plugins/my-plugin/reports` を登録すれば
 `/plugins/my-plugin/reports/123` もそこへ届く。
 
@@ -281,6 +283,110 @@ context.ui.registerSettings({
 * 宣言していないキーは保存できない
 
 値は通常の Key-Value Store に入る。`context.store` から読める。
+
+**`/plugins` のカードの「設定」は、設定（`registerSettings`）か手順書（§6.1 の `help`）を持つ、
+有効で読み込まれた Plugin にだけ出る。** 行き先は `/plugins/<plugin-id>/settings`。
+手順書だけを持つ Plugin の設定画面には、手順書の一覧と「この画面で変える設定がありません」の注記が出る。
+設定も手順書も持たない Plugin には「設定」が出ない（独自のページはメニュー（§3.1）から開く）。
+
+### 6.1 手順書（`help`）
+
+**Plugin は、利用者向けの手順書を Markdown で同梱し、Torifune の画面で読ませられる。**
+外部サイトへのリンクで済ませず、Plugin のフォルダの中に置いて `plugin.json` の `help` で宣言する。
+コードを書く必要は無い。
+
+```text
+plugins/
+└── my-plugin/
+    ├── plugin.json
+    ├── index.ts
+    └── help/
+        ├── credentials.md
+        └── troubleshooting.md
+```
+
+`plugin.json`:
+
+```json
+{
+  "id": "my-plugin",
+  "name": "私のPlugin",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "help": [
+    { "id": "credentials", "title": "API キーの発行手順", "path": "help/credentials.md" },
+    { "id": "troubleshooting", "title": "うまく動かないとき", "path": "help/troubleshooting.md" }
+  ]
+}
+```
+
+| 項目 | 規則 |
+| --- | --- |
+| `help` | 配列。`[]` は宣言なしと同じ。最大 10 件（`PLUGIN_HELP_LIMITS.maxDocs`）。**並びが画面の並びで、先頭が「最初に読む手順書」** |
+| `id` | URL の一部（`/plugins/<plugin-id>/help/<id>`）。英小文字・数字・ハイフンで 1〜64 文字、先頭は英小文字か数字。`help` の中で重複しない |
+| `title` | 画面に出す題名。前後の空白を除いて 1〜80 文字 |
+| `path` | Plugin のフォルダからの `/` 区切りの相対パスで、小文字の `.md` で終わる（200 文字まで）。`..`・`.` で始まる名前（隠しファイル）・先頭の `/`・`\`・ドライブ名・URL は書けない。`help` の中で重複しない |
+
+要素に未知のキーを足しても拒まれない（後から項目を足せるように）。
+型と上限は `@torifune/plugin-api` の `PluginHelpDoc` と `PLUGIN_HELP_LIMITS`。
+
+**形が誤っていても Plugin は読み込まれる。** `help` の規則を 1 つでも破ると、`help` 全体が無いものとして扱われ、
+読み込みのたびにログへ警告（`plugin manifest has warnings`、`fields: ['help']`）が出る。
+手順書が画面に出ないときは、まずこの警告を探す。zip の導入（§10）も `help` の誤りでは止まらない。
+
+#### どこに出るか
+
+| 場所 | 出るもの |
+| --- | --- |
+| `/social` の「SNSアカウントを追加」と「資格情報を設定」の Modal | その provider の publisher を登録した Plugin の**先頭の手順書**を開くヘルプボタン（資格情報の欄を宣言した publisher、または `credentialFields: []` の publisher のとき）。**SNS 配信 Plugin は資格情報の手順書を先頭に置く** |
+| 設定画面 `/plugins/<plugin-id>/settings` | 「手順書」の欄に、宣言の順ですべての手順書へのリンク（設定のフォームより上） |
+| `/plugins/<plugin-id>/help` | 手順書の一覧 |
+| `/plugins/<plugin-id>/help/<id>` | 手順書の本文 |
+
+* ヘルプボタンと設定画面のリンクは**新しいタブ**で開く（入力中のフォームを消さないため）
+* `/plugins` のカードには手順書を出さない
+* **有効で読み込まれた Plugin の手順書は、ログインしていれば誰でも読める**（資格情報を入れる人の多くは `plugin.manage` を持たない）。
+  有効にする前の Plugin の手順書は `plugin.manage` を持つ管理者だけが URL で読める（他の人には 404。画面からの入口は無い）。
+  **有効にする前に読ませたい手順書は、README に `/plugins/<plugin-id>/help/<id>` の URL を書く**
+
+#### ファイル
+
+* Plugin のフォルダの中に置く。シンボリックリンクで外を指すと読まれない
+* **UTF-8**（先頭の BOM は除かれる）、**256 KiB 以下**（`PLUGIN_HELP_LIMITS.maxFileBytes`）
+* 本文は**要求のたびにファイルから読む**（埋め込みもキャッシュもしない）。
+  **本文の直しは再起動が要らない。** `help` の宣言を足す・変えたときは、Manifest の他の項目と同じく
+  `pnpm generate:plugins` と再起動が要る
+* 読めないとき（ファイルが無い・大きすぎる・UTF-8 でない）、画面は「読み込めませんでした」と出し、
+  理由はログ（`plugin help could not be read`）にだけ残る
+
+#### 描かれるもの・描かれないもの
+
+GitHub と同じ Markdown（GFM：表・チェックリスト・打ち消し線を含む）を、サーバの上で描く。
+
+| 書いたもの | Torifune での描かれ方 |
+| --- | --- |
+| 先頭の `# 題名` | **描かない**（画面の見出しは `title` が持つ）。GitHub で読んでも題名が出るように、`title` と同じ文言の `#` で書き始める。2 つ目以降の `#` は 1 段下の見出しで描く |
+| 見出しのアンカー | GitHub と同じ規則の `id` に `help-` を前に付けたもの。**目次は `[手順 1：…](#手順-1…)` と GitHub のとおりに書けば Torifune でも動く** |
+| 表・コードの囲み | 狭い画面では枠の中で横に動く。コードの色付けはしない |
+| 画像 `![説明](…)` | **描かない。** 「［画像：説明］」の文字になる（スクリーンショットは載せず、画面の名前を文字で書く） |
+| 生の HTML（`<script>`・`<br>` など） | **解釈しない。** 文字としてそのまま見える |
+
+#### リンク
+
+| 書いたもの | 描かれ方 |
+| --- | --- |
+| `https://…` / `http://…` | 新しいタブで開く外部リンク（`rel="noopener noreferrer"`） |
+| 宣言した別の手順書への相対パス（`./troubleshooting.md`、`#断片` つきも可） | 同じタブでその手順書の画面へ |
+| `#断片` | 同じ手順書の中の見出しへ |
+| `/` で始まる Torifune の中のパス | 同じタブで開く |
+| それ以外（`javascript:`・`data:`・`mailto:`・`//…`・宣言していない `.md`（`README.md` を含む）・フォルダの外） | **リンクにしない**（文字だけ） |
+
+手順書から README へはリンクできないので、手順書は README に頼らず完結させる。
+README には要約と手順書へのリンクを置き、詳しい手順は手順書だけに書く（同じ内容を 2 か所に持つと片方だけ直されて食い違う）。
+
+見本は `plugins/example-plugin/help/`（`usage.md` は本物の手順書と同じ見出しの順の短い見本、
+`markdown.md` は使える書き方と描かれないものの見本）。
+同梱の SNS 配信 Plugin（`sns-bluesky` など）の `help/credentials.md` が実物である。
 
 ---
 
@@ -507,7 +613,7 @@ Plugin を入れる側が「どの Plugin が資格情報を受け取るか」�
 
 | 項目 | 役割 |
 | --- | --- |
-| `credentialFields` | **資格情報の形の宣言だけ。** 入力欄の描画・形式検証・暗号化・保存・再表示しないことは Torifune が持つ。`kind: 'secret'` は打ち込むときに伏せる項目という意味で、保存はどの項目も暗号化される。空なら資格情報なしで `publish()` が呼ばれる（`credential` は `{}`）。**空なら `/social` に資格情報の欄を出さない**（アカウント追加にも、行の「資格情報を設定」にも出ない）。各項目の `description` は `/social` の欄の下に説明として出る（入力の時点で読ませたいこと、たとえばどこで・どの権限で発行するかを書く）。空の publisher の provider で画面から作ったアカウントは `status: 'connected'`、`credentialConfigured` は通常 `false` になる。**どちらも資格情報の有無の約束ではない**（`status` は画面の表示のため、`credentialConfigured` は保存されているかだけ） |
+| `credentialFields` | **資格情報の形の宣言だけ。** 入力欄の描画・形式検証・暗号化・保存・再表示しないことは Torifune が持つ。`kind: 'secret'` は打ち込むときに伏せる項目という意味で、保存はどの項目も暗号化される。空なら資格情報なしで `publish()` が呼ばれる（`credential` は `{}`）。**空なら `/social` に資格情報の欄を出さない**（アカウント追加にも、行の「資格情報を設定」にも出ない）。各項目の `description` は `/social` の欄の下に説明として出る（入力の時点で読ませたいこと、たとえばどこで・どの権限で発行するかを書く）。**`description` は 1〜2 文の要点にとどめ、発行の手順の全体は手順書（§6.1 の `help`）に書く**（`/social` にその手順書を開くヘルプボタンが出る）。空の publisher の provider で画面から作ったアカウントは `status: 'connected'`、`credentialConfigured` は通常 `false` になる。**どちらも資格情報の有無の約束ではない**（`status` は画面の表示のため、`credentialConfigured` は保存されているかだけ） |
 | `limits` | `bodyMaxLength` / `mediaRequired` / `mediaMax`。**適用するのは Torifune**（投稿の登録時に 422 で弾く）。文字数の数え方は SNS ごとに違うので、ここは早く弾くための粗い上限 |
 | `validate` | 事前検査。`field` は要求のフィールド名（`body` / `media` / `link` / `providerOptions.<key>`）。返した文言がそのまま 422 の `details` と投稿フォームに出る |
 | `publish` | 自動配信。**1 回送るだけ。** 再試行の回数・間隔・打ち切りは Torifune が決める |
@@ -700,3 +806,4 @@ Plugin は信頼されたコードとして動く。特に Database Provider は
 | `docs/設計/011-plugin-runtime/` | 読み込みとライフサイクル |
 | `docs/設計/012-plugin-manager/` | 管理画面と導入 |
 | `docs/設計/013-example-plugin/` | このガイドの題材 |
+| `docs/設計/041-plugin-help-docs/` | 手順書（`help`）の仕組み |
