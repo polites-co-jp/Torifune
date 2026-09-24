@@ -195,7 +195,7 @@ CORS ヘッダが付く（`*` は指定できない）。ただし **API トー�
 | 409 | `CONFLICT` | `POST /social/publish` で他の配信処理が実行中（`details.job` と `Retry-After: 10` が付く） |
 | 422 | `VALIDATION_ERROR` | 入力の検査に落ちた（§3.2 の `details` を見る） |
 | 429 | `TOO_MANY_ATTEMPTS` | Rate Limit を超えた（§3.4。`Retry-After` が付く） |
-| 500 | `INTERNAL_ERROR` | 想定外のエラー。配信 Plugin の事前検査が例外・5 秒超過になったとき（§4.4）、一覧の `page` / `perPage` が範囲外のとき（§3.6）もこれ |
+| 500 | `INTERNAL_ERROR` | 想定外のエラー。配信 Plugin の事前検査が例外・5 秒超過になったとき（§4.4）もこれ |
 
 **400 `BAD_REQUEST` は SNS API では返らない**（壊れた JSON も 422）。
 
@@ -258,19 +258,22 @@ CORS ヘッダが付く（`*` は指定できない）。ただし **API トー�
 
 | クエリ | 型 | 既定 | 説明 |
 | --- | --- | --- | --- |
-| `page` | 整数 | `1` | 1 始まり。**1 以上で送る** |
-| `perPage` | 整数 | `20` | 1 ページの件数。**1〜100 で送る** |
+| `page` | 整数 | `1` | 1 始まり。**1 未満は 1 に丸める** |
+| `perPage` | 整数 | `20` | 1 ページの件数。**1〜100。範囲外は 1〜100 に丸める** |
 
 * 並び順は**作成日時の新しい順**（同じ時刻は `id` の昇順）。並び順を変えるクエリは無い
-* 整数でない値は 422（`details.page` / `details.perPage`）
-* **SNS の一覧は `page` / `perPage` の範囲を検査しない**（他の一覧 API のように 1〜100 へ丸めない。§10.1 の 1）。
-  範囲外の値は次のようになるので、**送る側で 1〜100・1 以上に収める**
+* **範囲外の整数は 422 にせず丸める。** 丸めた後の値が `meta.page` / `meta.perPage` に返る
 
   | 送った値 | 結果 |
   | --- | --- |
-  | `perPage=0` | 200 で `data` が空 |
-  | `perPage=-1`、`page=0`（0 以下） | **500 `INTERNAL_ERROR`** |
-  | `perPage=1000`（101 以上） | そのまま通り、1000 件まで返る |
+  | `page=0`・`page=-3`（1 未満） | `page=1` として返る（`meta.page` は `1`） |
+  | `perPage=0`・`perPage=-1`（1 未満） | `perPage=1` として返る（`meta.perPage` は `1`） |
+  | `perPage=101`・`perPage=1000`（101 以上） | `perPage=100` として返る（`meta.perPage` は `100`） |
+  | `page` が最終ページより先 | 200 で `data` が空（`meta.total` は全件数） |
+
+* 整数でない値（`abc`・`1.5`）は丸めずに 422（`details.page` / `details.perPage`）。
+  空文字（`perPage=`）は `0` と解釈され、丸めて `1` になる
+* **1 回で取れるのは 100 件まで。全件を取るときは `meta.total` に届くまで `page` を送る**
 
 ### 3.7 OpenAPI
 
@@ -281,13 +284,16 @@ CORS ヘッダが付く（`*` は指定できない）。ただし **API トー�
   `deleteSocialPost`・`publishSocialPosts`）がすべて載る
 * 必要な権限は各操作の拡張項目 **`x-required-permission`** に書かれている
 * 認証方式は `session`（Cookie）と `bearer`（API トークン）の 2 つが宣言されている
+* 応答は、成功・401・403・422・429・500 のほかに次が宣言されている
+  * `createSocialPost` の **200**（同じ `externalRef` の再送。本文の形は 201 と同じ。§3.5）
+  * `{id}` を取る 6 操作（`getSocialAccount`・`updateSocialAccount`・`deleteSocialAccount`・`getSocialPost`・
+    `updateSocialPost`・`deleteSocialPost`）の **404**
+  * `publishSocialPosts` の **409**（他の配信処理が実行中）
+* `page` / `perPage` の範囲は、parameter の `description` に書かれている
+  （「1 以上。範囲外は 1 に丸める。」「1〜100。範囲外は 1〜100 に丸める。」）。範囲外も断られない（§3.6）ので、
+  `minimum` / `maximum` は書かれていない。`accountId` には UUID の形の `pattern` が付く（§4.5）
 * **OpenAPI に載らないこと**（この文書で補う）
-  * `POST /social/posts` の**再送の 200 の応答の宣言**。`createSocialPost` の `summary` には
-    「同じ externalRef の再送は 200 で既存を返す」と書かれているが、`responses` に宣言されている成功は 201 だけ。
-    コード生成したクライアントは 200 を想定外として扱うことがある
-  * 404・409 の応答（宣言されているのは 401・403・422・429・500）
   * SNS ごとの規則（§5）と、配信 Plugin が返す 422 の `details` のキー
-  * `page` / `perPage` の範囲（§3.6。スキーマ上は整数であることだけ）
 
 ---
 
@@ -508,7 +514,7 @@ curl -X POST https://torifune.example.com/api/v1/social/posts \
 | クエリ | 型 | 説明 |
 | --- | --- | --- |
 | `page` / `perPage` | 整数 | §3.6 |
-| `accountId` | string（64 文字以内） | そのアカウントの投稿だけに絞る。**65 文字以上は 422 `accountId`。64 文字以内で UUID の形でない値は、絞り込みが黙って外れて全件が返る**（§10.1 の 2）。送る前に UUID の形を確かめる |
+| `accountId` | string（UUID） | そのアカウントの投稿だけに絞る。UUID の形（8-4-4-4-12 の 16 進。大文字・小文字を問わない）。**形が違えば（空文字を含む）422 `accountId`**（「UUID の形で指定してください。」）。存在しないアカウントの UUID は 200 で空 |
 | `status` | enum | `draft` / `scheduled` / `published` / `failed` のどれか 1 つ。列挙外は 422 `status` |
 
 並びは作成日時の新しい順。応答は §3.1 の一覧の形で、各要素は §4.3。
@@ -609,7 +615,7 @@ curl -X PATCH https://torifune.example.com/api/v1/social/posts/$POST_ID \
 | `deliveryMode: auto` | ○ | ○ | **×**（422 `deliveryMode`） | ○ | ○ |
 | `deliveryMode: manual` | ○ | ○ | ○ | ○ | **×**（422 `deliveryMode`） |
 | 本文の上限 | **300 grapheme** かつ **3000 UTF-8 バイト**（別に Core が UTF-16 長 3000 で先に見る） | **重み付き 280**（§5.3） | **重み付き 280**（§5.3） | **500**（§5.4） | **2200**（UTF-16 の長さ） |
-| 本文のその他の上限 | — | 対になっていないサロゲートは不可 | 同左 | リンクは**異なる URL 5 本まで**。対になっていないサロゲートは不可 | ハッシュタグ 30 個・メンション 20 件まで |
+| 本文のその他の上限 | 手動投稿では対になっていないサロゲートは不可 | 対になっていないサロゲートは不可 | 同左 | リンクは**異なる URL 5 本まで**。対になっていないサロゲートは不可 | ハッシュタグ 30 個・メンション 20 件まで |
 | `link` の扱い（`auto`） | **リンクカード**（本文には足さない。カードの見出しはホスト名） | **本文の末尾に改行して足す**（長さに含む） | —（`auto` 不可） | **本文の末尾に改行して足す**（長さ・本数に含む） | **指定不可**（422 `link`） |
 | `link` の扱い（`manual`） | 本文の末尾に改行して足す（長さに含む） | 同左 | 同左 | 同左 | — |
 | `media` の枚数 | 0〜4 | 0〜4 | —（`manual` のみのため 0） | 0〜10（2 枚以上はカルーセル） | **1〜10 必須**（0 枚は 422 `media`） |
@@ -618,7 +624,7 @@ curl -X PATCH https://torifune.example.com/api/v1/social/posts/$POST_ID \
 | `media` と `link` の併用 | **不可**（`auto` で 422 `link`） | 可 | — | 可 | —（`link` 不可） |
 | `alt` | 送る（Core が先に UTF-16 の長さ 1000 で 422 `media` にするので、Plugin の 1000 grapheme の上限は実際には効かない） | **送らない**（無視） | — | 送る（`alt_text`） | **送らない**（無視） |
 | `providerOptions` | `langs` だけ受け付ける（言語コードの配列・3 件まで・各 2〜16 文字。例 `{"langs":["ja"]}`）。他のキーは 422 `providerOptions.<キー>` | どのキーも 422 `providerOptions.<キー>` | 同左 | 同左 | 同左 |
-| 手動投稿の URL の上限 | **登録時に検査しない**（§5.5・§10.1 の 4） | intent URL 2048 文字（422 `body`） | 同左 | intent URL 2048 文字（422 `body`） | — |
+| 手動投稿の URL の上限 | intent URL 2048 文字（422 `body`） | intent URL 2048 文字（422 `body`） | 同左 | intent URL 2048 文字（422 `body`） | — |
 | 配信後の `externalUrl` | `https://bsky.app/profile/<handle>/post/<rkey>` | `https://x.com/i/status/<id>` | —（人が PATCH で記録） | Threads が返す投稿の URL | Instagram が返す投稿の URL |
 
 **手動投稿（`manual`）では `media` を 1 件も付けられない**（全 SNS 共通。422 `media`）。
@@ -669,7 +675,7 @@ Threads の長さ（500）の数え方では URL を特別扱いしない（X �
 | --- | --- | --- | --- |
 | X | `https://x.com/intent/tweet?text=` | 約 224 文字（ただし重み付き 280 の上限＝日本語 140 文字が先に効く） | あり（422 `body`「投稿画面の URL が長くなりすぎます…」） |
 | Threads | `https://www.threads.com/intent/post?text=` | **約 223 文字**（本文の上限 500 より先に効く） | あり（422 `body`） |
-| Bluesky | `https://bsky.app/intent/compose?text=` | 約 223 文字 | **無い**。超えると登録は通るが、画面の「投稿画面を開く」が失敗する（§10.1 の 4） |
+| Bluesky | `https://bsky.app/intent/compose?text=` | **約 223 文字**（本文の上限 300 grapheme より先に効く） | あり（422 `body`） |
 
 改行は 3 文字（`%0A`）、英数字は 1 文字として数える。`link` も本文に含めて埋め込まれる。
 
@@ -1107,7 +1113,7 @@ while True:
 * 手動投稿は**人が画面で操作するまで終わらない。** 外部アプリの処理を手動投稿の完了で待たせない
 * 使えるかは provider と、X の場合はどちらの Plugin が有効かで決まる（§5.2）。
   使えないと 422 `deliveryMode`
-* 本文は投稿画面の URL に埋め込まれるので、日本語で約 220 文字を超えると開けなくなる（§5.5）
+* 本文は投稿画面の URL に埋め込まれるので、日本語で約 220 文字を超えると登録時に 422 `body` で断られる（§5.5）
 
 ### 8.5 そのほか
 
@@ -1125,6 +1131,7 @@ while True:
 | --- | --- |
 | 2026-09-24 | 初版。コード（Core の SNS API と `sns-bluesky` / `sns-x-api` / `sns-x-manual` / `sns-threads` / `sns-instagram` の 5 Plugin）から起こした |
 | 2026-09-24 | 検証を受けて訂正。認証失敗時の 403 `CSRF_FAILED`、`media.<n>.url` のキー、`failureReason` の 422、409 の `details`、`externalRef` が SNS をまたいで衝突すること、`page` / `perPage` / `accountId` の範囲外の振る舞い、Rate Limit の送信元 IP、Webhook の回数、例の不具合を直し、§10 を整理した |
+| 2026-09-24 | コードの課題（旧 §10.1 の 1・2・4・5）を直したのに合わせて更新。Bluesky の手動投稿は、投稿画面の URL が 2048 文字を超える本文と対になっていないサロゲートを登録時に 422 `body` で断る（§5.2・§5.5）。SNS の一覧の `page` / `perPage` の範囲外を丸める（§3.6。従来は 0 以下が 500）。OpenAPI に `createSocialPost` の 200・`{id}` の 6 操作の 404・`publishSocialPosts` の 409 を宣言した（§3.7）。**動作の変更が 2 つある**：(1) **`perPage` を 101 以上で送ると 100 件までしか返らない**（従来は要求した件数まで返っていた。`meta.perPage` が `100` になるので検知でき、`meta.total` までページを送れば全件取れる）。(2) **`GET /social/posts` の `accountId` が UUID の形でない値（空文字を含む）は 422 `accountId`**（従来は絞り込みが黙って外れて全件が返っていた。§4.5）。どちらも初版から送らないよう書いていた値で、API のバージョンは v1 のまま |
 
 ### 関連文書
 
@@ -1145,21 +1152,18 @@ while True:
 
 いまの振る舞いとして本文に書いたが、直すべき候補。外部アプリは本文の回避策に従う。
 
-1. **SNS の一覧の `page` / `perPage` の範囲を検査しない**（`apps/web/src/api/schemas/social.ts` の
-   `accountListQuerySchema` / `postListQuerySchema`）。他の一覧 API は `api/query.ts` の `paginationSchema` で 1〜100 に
-   丸めており、`05_API設計.md` §33 の方針とも揃っていない。`perPage=0` は 200 で空、`perPage=-1`・`page=0` は
-   500 `INTERNAL_ERROR`、`perPage=1000` はそのまま通る（§3.6）
-2. **`GET /social/posts?accountId=` の絞り込みが黙って外れる**：65 文字以上は 422 だが、64 文字以内で UUID の形でない値は
-   絞り込みが無視されて全件が返る（`apps/web/src/infrastructure/social-repository.ts` の `listPosts`）。
-   422 にも空の結果にもならない（§4.5）
-3. **Rate Limit の送信元 IP が取れないと全クライアントが 1 枠を共有する**：`X-Forwarded-For` も `X-Real-IP` も無い要求は
+1. **Rate Limit の送信元 IP が取れないと全クライアントが 1 枠を共有する**：`X-Forwarded-For` も `X-Real-IP` も無い要求は
    `unknown` という同じキーで数えられる（`apps/web/src/api/route.ts` の `rateLimitKey`）。リバースプロキシの設定次第で、
    1 分 300 回を全員で分け合うことになる（§3.4）
-4. **Bluesky の手動投稿だけ、投稿画面の URL の長さを登録時に検査しない**：X と Threads は 2048 文字を超える本文を
-   422 で断るが、Bluesky（本文の上限 300 grapheme）は日本語で約 223 文字を超えると登録は通り、
-   画面で「投稿画面を開く」が失敗する（`plugins/sns-bluesky/social.ts` の `validateDraft`。§5.5）
-5. **OpenAPI の応答の宣言の不足**：`createSocialPost` の再送の 200 は `summary` に書かれているだけで `responses` に無い。
-   404・409 の応答も宣言されていない（§3.7）
+
+初版の 1・2・4・5（SNS の一覧の `page` / `perPage` の範囲、`accountId` の絞り込みが黙って外れること、
+Bluesky の手動投稿の URL の長さ、OpenAPI の 200・404・409 の宣言）は直した（§9 の変更履歴）。
+
+**初版の 1 の記述の訂正**：初版は「他の一覧 API は `paginationSchema` で 1〜100 に丸めている」と書いたが、誤りだった。
+丸めているのは `/analytics`・`/analytics/breakdown` だけで、`/sites`・`/users`・`/campaigns` の一覧も、直す前の
+SNS の一覧と同じく `page` / `perPage` の範囲を検査していない。これらと、`GET /campaigns?siteId=` の絞り込みが
+UUID の形でない値で外れること、SNS 以外のエンドポイントの 404・409 の OpenAPI の宣言は、後続の作業単位でまとめて直す予定
+（SNS 投稿 API の振る舞いには影響しない）。
 
 ### 10.2 文書間の食い違い
 
