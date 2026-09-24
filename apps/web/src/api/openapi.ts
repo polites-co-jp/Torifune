@@ -188,7 +188,10 @@ function queryParametersOf(endpoint: EndpointSpec): OpenApiParameter[] {
 }
 
 export function buildOpenApiDocument(): Record<string, unknown> {
-  const paths: Record<string, Record<string, OpenApiOperation>> = {};
+  // パス → メソッド → 操作。`Map` の挿入順はエンドポイントの表の順なので、
+  // `Object.fromEntries` の結果のキーの順は素のオブジェクトに積んだときと同じ
+  // （047-prototype-key-sweep 設計 §4.1・K17）。
+  const paths = new Map<string, Record<string, OpenApiOperation>>();
 
   for (const endpoint of listDocumentedEndpoints()) {
     const operation: OpenApiOperation = {
@@ -226,9 +229,9 @@ export function buildOpenApiDocument(): Record<string, unknown> {
       };
     }
 
-    paths[endpoint.path] ??= {};
-    (paths[endpoint.path] as Record<string, OpenApiOperation>)[endpoint.method.toLowerCase()] =
-      operation;
+    const operations = paths.get(endpoint.path) ?? {};
+    operations[endpoint.method.toLowerCase()] = operation;
+    paths.set(endpoint.path, operations);
   }
 
   return {
@@ -263,6 +266,6 @@ export function buildOpenApiDocument(): Record<string, unknown> {
         },
       },
     },
-    paths,
+    paths: Object.fromEntries(paths),
   };
 }
