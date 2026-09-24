@@ -411,8 +411,12 @@ describe('validate()（#16〜#26）', () => {
       body: 'あ'.repeat(299),
       link: 'https://example.com/aaaa',
     });
+    const problems = validate(post);
 
-    expect(fieldsOf(validate(post))).toEqual(['body']);
+    // 042 で、手動投稿の intent URL が 2048 文字を超える問題も重ねて返るようになった
+    // （042-social-api-input-fixes 設計 §10.7・受け入れ条件 7）。grapheme の問題が含まれることは message で見る。
+    expect(fieldsOf(problems)).toEqual(['body', 'body']);
+    expect(problems.some((problem) => problem.message.includes('300文字'))).toBe(true);
   });
 
   it('#21 manual で合計が 300 grapheme 以内なら通る', () => {
