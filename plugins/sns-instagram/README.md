@@ -30,15 +30,16 @@ Torifune 本体は「いつ送るか・再試行・記録・画面」を持っ�
 
 ### 長期アクセストークンとユーザー ID
 
-Meta の開発者向け画面で、次の手順で用意します（画面の名前は Meta 側の変更で変わることがあります）。
+Meta for Developers で Instagram API（Instagram ログイン）の App を作り、投稿に使うプロアカウントを App に加えて、App の画面で長期アクセストークンを生成します。
+あわせて、そのアカウントの数字だけのユーザー ID（`me` の `user_id`）を確かめます。
 
-1. Meta for Developers で App を作り、**Instagram API（Instagram ログイン）** を追加します
-2. 投稿に使う Instagram のプロアカウントでログインし、次の 2 つの権限を許可します
-   - `instagram_business_basic`
-   - `instagram_business_content_publish`
-3. 発行された短期のアクセストークンを **長期アクセストークン** に交換します
-4. ユーザー ID を確かめます。長期アクセストークンで自分のアカウントの情報（`me` の `user_id`）を問い合わせると分かります。
-   **数字だけの ID です。`@` で始まるユーザーネームではありません**
+詳しい手順は [help/credentials.md](help/credentials.md) にあります。Torifune では、`/social` のヘルプボタン、または `/plugins/sns-instagram/help/credentials` から読めます（有効にする前は `plugin.manage` を持つ管理者だけが読めます）。
+
+- 要る権限は `instagram_business_basic` と `instagram_business_content_publish` の 2 つです
+- **ユーザー ID は数字だけの ID です。`@` で始まるユーザーネームではありません**
+- **App Secret（App の秘密の鍵）は Torifune に入れません。** 配信にも延長にも使いません
+- トークンを**コマンドラインに直書きしない**でください（シェルの履歴に残ります）。ブラウザのアドレス欄にトークンを入れて確かめた場合は、使った後にブラウザの履歴から消してください
+- トークンは発行した画面から Torifune の欄へ直接貼り、チャット・メールなど Torifune 以外に貼らないでください
 
 ### Torifune に入れる 3 項目
 
