@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { helpLinkOfPlugin } from '@/application/plugin/plugin-help-use-cases';
 import { listPublishers, publisherLabels } from '@/application/social/publisher-registry';
 import {
   listManualPendingPosts,
@@ -115,7 +116,8 @@ export default async function SocialPage({
 
   // 「サービス」の選択肢は Core が知る provider ＋ publisher を登録した provider（035 設計 §7.5）。
   // publisher の有無と宣言の項目（説明を含む）も持たせる（039 設計 §7.1）。
-  const providers = buildProviderOptions(publishers);
+  // publisher の Plugin の先頭の手順書へのリンクも持たせる（041 設計 §7.4。ヘルプボタン）。
+  const providers = buildProviderOptions(publishers, helpLinkOfPlugin);
 
   // 「いま」はここで一度だけ決める。行ごとに `Date.now()` を見ると値がばらつく。
   const now = new Date();

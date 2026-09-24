@@ -170,3 +170,17 @@ export function helpLinkOfPlugin(pluginId: string): HelpDocSummary | null {
   }
   return { id: first.id, title: first.title, href: helpDocHref(pluginId, first.id) };
 }
+
+/**
+ * 同じ Plugin の手順書の宣言（`id` と `path`）。手順書の本文の中の相対リンクを解決するのに使う
+ * （設計 §7.3.4 の `HelpLinkContext.docs`）。
+ *
+ * **`getPluginHelpDoc` が通った後にだけ呼ぶ**（認可はそちらで済んでいる）。返すのは配布物の宣言で、
+ * ファイルには触れない。読み込まれていればその Manifest、そうでなければ登録簿の検証済みの Manifest から引く。
+ */
+export function helpDocPathsOf(pluginId: string): readonly { id: string; path: string }[] {
+  const manifest =
+    loadedPlugin(pluginId)?.manifest ??
+    discoverPlugins().plugins.find((entry) => entry.manifest.id === pluginId)?.manifest;
+  return (manifest?.help ?? []).map((doc) => ({ id: doc.id, path: doc.path }));
+}

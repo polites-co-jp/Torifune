@@ -7,5 +7,12 @@
   "author": "Torifune",
   "license": "MIT",
   "permissions": [],
-  "extensions": ["social", "ui"]
+  "extensions": ["social", "ui"],
+  "help": [
+    {
+      "id": "credentials",
+      "title": "App Password（アプリパスワード）の発行手順",
+      "path": "help/credentials.md"
+    }
+  ]
 }

@@ -8,6 +8,11 @@ import type { ProviderCredentialField, ProviderOption } from '@/ui/social/social
  * `app/social/page.tsx` が `listPublishers()` の結果を渡す。
  */
 export interface PublisherOptionSource {
+  /**
+   * publisher を登録した Plugin の ID（041-plugin-help-docs 設計 §7.4.1）。
+   * 手順書のリンクを引くのに使う。省略すると手順書を引かない。
+   */
+  readonly pluginId?: string;
   readonly registration: {
     readonly provider: string;
     readonly label: string;
@@ -29,21 +34,40 @@ export interface PublisherOptionSource {
  * * 登録簿にある provider は `publisherRegistered: true` と宣言の項目（宣言の順。
  *   `key` / `label` / `kind`、`description` は宣言にあるときだけ。**`placeholder` は持ち込まない**）
  * * 無い provider は `publisherRegistered: false` と `[]`
+ * * `helpOf` を渡すと、`pluginId` を持つ publisher の Plugin の先頭の手順書を `help: { href, title }` に持たせる
+ *   （041-plugin-help-docs 設計 §7.4.1）。`helpOf` が `null` を返す・`pluginId` が無い・登録簿に無い provider は
+ *   `help` のキーを持たない。省略すれば、どの選択肢も `help` を持たない（039 の呼び出しと同じ結果）
  */
 export function buildProviderOptions(
   publishers: readonly PublisherOptionSource[],
+  helpOf?: (pluginId: string) => { readonly href: string; readonly title: string } | null,
 ): ProviderOption[] {
   const registrations = new Map<string, PublisherOptionSource['registration']>();
+  const pluginIds = new Map<string, string>();
   const labels: Record<string, string> = {};
-  for (const { registration } of publishers) {
+  for (const { pluginId, registration } of publishers) {
     registrations.set(registration.provider, registration);
+    if (pluginId === undefined) {
+      pluginIds.delete(registration.provider);
+    } else {
+      pluginIds.set(registration.provider, pluginId);
+    }
     labels[registration.provider] = registration.label;
   }
 
   const values = [...new Set<string>([...KNOWN_PROVIDERS, ...registrations.keys()])];
 
+  // 登録簿にある provider だけ。`KNOWN_PROVIDERS` にだけある provider は Plugin が分からない。
+  const helpLinkOf = (
+    provider: string,
+  ): { readonly href: string; readonly title: string } | null => {
+    const pluginId = pluginIds.get(provider);
+    return helpOf === undefined || pluginId === undefined ? null : helpOf(pluginId);
+  };
+
   return values.map((value) => {
     const registration = registrations.get(value);
+    const help = helpLinkOf(value);
     return {
       value,
       label: providerLabel(value, labels),
@@ -56,6 +80,8 @@ export function buildProviderOptions(
         }),
       ),
       publisherRegistered: registration !== undefined,
+      // `id` などを持ち込まず、`href` と `title` だけを写す（実装プラン §8 の 13）。
+      ...(help === null ? {} : { help: { href: help.href, title: help.title } }),
     };
   });
 }

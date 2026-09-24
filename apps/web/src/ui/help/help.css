@@ -144,3 +144,11 @@
   border-top: 1px solid var(--tf-color-border);
   margin: var(--tf-space-6) 0;
 }
+
+/*
+ * 表の中は語の途中で折り返さない。狭い画面では表を枠（.tf-table-scroll）の中で横に動かし、
+ * 1 文字ずつ縦に並んで読めなくなるのを避ける。
+ */
+.tf-help-body table {
+  overflow-wrap: normal;
+}

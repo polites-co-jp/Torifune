@@ -55,3 +55,11 @@ export const HELP_BACK_TO_SETTINGS = 'プラグインの設定へ戻る';
 /** パンくず。 */
 export const HELP_BREADCRUMB_PLUGINS = 'プラグイン';
 export const HELP_BREADCRUMB_HELP = '手順書';
+
+/** パンくずの入れ物の読み上げ名。 */
+export const HELP_BREADCRUMB_LABEL = 'パンくずリスト';
+
+/** 手順書の画面の `<title>`（ブラウザのタブ）。 */
+export function helpDocPageTitle(docTitle: string, pluginName: string): string {
+  return `${docTitle} - ${pluginName}`;
+}

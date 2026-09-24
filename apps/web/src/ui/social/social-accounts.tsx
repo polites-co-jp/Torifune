@@ -44,6 +44,7 @@ import {
   credentialClearMessage,
   credentialTargetLabel,
 } from '@/ui/social/labels';
+import { HelpLink } from '@/ui/help/help-link';
 import { AsyncState } from '@/ui/states/async-state';
 
 /** SNSアカウント一覧。型A（一覧画面）。 */
@@ -83,6 +84,11 @@ export interface ProviderOption {
   readonly credentialFields: readonly ProviderCredentialField[];
   /** この provider に publisher が登録されているか。省略は false（039 設計 §7.1）。 */
   readonly publisherRegistered?: boolean;
+  /**
+   * この provider の publisher を登録している Plugin の、先頭の手順書（041-plugin-help-docs 設計 §7.4）。
+   * 無ければ省略。
+   */
+  readonly help?: { readonly href: string; readonly title: string };
 }
 
 export interface SocialAccountsProps {
@@ -107,6 +113,19 @@ function descriptionOf(field: ProviderCredentialField): string | undefined {
   return field.description === undefined || field.description === ''
     ? undefined
     : field.description;
+}
+
+/**
+ * 資格情報の入力の場に出すヘルプボタン（041 設計 §7.4.1）。
+ *
+ * 入力の形が `fields` / `none`（publisher がある）で、その Plugin が手順書を宣言しているときだけ。
+ * `free`（publisher が無い）はどの Plugin の手順書か分からないので出さない。
+ */
+function helpOfInput(
+  option: ProviderOption | undefined,
+  input: CredentialInput,
+): ProviderOption['help'] | undefined {
+  return input === 'free' ? undefined : option?.help;
 }
 
 interface CredentialFieldsProps {
@@ -181,11 +200,13 @@ export function SocialAccounts(props: SocialAccountsProps) {
 
   const createOption = optionOf(provider);
   const createInput = credentialInputOf(createOption);
+  const createHelp = helpOfInput(createOption, createInput);
   const credentialFields = createOption?.credentialFields ?? [];
 
   const editing = editingId === null ? null : (accounts.find((a) => a.id === editingId) ?? null);
   const editOption = editing === null ? undefined : optionOf(editing.provider);
   const editInput: CredentialInput = credentialInputOf(editOption);
+  const editHelp = helpOfInput(editOption, editInput);
   const editFields = editInput === 'fields' ? (editOption?.credentialFields ?? []) : [];
 
   /** **入力値を持ち越さない。** 閉じたら捨てる（設計 §7.5）。 */
@@ -451,6 +472,13 @@ export function SocialAccounts(props: SocialAccountsProps) {
             )}
           </FormField>
 
+          {/* 選んだ provider に追従する（state は provider だけ。手順書は選択肢から引く）。 */}
+          {createHelp !== undefined && (
+            <div style={{ margin: '0 0 var(--tf-space-4)' }}>
+              <HelpLink href={createHelp.href} title={createHelp.title} />
+            </div>
+          )}
+
           <FormField label="表示名" required>
             {(fieldProps) => <Input {...fieldProps} name="displayName" required />}
           </FormField>
@@ -522,6 +550,12 @@ export function SocialAccounts(props: SocialAccountsProps) {
                 ? CREDENTIAL_STATE_CONFIGURED
                 : CREDENTIAL_STATE_NOT_CONFIGURED}
             </p>
+
+            {editHelp !== undefined && (
+              <div style={{ margin: '0 0 var(--tf-space-4)' }}>
+                <HelpLink href={editHelp.href} title={editHelp.title} />
+              </div>
+            )}
 
             {editError !== null && (
               <div style={{ marginBottom: 'var(--tf-space-4)' }}>

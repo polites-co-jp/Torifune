@@ -7,5 +7,17 @@
   "author": "Torifune",
   "license": "MIT",
   "permissions": ["site.read", "example-plugin.report.read"],
-  "extensions": ["ui", "events", "database", "authentication", "social"]
+  "extensions": ["ui", "events", "database", "authentication", "social"],
+  "help": [
+    {
+      "id": "usage",
+      "title": "サンプルSNS の資格情報の用意のしかた",
+      "path": "help/usage.md"
+    },
+    {
+      "id": "markdown",
+      "title": "手順書で使える書き方",
+      "path": "help/markdown.md"
+    }
+  ]
 }

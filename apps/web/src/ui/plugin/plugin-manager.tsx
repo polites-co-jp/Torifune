@@ -59,6 +59,21 @@ export interface PluginRow {
 }
 
 /**
+ * 「設定」の行き先（041-plugin-help-docs 設計 §7.6、ユーザー裁定 3）。
+ *
+ * 有効で読み込まれ、設定か手順書を持つ Plugin だけが設定画面を持つ。
+ * それ以外は `null`（「設定」を出さない）。**`/plugins/<id>` を返さない**
+ * （catch-all で、Plugin がそのルートにページを登録していなければ 404 になる）。
+ */
+export function settingsHrefOf(row: PluginRow): string | null {
+  const hasHelp = (row.help ?? []).length > 0;
+  if (row.status === 'enabled' && row.loaded && (row.hasSettings === true || hasHelp)) {
+    return `/plugins/${row.id}/settings`;
+  }
+  return null;
+}
+
+/**
  * 拡張点の表示名（035-social-publishing 設計 §7.9）。
  *
  * **何を握るかが読める文言にする。** 種類の名前だけを出しても、
@@ -479,6 +494,7 @@ export function PluginManager(props: PluginManagerProps) {
               <div style={{ display: 'grid', gap: 'var(--tf-space-3)' }}>
                 {installed.map((plugin) => {
                   const update = updateFor(plugin.id);
+                  const settingsHref = settingsHrefOf(plugin);
                   return (
                     <Card key={plugin.id} title={`${plugin.name}  ${plugin.version}`}>
                       <p style={{ margin: 0, color: 'var(--tf-color-text-muted)' }}>
@@ -528,8 +544,12 @@ export function PluginManager(props: PluginManagerProps) {
                             有効化
                           </Button>
                         )}
-                        {plugin.status === 'enabled' && (
-                          <Link href={`/plugins/${plugin.id}`}>
+                        {/*
+                          行き先は実在する設定画面だけ（041 設計 §7.6、ユーザー裁定 3）。
+                          Plugin の独自ページ（`/plugins/<id>`）へはメニューから開く。
+                        */}
+                        {settingsHref !== null && (
+                          <Link href={settingsHref}>
                             <Button>設定</Button>
                           </Link>
                         )}
