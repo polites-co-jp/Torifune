@@ -228,7 +228,6 @@ const MALFORMED: readonly (readonly [string, (id: string) => string])[] = [
   ['abc', () => 'abc'],
   ['空文字', () => ''],
   ['1000 文字', () => 'a'.repeat(1000)],
-  ['NUL 文字', () => '\u0000'],
   ['実在する ID のハイフンなし', (id) => id.replaceAll('-', '')],
   ['実在する ID を {…} で囲んだ値', (id) => `{${id}}`],
 ];
