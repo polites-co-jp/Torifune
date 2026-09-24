@@ -24,6 +24,7 @@ import { useScratchDatabase, type ScratchDatabase } from '@/test-support/databas
  *   クエリに片割れは載らない（パーセント符号化の不正なバイトは U+FFFD になる。設計 §6.2）ので、クエリは NUL だけ
  * - **M2**：10,000 段の入れ子（約 10〜50KB）を送っても 500 にならない。底に NUL があれば 422（NUL の文言）、無ければ従来どおりの
  *   Zod の 422（型の誤り）
+ * - **security L2**：422 の `details` のキーは**先頭の 50 個まで**（設計 §6.2 の規則 3 の追記）。応答の大きさを送った項目の数で膨らませない
  *
  * **ソースに壊れた文字を置かない。** 本文の NUL・片割れは JSON のエスケープ（`\u0000`・`\ud800` の 6 文字）で書く。
  */
@@ -36,6 +37,8 @@ const BROWSER = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
 const NUL_TEXT = '使用できない文字（NUL）が含まれています。';
 const SURROGATE_TEXT = '使用できない文字（対になっていないサロゲート）が含まれています。';
 
+/** 設計 §6.2 の規則 3 の追記（検証の指摘 security L2）。 */
+const MAX_DETAIL_KEYS = 50;
 const DEPTH = 10_000;
 
 const PROTOTYPE_NAMES = ['__proto__', 'constructor', 'toString', 'valueOf', 'hasOwnProperty'];
@@ -371,4 +374,54 @@ describe('M2 10,000 段の入れ子でも 500 にならない', () => {
       expect(records.map((record) => record.message)).not.toContain('unhandled error in route');
     },
   );
+});
+
+/* -------------------------------------------------------------------------- */
+/* security L2 details のキーは先頭の 50 個まで                                    */
+/* -------------------------------------------------------------------------- */
+
+/** `f00`〜`f(n-1)`。数字だけの名前はオブジェクトのキーの順が変わるので使わない。 */
+function fieldNames(count: number): string[] {
+  return Array.from({ length: count }, (_, index) => `f${String(index).padStart(2, '0')}`);
+}
+
+function bodyWithNul(names: readonly string[]): string {
+  return `{${names.map((name) => `"${name}":"v\\u0000"`).join(',')}}`;
+}
+
+describe('security L2 422 の details のキーは先頭の 50 個まで', () => {
+  it('L2 本文の 60 項目に NUL → details は本文の順で先頭の 50 項目', async () => {
+    const names = fieldNames(60);
+
+    const result = await postRaw(collectRoute, '/collect', bodyWithNul(names), 'none');
+
+    expect(result.status, result.text).toBe(422);
+    expect(detailEntries(result).map(([key]) => key)).toEqual(names.slice(0, MAX_DETAIL_KEYS));
+  });
+
+  it('L2 本文の 60 項目に NUL → 各キーの文言は NUL の文言', async () => {
+    const result = await postRaw(collectRoute, '/collect', bodyWithNul(fieldNames(60)), 'none');
+
+    for (const [, messages] of detailEntries(result)) {
+      expect(messages).toEqual([NUL_TEXT]);
+    }
+  });
+
+  it('L2 境目：ちょうど 50 項目 → 50 項目すべて', async () => {
+    const names = fieldNames(MAX_DETAIL_KEYS);
+
+    const result = await postRaw(collectRoute, '/collect', bodyWithNul(names), 'none');
+
+    expect(detailEntries(result).map(([key]) => key)).toEqual(names);
+  });
+
+  it('L2 クエリの 60 個に NUL → details は先頭の 50 個', async () => {
+    const names = fieldNames(60);
+    const query = names.map((name) => `${name}=v%00`).join('&');
+
+    const result = await get(authorizeRoute, `/auth/authorize?${query}`, 'none');
+
+    expect(result.status, result.text).toBe(422);
+    expect(detailEntries(result).map(([key]) => key)).toEqual(names.slice(0, MAX_DETAIL_KEYS));
+  });
 });

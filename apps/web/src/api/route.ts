@@ -34,6 +34,9 @@ import { validate } from './validation';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
+/** 使えない文字の 422 の `details` に入れるキーの上限（046-input-500-nul-and-ranges 設計 §6.2 の規則 3）。 */
+const UNUSABLE_TEXT_DETAIL_KEYS_MAX = 50;
+
 /**
  * 想定外の例外をログへ載せるときの理由（029-scheduled-jobs 設計 §6.1.7）。
  *
@@ -150,6 +153,10 @@ export class RouteDefinitionError extends Error {
  *
  * **キーは送った側が決める**（`constructor`・`__proto__` も来る）ので、オブジェクトではなく `Map` に積み、
  * `Object.fromEntries` で自分のプロパティとして返す（046 検証の指摘 M1）。
+ *
+ * 返すキーは**先頭の `UNUSABLE_TEXT_DETAIL_KEYS_MAX` 個まで**（設計 §6.2 の規則 3 の追記。046 検証の指摘 security L2）。
+ * 項目の数だけ文言を返すと、認証の要らない口へ小さな項目を並べるだけで応答を何倍にも膨らませられる。
+ * 直せば残りは次の要求で返る（Zod を走らせないのと同じ扱い）。
  */
 function mergeUnusableTextDetails(
   ...parts: readonly Record<string, string[]>[]
@@ -157,8 +164,12 @@ function mergeUnusableTextDetails(
   const merged = new Map<string, string[]>();
   for (const part of parts) {
     for (const [key, messages] of Object.entries(part)) {
-      const current = merged.get(key) ?? [];
-      merged.set(key, [...current, ...messages.filter((message) => !current.includes(message))]);
+      const current = merged.get(key);
+      if (current === undefined && merged.size >= UNUSABLE_TEXT_DETAIL_KEYS_MAX) {
+        continue;
+      }
+      const known = current ?? [];
+      merged.set(key, [...known, ...messages.filter((message) => !known.includes(message))]);
     }
   }
   return Object.fromEntries(merged);
