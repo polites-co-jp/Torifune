@@ -518,6 +518,8 @@ Torifune は既定で **1 分ごと**に配信を回す。止めている構成
 
 ## 関連
 
+* API のリファレンス（要求項目・エラーの形・Rate Limit・SNS ごとの規則・実装例）：
+  [`SNS投稿API仕様.md`](SNS投稿API仕様.md)
 * Plugin の作り方：[`Plugin開発ガイド.md`](../Plugin開発ガイド.md) §9「SNS 配信（`social`）」
 * イベントと Webhook：[`Eventリファレンス.md`](../Eventリファレンス.md)
 * API 仕様：`docs/仕様書/05_API設計.md` §18（SNS API）・§37（API Token）
