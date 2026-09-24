@@ -103,8 +103,10 @@ context.ui.registerPage({
 登録しても Core の画面が出る（登録そのものは拒否されない）。
 **`/plugins/<plugin-id>/help` とその 1 段下（`/plugins/<plugin-id>/help/<x>`）は Core が受ける。**
 `help` を宣言しない Plugin でも Core が 404 を返し、Plugin のページには届かない。
-2 段下（`/plugins/<plugin-id>/help/<x>/<y>`）から先だけが Plugin のページ（`registerPage`）に届く
-（`/plugins/<plugin-id>/settings` の下と同じ既存の挙動）。
+2 段下（`/plugins/<plugin-id>/help/<x>/<y>`）から先だけが Plugin のページ（`registerPage`）に届く。
+**Core が受けるのは上に挙げたパスだけで、それ以外のパスは Plugin のページに届く**（登録が無ければ 404）。
+`/plugins/<plugin-id>/settings` も同じで、Core が受けるのは `/plugins/<plugin-id>/settings` ちょうどだけ。
+その下（例：`/plugins/<plugin-id>/settings/<x>`）は Plugin のページに届く（既存の挙動）。
 前方一致で最も長いものが選ばれるため、`/plugins/my-plugin/reports` を登録すれば
 `/plugins/my-plugin/reports/123` もそこへ届く。
 

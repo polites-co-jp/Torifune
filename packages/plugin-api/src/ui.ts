@@ -25,8 +25,9 @@ export interface PageRegistration {
   /**
    * `/plugins/<plugin-id>/...` の名前空間に置く（06_画面設計.md §20）。
    *
-   * **`/plugins/<plugin-id>/settings` と `/plugins/<plugin-id>/help`（とその 1 段下）は Core が使う。**
-   * 登録しても Core の画面が出る（登録そのものは拒否されない。041 設計 §9.3）。
+   * **`/plugins/<plugin-id>/settings` と `/plugins/<plugin-id>/help`（とその 1 段下）は Core が受ける
+   * （`help` を宣言しなければ 404）。** 登録しても Plugin のページには届かない
+   * （登録そのものは拒否されない。041 設計 §9.3）。
    */
   readonly route: string;
   readonly component: PluginComponent;
