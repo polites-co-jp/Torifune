@@ -49,6 +49,13 @@ export interface PluginRow {
   readonly extensions: readonly string[];
   /** 実際に登録した publisher の provider。**有効化した後だけ値が入る**（設計 §9.4）。 */
   readonly publishers: readonly string[];
+  /**
+   * 設定（registerSettings）を持つか（041-plugin-help-docs 設計 §7.6）。
+   * **UI の型では省略できる**（省略は false と同じ）。Application の `PluginSummary` では必須。
+   */
+  readonly hasSettings?: boolean;
+  /** Manifest の手順書の宣言（id と title）。省略は [] と同じ。 */
+  readonly help?: readonly { readonly id: string; readonly title: string }[];
 }
 
 /**

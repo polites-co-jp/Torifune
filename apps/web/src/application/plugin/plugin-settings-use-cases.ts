@@ -1,7 +1,9 @@
+import type { AuthorizationContext } from '@/application/authorization/authorize';
 import { defineUseCase } from '@/application/authorization/use-case';
 import { NotFoundError, ValidationError } from '@/domain/repository';
 import { createPluginStore } from '@/plugin/store';
 import { loadedPlugin, settingsOf } from '@/plugin/registry';
+import { helpDocSummaries, type HelpDocSummary } from './plugin-help-use-cases';
 
 /**
  * Plugin の設定（06_画面設計.md §27, §38）。
@@ -40,42 +42,99 @@ function requireSettings(pluginId: string) {
   return { loaded, settings };
 }
 
+type SettingsRegistrationOf = NonNullable<ReturnType<typeof settingsOf>>;
+
+/**
+ * 設定の値を組み立てる。`getPluginSettings` と `getPluginSettingsPage` が共有する
+ * （UseCase から UseCase を呼ぶと認可が 2 回走るため、内部の関数に切り出す）。
+ */
+async function buildSettingsView(
+  context: AuthorizationContext,
+  pluginId: string,
+  pluginName: string,
+  settings: SettingsRegistrationOf,
+): Promise<PluginSettingsView> {
+  const store = createPluginStore({ connection: context.connection, pluginId });
+
+  const fields: SettingsFieldView[] = [];
+  for (const field of settings.fields) {
+    if (field.kind === 'secret') {
+      // **平文を返さない**（06_画面設計.md §38）。設定済みかだけを返す。
+      fields.push({
+        key: field.key,
+        label: field.label,
+        description: field.description ?? null,
+        kind: 'secret',
+        placeholder: field.placeholder ?? null,
+        value: null,
+        configured: await store.hasSecret(field.key),
+      });
+      continue;
+    }
+
+    const value = await store.get<string>(field.key);
+    fields.push({
+      key: field.key,
+      label: field.label,
+      description: field.description ?? null,
+      kind: 'text',
+      placeholder: field.placeholder ?? null,
+      value: typeof value === 'string' ? value : null,
+      configured: value !== null && value !== undefined,
+    });
+  }
+
+  return { pluginId, pluginName, fields };
+}
+
 export const getPluginSettings = defineUseCase<{ pluginId: string }, PluginSettingsView>({
   name: 'plugin.settings.get',
   permission: 'plugin.manage',
   handler: async (context, input) => {
     const { loaded, settings } = requireSettings(input.pluginId);
-    const store = createPluginStore({ connection: context.connection, pluginId: input.pluginId });
+    return buildSettingsView(context, input.pluginId, loaded.manifest.name, settings);
+  },
+});
 
-    const fields: SettingsFieldView[] = [];
-    for (const field of settings.fields) {
-      if (field.kind === 'secret') {
-        // **平文を返さない**（06_画面設計.md §38）。設定済みかだけを返す。
-        fields.push({
-          key: field.key,
-          label: field.label,
-          description: field.description ?? null,
-          kind: 'secret',
-          placeholder: field.placeholder ?? null,
-          value: null,
-          configured: await store.hasSecret(field.key),
-        });
-        continue;
-      }
+/** 設定画面の組み立て（041-plugin-help-docs 設計 §7.5）。 */
+export interface PluginSettingsPageView {
+  readonly pluginId: string;
+  readonly pluginName: string;
+  /** registerSettings していなければ null。 */
+  readonly settings: PluginSettingsView | null;
+  /** Manifest の宣言の順。無ければ []。 */
+  readonly helpDocs: readonly HelpDocSummary[];
+}
 
-      const value = await store.get<string>(field.key);
-      fields.push({
-        key: field.key,
-        label: field.label,
-        description: field.description ?? null,
-        kind: 'text',
-        placeholder: field.placeholder ?? null,
-        value: typeof value === 'string' ? value : null,
-        configured: value !== null && value !== undefined,
-      });
+/**
+ * 設定画面。読み込まれた Plugin が**設定か手順書の少なくとも一方**を持つときに出す
+ * （設定を持たない Plugin でも、手順書があれば設定画面からそこへ飛べる）。
+ *
+ * 既存の `getPluginSettings`（`/api/v1/plugins/{id}/settings` が使う）は変えない。
+ */
+export const getPluginSettingsPage = defineUseCase<{ pluginId: string }, PluginSettingsPageView>({
+  name: 'plugin.settings.page',
+  permission: 'plugin.manage',
+  handler: async (context, input) => {
+    const loaded = loadedPlugin(input.pluginId);
+    if (loaded === null) {
+      throw new NotFoundError('Plugin の設定', input.pluginId);
+    }
+    const registration = settingsOf(input.pluginId);
+    const helpDocs = helpDocSummaries(input.pluginId, loaded.manifest.help);
+    if (registration === null && helpDocs.length === 0) {
+      throw new NotFoundError('Plugin の設定', input.pluginId);
     }
 
-    return { pluginId: input.pluginId, pluginName: loaded.manifest.name, fields };
+    return {
+      pluginId: input.pluginId,
+      pluginName: loaded.manifest.name,
+      settings:
+        registration === null
+          ? null
+          : await buildSettingsView(context, input.pluginId, loaded.manifest.name, registration),
+      helpDocs,
+    };
   },
 });
 

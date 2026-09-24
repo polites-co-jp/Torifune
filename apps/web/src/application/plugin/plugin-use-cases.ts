@@ -39,7 +39,7 @@ import {
   type InstalledPluginState,
   type RegistryCompatibility,
 } from '@/plugin/registry-compatibility';
-import { isLoaded, loadedPlugin, publishersOf } from '@/plugin/registry';
+import { isLoaded, loadedPlugin, publishersOf, settingsOf } from '@/plugin/registry';
 
 /**
  * Plugin 管理の UseCase（012-plugin-manager）。
@@ -84,6 +84,13 @@ export interface PluginSummary {
    * 同じ provider を複数の Plugin が宣言していても勝つのは 1 つだけである。
    */
   readonly publishers: readonly string[];
+  /**
+   * 設定（registerSettings）を持つか（041-plugin-help-docs 設計 §7.6）。
+   * 読み込まれているときだけ true になりうる。**画面用で、API の応答には出さない。**
+   */
+  readonly hasSettings: boolean;
+  /** Manifest の手順書の宣言（id と title だけ。path を持たない）。無ければ []。画面用。 */
+  readonly help: readonly { readonly id: string; readonly title: string }[];
 }
 
 export interface PluginListOutput {
@@ -112,6 +119,8 @@ function summarize(manifest: PluginManifest, status: PluginStatus | null): Plugi
       typeof manifest.author === 'string' && manifest.author.trim() !== '' ? manifest.author : null,
     extensions: manifest.extensions ?? [],
     publishers: publishersOf(manifest.id),
+    hasSettings: isLoaded(manifest.id) && settingsOf(manifest.id) !== null,
+    help: (manifest.help ?? []).map(({ id, title }) => ({ id, title })),
   };
 }
 
@@ -152,6 +161,8 @@ export const listPlugins = defineUseCase<void, PluginListOutput>({
         author: null,
         extensions: [],
         publishers: publishersOf(record.id),
+        hasSettings: false,
+        help: [],
       });
     }
 
