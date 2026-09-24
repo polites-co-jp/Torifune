@@ -101,6 +101,10 @@ context.ui.registerPage({
 ページのルートは `/plugins/<plugin-id>/…` の名前空間に置く。
 ただし `/plugins/<plugin-id>/settings`（§6）と `/plugins/<plugin-id>/help`（§6.1）は Core が使う。
 登録しても Core の画面が出る（登録そのものは拒否されない）。
+**`/plugins/<plugin-id>/help` とその 1 段下（`/plugins/<plugin-id>/help/<x>`）は Core が受ける。**
+`help` を宣言しない Plugin でも Core が 404 を返し、Plugin のページには届かない。
+2 段下（`/plugins/<plugin-id>/help/<x>/<y>`）から先だけが Plugin のページ（`registerPage`）に届く
+（`/plugins/<plugin-id>/settings` の下と同じ既存の挙動）。
 前方一致で最も長いものが選ばれるため、`/plugins/my-plugin/reports` を登録すれば
 `/plugins/my-plugin/reports/123` もそこへ届く。
 
@@ -346,7 +350,8 @@ plugins/
 * ヘルプボタンと設定画面のリンクは**新しいタブ**で開く（入力中のフォームを消さないため）
 * `/plugins` のカードには手順書を出さない
 * **有効で読み込まれた Plugin の手順書は、ログインしていれば誰でも読める**（資格情報を入れる人の多くは `plugin.manage` を持たない）。
-  有効にする前の Plugin の手順書は `plugin.manage` を持つ管理者だけが URL で読める（他の人には 404。画面からの入口は無い）。
+  有効にする前の Plugin の手順書は、**ビルドに取り込まれた後（導入の再ビルドの後）から**、`plugin.manage` を持つ管理者だけが URL で読める（他の人には 404。画面からの入口は無い）。
+  `plugins/` に置いただけで再ビルドしていない Plugin は、登録簿に無いので 404 になる。
   **有効にする前に読ませたい手順書は、README に `/plugins/<plugin-id>/help/<id>` の URL を書く**
 
 #### ファイル

@@ -49,7 +49,7 @@ X への配信 Plugin は 2 つあります。**どちらも provider は `x` �
 
 X の開発者向け画面（Developer Console）でアプリを作り、権限を **Read and write** にしてから、投稿に使う自分のアカウントの Access Token を発行します。
 
-詳しい手順は [help/credentials.md](help/credentials.md) にあります。Torifune では、`/social` のヘルプボタン、または `/plugins/sns-x-api/help/credentials` から読めます（有効にする前は `plugin.manage` を持つ管理者だけが読めます）。
+詳しい手順は [help/credentials.md](help/credentials.md) にあります。Torifune では、`/social` のヘルプボタン、または `/plugins/sns-x-api/help/credentials` から読めます（有効にする前は、導入の再ビルドの後から `plugin.manage` を持つ管理者だけが読めます）。
 
 - **権限を Read and write に変えたのが Access Token の発行より後なら、Access Token を発行し直してください。**
   読み取り専用のまま発行したトークンでは、投稿が HTTP 403 で断られます

@@ -33,7 +33,7 @@ Torifune 本体は Threads を知らないため、**この Plugin を無効に�
 App に `threads_basic` と `threads_content_publish` の権限を持たせ、投稿に使う Threads アカウントをテスターとして承認してから、
 そのアカウントの**長期アクセストークン**と**数字だけのユーザー ID** を用意して、下の 3 項目として入れます。
 
-詳しい手順は [help/credentials.md](help/credentials.md) にあります。Torifune では、`/social` のヘルプボタン、または `/plugins/sns-threads/help/credentials` から読めます（有効にする前は `plugin.manage` を持つ管理者だけが読めます）。
+詳しい手順は [help/credentials.md](help/credentials.md) にあります。Torifune では、`/social` のヘルプボタン、または `/plugins/sns-threads/help/credentials` から読めます（有効にする前は、導入の再ビルドの後から `plugin.manage` を持つ管理者だけが読めます）。
 
 ### 安全のための注意
 
