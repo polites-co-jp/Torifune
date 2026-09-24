@@ -6,6 +6,7 @@ import { emit } from '@/application/events';
 import {
   DEFAULT_LISTED_CAMPAIGN_STATUSES,
   isValidCampaignName,
+  isValidDateOnly,
   isValidPeriod,
   type Campaign,
   type CampaignStatus,
@@ -47,6 +48,12 @@ export const listCampaigns = defineUseCase<ListCampaignsInput, CampaignPage>({
   name: 'campaign.list',
   permission: 'campaign.read',
   handler: async (context, input) => {
+    // 形（YYYY-MM-DD）は API の Zod が見る。暦に無い日付（2026-02-30 など）は DB の ::date まで届くと
+    // 例外（500）になるので、ここで断る（045-campaign-input-500 設計 §6.2）。
+    if (input.activeOn !== null && !isValidDateOnly(input.activeOn)) {
+      throw new ValidationError('Campaign', 'activeOn', '存在しない日付です。');
+    }
+
     // 状態を指定しなければ cancelled を隠す。
     // 「やらなかった記録」が既定の一覧に混ざると邪魔になる。
     const statuses: readonly CampaignStatus[] =
