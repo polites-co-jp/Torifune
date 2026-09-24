@@ -23,6 +23,9 @@ import { useScratchDatabase, type ScratchDatabase } from '@/test-support/databas
  *    UseCase を通してこれを確かめる：`campaign_sites` の BEFORE INSERT トリガで保存を止めておき、
  *    その間に別の接続からサイトを `DELETE` する。正しければ `DELETE` は保存が終わるまで待ち、
  *    保存は成功する（422 でもよいが、`23503` は許さない）。
+ * 2. **PATCH はキャンペーンの行を先に押さえ、その後で紐づけ先を押さえる**（security 低-1）。
+ *    同じキャンペーンへの PATCH が行の順番待ちをしている間は、紐づけ先のサイトを押さえていない
+ *    （サイトの `DELETE` を待たせない）。
  *
  * 止めるのは `sleep` ではなく advisory lock（`gate`）で行い、待ちの有無は `pg_locks` /
  * `pg_stat_activity` で確かめる（時間に頼らない。設計 §13 の 4）。
@@ -143,6 +146,16 @@ async function isWaitingOnLock(pid: number): Promise<boolean> {
     [pid],
   );
   return result.rows[0]?.wait_event_type === 'Lock';
+}
+
+/** `pids` 以外で、この DB の中で行ロックなどを待っている接続があるか。 */
+async function someoneElseWaitsOnLock(pids: readonly number[]): Promise<boolean> {
+  const result = await monitor.query<{ n: number }>(
+    `SELECT count(*)::int AS n FROM pg_stat_activity
+      WHERE datname = current_database() AND wait_event_type = 'Lock' AND NOT (pid = ANY($1::int[]))`,
+    [[...pids]],
+  );
+  return (result.rows[0]?.n ?? 0) > 0;
 }
 
 async function backendPid(client: pg.Client): Promise<number> {
@@ -329,5 +342,79 @@ describe('保存の途中で紐づけ先のサイトが消されても、外部�
     );
 
     expect(outcome.deleteFinishedBeforeRelease).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* 2. PATCH はキャンペーンの行を先に押さえる（security 低-1）                          */
+/* -------------------------------------------------------------------------- */
+
+describe('PATCH はキャンペーンの行を押さえてから紐づけ先を押さえる', () => {
+  /**
+   * 別の接続がキャンペーンの行を押さえている（先の PATCH が保存中）間に、同じキャンペーンへ
+   * `siteIds: [target]` の PATCH を始め、それが行の順番待ちに入ったところで target を消す。
+   */
+  async function queuedPatchThenDeleteTarget(): Promise<{
+    readonly deleteError: unknown;
+    readonly patched: { ok: true; value: unknown } | { ok: false; error: unknown };
+  }> {
+    const s1 = await makeSite('order-s1');
+    const target = await makeSite('order-target');
+    const campaign = await createCampaign(admin, {
+      name: 'キャンペーン',
+      description: '',
+      status: 'draft',
+      startsOn: '2026-01-01',
+      endsOn: null,
+      siteIds: [s1],
+    });
+
+    const holder = await openClient();
+    const holderPid = await backendPid(holder);
+    await holder.query('BEGIN');
+    // PATCH が行を更新するときと同じロック（FOR NO KEY UPDATE）を取る。
+    await holder.query('UPDATE campaigns SET name = name WHERE id = $1', [campaign.id]);
+
+    let finished = false;
+    try {
+      const patching = settle(updateCampaign(admin, { id: campaign.id, siteIds: [target] }));
+      const deleter = await openClient();
+      const deleterPid = await backendPid(deleter);
+      await waitUntil(
+        () => someoneElseWaitsOnLock([holderPid, deleterPid]),
+        '後の PATCH がキャンペーンの行を待つ',
+      );
+
+      await deleter.query("SET lock_timeout = '200ms'");
+      let deleteError: unknown = null;
+      try {
+        await deleter.query('DELETE FROM sites WHERE id = $1', [target]);
+      } catch (error) {
+        deleteError = error;
+      }
+
+      await holder.query('ROLLBACK');
+      finished = true;
+      return { deleteError, patched: await patching.result };
+    } finally {
+      if (!finished) {
+        await holder.query('ROLLBACK');
+      }
+    }
+  }
+
+  it('順番待ちの PATCH は紐づけ先のサイトを押さえていない（サイトの DELETE が lock_timeout で失敗しない）', async () => {
+    const { deleteError } = await queuedPatchThenDeleteTarget();
+
+    expect((deleteError as { code?: unknown } | null)?.code).toBeUndefined();
+  });
+
+  it('順番が来た PATCH は、その間に消えたサイトを 422（ValidationError、field === "siteIds"）で断る', async () => {
+    const { patched } = await queuedPatchThenDeleteTarget();
+
+    expect(patched.ok).toBe(false);
+    const error = patched.ok ? null : patched.error;
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as { field?: unknown }).field).toBe('siteIds');
   });
 });

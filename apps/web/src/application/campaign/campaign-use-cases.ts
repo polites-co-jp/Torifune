@@ -191,8 +191,10 @@ export const updateCampaign = defineUseCase<UpdateCampaignInput, Campaign>({
 
     const campaign = await context.connection.transaction(async (tx) => {
       if (links.siteIds !== undefined || links.socialPostIds !== undefined) {
-        // 存在しないキャンペーンは 404 を先に返す（紐づけ先の存在より前。045 設計 §6.3 の検査の順序）。
-        if ((await campaignRepository.findById(tx, input.id)) === null) {
+        // キャンペーンの行を先に押さえ、存在しなければ 404 を先に返す（紐づけ先の存在より前。
+        // 045 設計 §6.3 の検査の順序）。行を先に押さえるので、同じキャンペーンへの更新の順番待ちの間は
+        // 紐づけ先を押さえない（サイト・投稿の削除を待たせない。§6.4）。
+        if (!(await campaignRepository.lockForUpdate(tx, input.id))) {
           throw new NotFoundError('Campaign', input.id);
         }
         await assertLinksExist(tx, links);

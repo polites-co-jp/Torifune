@@ -380,4 +380,20 @@ export const campaignRepository: CampaignRepository = {
 
     return { siteIds, socialPostIds };
   },
+
+  async lockForUpdate(connection: Connection, id: string): Promise<boolean> {
+    if (!UUID_PATTERN.test(id)) {
+      return false;
+    }
+    // FOR NO KEY UPDATE：UPDATE campaigns（主キーを変えない）が取るのと同じロック。
+    // 紐づけ先を押さえる前に取ることで、同じキャンペーンへの後の更新は紐づけ先を押さえずに
+    // ここで待つ（045 設計 §6.4）。campaign_sites などの外部キーの検査（KEY SHARE）とは衝突しない。
+    const row = await connection.db
+      .selectFrom('campaigns')
+      .select('id')
+      .where('id', '=', id)
+      .forNoKeyUpdate()
+      .executeTakeFirst();
+    return row !== undefined;
+  },
 };

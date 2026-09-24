@@ -66,6 +66,14 @@ export interface CampaignRepository {
    * 空の配列の種類は問い合わせない。
    */
   lockExistingLinks(connection: Connection, links: CampaignLinks): Promise<CampaignLinks>;
+  /**
+   * キャンペーンの行を、行の更新と同じ強さで押さえる。存在しなければ false（045 設計 §6.4）。
+   *
+   * **書き込みと同じトランザクションの中で、`lockExistingLinks` より先に呼ぶ。**
+   * 同じキャンペーンへの更新が重なったとき、後の更新はここで順番を待つ。待っている間は
+   * 紐づけ先の行を押さえていないので、サイト・SNS 投稿の削除を待たせない。
+   */
+  lockForUpdate(connection: Connection, id: string): Promise<boolean>;
 }
 
 /** キャンペーンの紐づけ先の ID。 */
