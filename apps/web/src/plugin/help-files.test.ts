@@ -248,6 +248,28 @@ describe('#12 Manifest の検査を迂回したパス', () => {
   });
 });
 
+describe('#94 D1：ファイルに触れる前（手順 2）に外へ出るパスを止める', () => {
+  /**
+   * 外に**そのファイルが無い**パスを渡す。手順 2（`resolve` の結果が Plugin のフォルダの中か）を
+   * 飛ばして手順 3（`realpath`）へ進む実装だと、ファイルが無いので `not_found` になる。
+   * `outside_plugin_dir` が返ることで、ファイルに触れる前に止まったことを判別する。
+   */
+  it("#94 '../missing.md'（フォルダの外にそのファイルが無い）→ not_found ではなく outside_plugin_dir", async () => {
+    expectFailure(await readPluginHelpFile(pluginDirectory, '../missing.md'), 'outside_plugin_dir');
+  });
+
+  it("#94 'help/../../missing.md'（途中で外へ出て、そこにファイルが無い）→ outside_plugin_dir", async () => {
+    expectFailure(
+      await readPluginHelpFile(pluginDirectory, 'help/../../missing.md'),
+      'outside_plugin_dir',
+    );
+  });
+
+  it('#94 対の条件：フォルダの中の無いファイル（help/missing.md）は not_found', async () => {
+    expectFailure(await readPluginHelpFile(pluginDirectory, 'help/missing.md'), 'not_found');
+  });
+});
+
 describe('#13 大きさの上限（262144 バイト）', () => {
   it('#13 262144 バイトちょうど → ok: true で本文が欠けない', async () => {
     await put('help/a.md', 'a'.repeat(262144));

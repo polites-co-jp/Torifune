@@ -300,3 +300,84 @@ describe('XSS の見本をまとめて描いても、実行できる形が 1 つ
     }
   });
 });
+
+describe('#96 D10：GFM の脚注のリンク', () => {
+  const markdown = '本文[^1]\n\n[^1]: 注の文。\n';
+
+  interface PositionedAnchor extends Anchor {
+    readonly index: number;
+  }
+
+  function positionedAnchorsOf(html: string): readonly PositionedAnchor[] {
+    return [...html.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/g)].map((match) => ({
+      attributes: attributesOf(match[1] ?? ''),
+      inner: match[2] ?? '',
+      index: match.index,
+    }));
+  }
+
+  /** 脚注の `<li>`（`id` を持つもの）と、参照の `<a>`（その前）・戻りの `<a>`（その中）。 */
+  function footnoteParts(html: string): {
+    readonly liId: string;
+    readonly liIndex: number;
+    readonly ref: PositionedAnchor | undefined;
+    readonly backref: PositionedAnchor | undefined;
+  } {
+    const li = /<li\b[^>]*\bid="([^"]+)"[^>]*>/.exec(html);
+    const liIndex = li?.index ?? -1;
+    const anchors = positionedAnchorsOf(html);
+    return {
+      liId: li?.[1] ?? '',
+      liIndex,
+      ref: anchors.filter((anchor) => anchor.index < liIndex).at(-1),
+      backref: anchors.find((anchor) => anchor.index > liIndex),
+    };
+  }
+
+  it('#96 脚注の <li> に id があり、参照の <a> の href が # ＋ その id と一致する', () => {
+    const { liId, liIndex, ref } = footnoteParts(render(markdown));
+
+    expect(liIndex, '脚注の <li id=…> が無い').toBeGreaterThan(-1);
+    expect(liId).not.toBe('');
+    expect(ref?.attributes['href']).toBe(`#${liId}`);
+  });
+
+  it('#96 戻りの <a> の href が # ＋ 参照の要素の id と一致する（その要素は脚注より前にある）', () => {
+    const html = render(markdown);
+    const { liIndex, backref } = footnoteParts(html);
+    const href = backref?.attributes['href'] ?? '';
+
+    expect(href.startsWith('#')).toBe(true);
+    const target = href.slice(1);
+    const targetIndex = html.indexOf(`id="${target}"`);
+    expect(targetIndex, `id="${target}" の要素が無い`).toBeGreaterThan(-1);
+    expect(targetIndex).toBeLessThan(liIndex);
+  });
+
+  it('#96 出力に #help-user-content- が現れない', () => {
+    expect(render(markdown)).not.toContain('#help-user-content-');
+  });
+
+  it('#96 脚注の参照と戻りのリンクは同じタブで開く（target を持たない）', () => {
+    const { ref, backref } = footnoteParts(render(markdown));
+
+    expect(ref).toBeDefined();
+    expect(backref).toBeDefined();
+    expect(ref?.attributes['target']).toBeUndefined();
+    expect(backref?.attributes['target']).toBeUndefined();
+  });
+
+  it('#96 脚注の見出しの文言が「脚注」（英語の Footnotes を出さない）', () => {
+    const html = render(markdown);
+
+    expect(html).toMatch(/<h[1-6]\b[^>]*>脚注<\/h[1-6]>/);
+    expect(html).not.toContain('Footnotes');
+  });
+
+  it('#96 戻りのリンクの文言は「本文へ戻る」（設計 §7.3.2 の footnoteBackLabel）', () => {
+    const html = render(markdown);
+
+    expect(html).toContain('本文へ戻る');
+    expect(html).not.toContain('Back to reference');
+  });
+});

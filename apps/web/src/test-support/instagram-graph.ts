@@ -112,6 +112,30 @@ export function tokenRefreshed(
   return { status: 200, body };
 }
 
+/**
+ * R0：自分のユーザー ID（`GET /<版>/me?fields=user_id`。041 設計 §6.4.2）。
+ *
+ * `value` は文字列でも数値でもよい（`JSON.stringify` で本体にする）。
+ * **安全な整数を超える数値は `JSON.stringify` の前に丸まる**ので、その形は `meUserIdRaw` で書く。
+ */
+export function meUserId(value: unknown): GraphResponseExample {
+  return { status: 200, body: { user_id: value } };
+}
+
+/**
+ * R0：本体を**文字列の JSON のまま**返す（041 実装プラン §7 の 19）。
+ *
+ * `{"user_id":17841400000000001}` のように、JavaScript の数値にすると下の桁が失われる値を
+ * そのまま Plugin に読ませるために使う。
+ */
+export function meUserIdRaw(json: string): GraphResponseExample {
+  return {
+    status: 200,
+    body: json,
+    headers: { 'content-type': 'application/json; charset=UTF-8' },
+  };
+}
+
 /** Graph API のエラー（`{ "error": { … } }`）。既定は HTTP 400。 */
 export function graphError(example: GraphErrorExample = {}): GraphResponseExample {
   const error: Record<string, unknown> = {

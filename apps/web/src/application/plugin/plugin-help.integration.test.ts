@@ -21,7 +21,7 @@ import { roleRepository } from '@/infrastructure/role-repository';
 import type { DependencyCandidate } from '@/plugin/dependencies';
 import type { PluginModuleEntry } from '@/plugin/generated-registry';
 import { disablePlugin, enablePlugin, installPlugin } from '@/plugin/lifecycle';
-import { discoverPlugins } from '@/plugin/loader';
+import { discoverPlugins, resetManifestWarningLog } from '@/plugin/loader';
 import { resetPluginRegistry } from '@/plugin/registry';
 import { resetPluginRuntime } from '@/plugin/runtime';
 import { useScratchDatabase, type ScratchDatabase } from '@/test-support/database';
@@ -249,6 +249,15 @@ const DEMO_DOCS = [
   { id: 'second', title: '二本目の手順書', href: '/plugins/help-demo/help/second' },
 ];
 
+/**
+ * 本文（`getPluginHelpDoc`）の `docs` は宣言の `path` を持つ（設計 §6.3。D9 で #31 の期待値を変えた）。
+ * 一覧（`getPluginHelpIndex`）の `docs` は `path` を持たない。
+ */
+const DEMO_DOCS_WITH_PATH = [
+  { ...DEMO_DOCS[0], path: 'help/first.md' },
+  { ...DEMO_DOCS[1], path: 'help/second.md' },
+];
+
 beforeAll(async () => {
   scratch = await useScratchDatabase('pluginhelp');
 });
@@ -294,7 +303,7 @@ afterEach(async () => {
 });
 
 describe('#31 読み込まれた Plugin の手順書は、Permission を持たない認証済みの利用者でも読める', () => {
-  it('#31 本文・pluginName・pluginVersion・docs（宣言の順・href つき）・loaded: true が返る', async () => {
+  it('#31 本文・pluginName・pluginVersion・docs（宣言の順・href と path つき）・loaded: true が返る', async () => {
     await enable('help-demo');
 
     const result = await getPluginHelpDoc(nobody, { pluginId: 'help-demo', docId: 'first' });
@@ -303,7 +312,7 @@ describe('#31 読み込まれた Plugin の手順書は、Permission を持た�
       pluginId: 'help-demo',
       pluginName: '手順書デモ',
       pluginVersion: '1.2.3',
-      docs: DEMO_DOCS,
+      docs: DEMO_DOCS_WITH_PATH,
       loaded: true,
       doc: {
         id: 'first',
@@ -327,6 +336,18 @@ describe('#31 読み込まれた Plugin の手順書は、Permission を持た�
       docs: DEMO_DOCS,
       loaded: true,
     });
+  });
+
+  it('#31 本文の docs の要素は宣言の path を持ち、一覧の docs の要素は path を持たない', async () => {
+    await enable('help-demo');
+
+    const doc = await getPluginHelpDoc(nobody, { pluginId: 'help-demo', docId: 'first' });
+    const index = await getPluginHelpIndex(nobody, { pluginId: 'help-demo' });
+
+    expect(doc.docs.map((item) => item.path)).toEqual(['help/first.md', 'help/second.md']);
+    for (const item of index.docs) {
+      expect(Object.keys(item)).not.toContain('path');
+    }
   });
 
   it('#31 plugin.manage を持たない viewer も読める', async () => {
@@ -611,6 +632,12 @@ describe('#37 宣言したファイルが無い', () => {
 });
 
 describe('#38 help を持たない Plugin・形の誤った help', () => {
+  beforeEach(() => {
+    // D8 で警告はプロセスごと・Plugin ごとに 1 回になった。同じプロセスの先のテストで
+    // 既に出ていると 0 回になるので、ここで記憶を消す（041 実装プラン §8 の 24）。
+    resetManifestWarningLog();
+  });
+
   it('#38 help を持たない Plugin（有効）→ 一覧・本文とも NotFoundError', async () => {
     await enable('plain');
 
@@ -662,6 +689,66 @@ describe('#38 help を持たない Plugin・形の誤った help', () => {
     await expect(enable('help-broken')).resolves.toBeUndefined();
 
     expect(helpLinkOfPlugin('help-broken')).toBeNull();
+  });
+});
+
+describe('#97 D8：Manifest の警告のログはプロセスごと・Plugin ごとに 1 回', () => {
+  beforeEach(() => {
+    resetManifestWarningLog();
+  });
+
+  it('#97 形の誤った help の Plugin があるとき、discoverPlugins() を 3 回呼んでも warn は 1 回', () => {
+    discoverPlugins();
+    discoverPlugins();
+    discoverPlugins();
+
+    const warned = warnings('plugin manifest has warnings');
+    expect(warned).toHaveLength(1);
+    expect(warned[0]?.fields?.['pluginId']).toBe('help-broken');
+  });
+
+  it('#97 形の誤った help の Plugin が 2 つなら、3 回呼んで warn は 2 回（Plugin ごとに 1 回）', () => {
+    modules = [
+      ...registryEntries(),
+      {
+        directory: 'help-broken-too',
+        manifest: {
+          id: 'help-broken-too',
+          name: '形の誤った help（2 つ目）',
+          version: '1.0.0',
+          apiVersion: 1,
+          help: [{ id: 'Token', title: '大文字の ID', path: 'help/a.md' }],
+        },
+        module: withoutSettings(),
+      },
+    ];
+
+    discoverPlugins();
+    discoverPlugins();
+    discoverPlugins();
+
+    const warned = warnings('plugin manifest has warnings');
+    expect(warned).toHaveLength(2);
+    expect(warned.map((record) => record.fields?.['pluginId']).sort()).toEqual(
+      ['help-broken', 'help-broken-too'].sort(),
+    );
+  });
+
+  it('#97 有効化や一覧の中で discoverPlugins が何度走っても、warn は 1 回', async () => {
+    await enable('help-broken');
+    await listPlugins(admin, undefined);
+    discoverPlugins();
+
+    expect(warnings('plugin manifest has warnings')).toHaveLength(1);
+  });
+
+  it('#97 テストの口 resetManifestWarningLog() の後は、もう一度 1 回出る', () => {
+    discoverPlugins();
+    resetManifestWarningLog();
+    discoverPlugins();
+    discoverPlugins();
+
+    expect(warnings('plugin manifest has warnings')).toHaveLength(2);
   });
 });
 

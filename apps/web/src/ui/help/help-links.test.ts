@@ -151,3 +151,24 @@ describe('#21 宣言していないもの・外へ出るものは none', () => {
     },
   );
 });
+
+describe('#95 D2：Plugin のフォルダより上へ出る .. は丸めずに none', () => {
+  it.each([
+    '../../help/switching.md',
+    '../../../help/switching.md',
+    '../x/../../help/switching.md',
+  ])('#95 %j（上へ出た後に宣言のパスへ戻る）→ none', (href) => {
+    expect(resolveHelpLink(href, context)).toStrictEqual({ kind: 'none' });
+  });
+
+  it('#95 断片つきでも同じ（../../help/switching.md#a → none）', () => {
+    expect(resolveHelpLink('../../help/switching.md#a', context)).toStrictEqual({ kind: 'none' });
+  });
+
+  it("#95 対の条件：上へ出ずに戻るだけの '../help/switching.md' は従来どおり internal", () => {
+    expect(resolveHelpLink('../help/switching.md', context)).toStrictEqual({
+      kind: 'internal',
+      href: '/plugins/p/help/switching',
+    });
+  });
+});
