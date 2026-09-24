@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
+import { ownValue } from '@/domain/own-value';
 import type { AccountStatus } from '@/domain/social/social';
 import { apiRequest } from '@/ui/client/api-client';
 import {
@@ -359,7 +360,8 @@ export function SocialAccounts(props: SocialAccountsProps) {
       header: 'サービス',
       width: '10rem',
       // publisher の表示名を優先する（設計 §5.6.1）。部品に自前の対応表を持たない。
-      render: (account) => providerLabels[account.provider] ?? account.provider,
+      // provider は HTTP で決められるので、自分のプロパティだけを見る（047 設計 §4.1）。
+      render: (account) => ownValue(providerLabels, account.provider) ?? account.provider,
     },
     { key: 'displayName', header: '表示名', render: (account) => account.displayName },
     { key: 'handle', header: 'ハンドル', render: (account) => account.handle },
@@ -542,7 +544,7 @@ export function SocialAccounts(props: SocialAccountsProps) {
             <p style={{ margin: '0 0 var(--tf-space-1)' }}>
               {credentialTargetLabel(
                 editing.displayName,
-                providerLabels[editing.provider] ?? editing.provider,
+                ownValue(providerLabels, editing.provider) ?? editing.provider,
               )}
             </p>
             <p style={{ margin: '0 0 var(--tf-space-4)' }}>

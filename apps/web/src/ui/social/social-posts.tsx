@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useState } from 'react';
+import { ownValue } from '@/domain/own-value';
 import type { DeliveryMode, PostStatus } from '@/domain/social/social';
 import { apiRequest } from '@/ui/client/api-client';
 import {
@@ -135,7 +136,8 @@ export function SocialPosts(props: SocialPostsProps) {
     if (account === undefined) {
       return null;
     }
-    const publisher = props.publisherProviders[account.provider];
+    // provider は HTTP で決められるので、自分のプロパティだけを見る（047 設計 §4.1）。
+    const publisher = ownValue(props.publisherProviders, account.provider);
     if (publisher === undefined || !publisher.publish) {
       return 'no_publisher';
     }
