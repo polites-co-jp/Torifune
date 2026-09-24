@@ -291,7 +291,7 @@ CORS ヘッダが付く（`*` は指定できない）。ただし **API トー�
   * `publishSocialPosts` の **409**（他の配信処理が実行中）
 * `page` / `perPage` の範囲は、parameter の `description` に書かれている
   （「1 以上。範囲外は 1 に丸める。」「1〜100。範囲外は 1〜100 に丸める。」）。範囲外も断られない（§3.6）ので、
-  `minimum` / `maximum` は書かれていない。`accountId` には UUID の形の `pattern` が付く（§4.5）
+  `minimum` / `maximum` は書かれていない。`accountId` には `format: uuid` と UUID の形の `pattern` が付く（§4.5）。OpenAPI からクライアントを生成している場合、`accountId` の引数が UUID 型（Java の `UUID`、C# の `Guid` など）に変わることがある
 * **OpenAPI に載らないこと**（この文書で補う）
   * SNS ごとの規則（§5）と、配信 Plugin が返す 422 の `details` のキー
 
@@ -1131,7 +1131,7 @@ while True:
 | --- | --- |
 | 2026-09-24 | 初版。コード（Core の SNS API と `sns-bluesky` / `sns-x-api` / `sns-x-manual` / `sns-threads` / `sns-instagram` の 5 Plugin）から起こした |
 | 2026-09-24 | 検証を受けて訂正。認証失敗時の 403 `CSRF_FAILED`、`media.<n>.url` のキー、`failureReason` の 422、409 の `details`、`externalRef` が SNS をまたいで衝突すること、`page` / `perPage` / `accountId` の範囲外の振る舞い、Rate Limit の送信元 IP、Webhook の回数、例の不具合を直し、§10 を整理した |
-| 2026-09-24 | コードの課題（旧 §10.1 の 1・2・4・5）を直したのに合わせて更新。Bluesky の手動投稿は、投稿画面の URL が 2048 文字を超える本文と対になっていないサロゲートを登録時に 422 `body` で断る（§5.2・§5.5）。SNS の一覧の `page` / `perPage` の範囲外を丸める（§3.6。従来は 0 以下が 500）。OpenAPI に `createSocialPost` の 200・`{id}` の 6 操作の 404・`publishSocialPosts` の 409 を宣言した（§3.7）。**動作の変更が 2 つある**：(1) **`perPage` を 101 以上で送ると 100 件までしか返らない**（従来は要求した件数まで返っていた。`meta.perPage` が `100` になるので検知でき、`meta.total` までページを送れば全件取れる）。(2) **`GET /social/posts` の `accountId` が UUID の形でない値（空文字を含む）は 422 `accountId`**（従来は絞り込みが黙って外れて全件が返っていた。§4.5）。どちらも初版から送らないよう書いていた値で、API のバージョンは v1 のまま |
+| 2026-09-24 | コードの課題（旧 §10.1 の 1・2・4・5）を直したのに合わせて更新。Bluesky の手動投稿は、投稿画面の URL が 2048 文字を超える本文と対になっていないサロゲートを登録時に 422 `body` で断る（§5.2・§5.5）。SNS の一覧の `page` / `perPage` の範囲外を丸める（§3.6。従来は `page=0`・`perPage=-1` などが 500、`perPage=0` は空の 200）。OpenAPI に `createSocialPost` の 200・`{id}` の 6 操作の 404・`publishSocialPosts` の 409 を宣言した（§3.7）。**動作の変更が 2 つある**：(1) **`perPage` を 101 以上で送ると 100 件までしか返らない**（従来は要求した件数まで返っていた。`meta.perPage` が `100` になるので検知でき、`meta.total` までページを送れば全件取れる）。(2) **`GET /social/posts` の `accountId` が UUID の形でない値（空文字を含む）は 422 `accountId`**（従来は絞り込みが黙って外れて全件が返っていた。§4.5）。どちらも初版から送らないよう書いていた値で、API のバージョンは v1 のまま。あわせて OpenAPI の `accountId` に `format: uuid` が付いた（生成クライアントでは引数の型が変わることがある。§3.7） |
 
 ### 関連文書
 
