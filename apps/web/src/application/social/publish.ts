@@ -43,6 +43,7 @@ import {
 } from '@/domain/social/publishing';
 import type { SocialAccount, SocialPost } from '@/domain/social/social';
 import type { DueCursor } from '@/domain/social/social-repository';
+import { toStorableText } from '@/domain/text';
 import { encryptSecret } from '@/infrastructure/crypto/cipher';
 import { log } from '@/infrastructure/logging';
 import { redactSecrets } from '@/infrastructure/secret-text';
@@ -241,9 +242,13 @@ function publisherLogger(pluginId: string, secretValues: readonly string[]): Plu
  * Plugin 由来の自由文を、記録できる形にする（設計 §6.5.5）。
  *
  * **伏せてから切る。** 逆にすると、途中で切れた値が完全一致の秘匿に掛からず残る。
+ *
+ * **伏せてから NUL・片割れを U+FFFD に置き換える**（046-input-500-nul-and-ranges 設計 §9.4・§13 の 4）。
+ * 逆にすると、NUL・片割れを含む資格情報の値が完全一致の秘匿に掛からなくなる。断らないのは、
+ * Plugin の配信はもう終わっていて、断ると起きたことの記録が消えるため。
  */
 function safeText(text: string, values: readonly string[]): string {
-  return redactCredentialValues(redactSecrets(text), values);
+  return toStorableText(redactCredentialValues(redactSecrets(text), values));
 }
 
 function messageOf(error: unknown): string {
@@ -260,6 +265,11 @@ function redactAttemptResult(
   }
   if (result.type === 'result' && !result.ok) {
     return { ...result, reason: safeText(result.reason, values) };
+  }
+  if (result.type === 'result' && result.ok && result.externalId !== undefined) {
+    // SNS に出た後の記録。NUL で記録が失敗すると `published` にならず二重投稿の防止が効かない（設計 §9.4）。
+    // `externalUrl` は `decidePublishOutcome` が URL の判定（NUL を断る）で捨てる。
+    return { ...result, externalId: toStorableText(result.externalId) };
   }
   return result;
 }
