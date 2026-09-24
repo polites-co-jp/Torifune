@@ -1,5 +1,5 @@
 /**
- * 本文の数え方と facets の組み立て（036-sns-bluesky 設計 §6.7 / §9.3）。
+ * 本文の数え方・facets の組み立て・手動投稿の Web Intent の URL（036-sns-bluesky 設計 §6.7 / §9.3 / §9.4）。
  *
  * **純関数だけを置く。** 外部 I/O を持たず、Key-Value Store にも触れない。
  * 数え方と facet の検査に HTTP の差し替えが要らなくなる（設計 §4）。
@@ -42,6 +42,70 @@ export function utf8ByteLength(text: string): number {
     return 0;
   }
   return utf8Encoder.encode(text).length;
+}
+
+/* -------------------------------------------------------------------------- */
+/* 手動投稿の Web Intent（設計 §9.4。042-social-api-input-fixes 設計 §9.2）       */
+/* -------------------------------------------------------------------------- */
+
+/** 手動投稿の受け皿。**PDS の設定と関係がない**（設計 §7.1）。 */
+const MANUAL_INTENT_URL = 'https://bsky.app/intent/compose';
+
+/**
+ * 手動投稿の Web Intent の URL の上限（文字数）。
+ *
+ * **Core の `isValidManualUrl` の上限（2048 文字）と同じ値。** 超える URL は Core が断り、
+ * 画面の「投稿画面を開く」が失敗する。Plugin は Core の定数を import しないので、ここに持つ。
+ */
+export const MANUAL_URL_MAX_LENGTH = 2048;
+
+/**
+ * 対になっていないサロゲート（上位だけ・前に上位が無い下位）。
+ *
+ * **`u` フラグを付けない**（付けると正しい対が 1 文字として扱われ、片割れとの区別に使えない）。
+ */
+const LONE_SURROGATE_PATTERN =
+  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+/** 置き換え用（`g` を付けたもの）。判定には `g` の無いほうを使う（`lastIndex` を持ち越さない）。 */
+const LONE_SURROGATE_GLOBAL_PATTERN = new RegExp(LONE_SURROGATE_PATTERN.source, 'g');
+
+/** 対になっていないサロゲートを含むか。 */
+export function hasLoneSurrogate(text: string): boolean {
+  return typeof text === 'string' && LONE_SURROGATE_PATTERN.test(text);
+}
+
+/** `deliveryMode: 'manual'` で実際に投稿画面へ渡す文字列。 */
+function manualText(body: string, link: string | null): string {
+  return link === null || link === '' ? body : `${body}\n${link}`;
+}
+
+/**
+ * 手動投稿の文字列。`body` / `link` が文字列でなければ `''` / 無しとみなす
+ * （外から来た値なので型を確かめてから触る。設計 §9.3）。
+ */
+export function manualTextOf(post: { readonly body: unknown; readonly link: unknown }): string {
+  const body = typeof post.body === 'string' ? post.body : '';
+  const link = typeof post.link === 'string' ? post.link : null;
+  return manualText(body, link);
+}
+
+/**
+ * 手動投稿で開く Web Intent の URL。
+ *
+ * **`validate()` の数えと `manual()` の返す URL は、必ずこの関数で組み立てる**（数えた URL と
+ * 実際に渡す URL がずれる余地を作らない）。
+ *
+ * 対になっていないサロゲートは U+FFFD に置き換えてからエンコードする。`encodeURIComponent` は
+ * 片割れで `URIError` を投げるが、`manual()` は検査を通っていない投稿でも呼ばれるので投げられない。
+ * 正しい文字列には何もしない。
+ */
+export function buildBlueskyIntentUrl(post: {
+  readonly body: unknown;
+  readonly link: unknown;
+}): string {
+  const text = manualTextOf(post).replace(LONE_SURROGATE_GLOBAL_PATTERN, '\uFFFD');
+  return `${MANUAL_INTENT_URL}?text=${encodeURIComponent(text)}`;
 }
 
 /** facet の位置。**UTF-8 のバイト単位**（設計 §6.7）。 */

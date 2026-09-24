@@ -26,7 +26,15 @@ import {
 } from './atproto';
 import type { PdsUrlResolution } from './settings';
 import { resolvePdsUrl } from './settings';
-import { detectLinkFacets, graphemeCount, utf8ByteLength } from './text';
+import {
+  buildBlueskyIntentUrl,
+  detectLinkFacets,
+  graphemeCount,
+  hasLoneSurrogate,
+  MANUAL_URL_MAX_LENGTH,
+  manualTextOf,
+  utf8ByteLength,
+} from './text';
 
 /**
  * Bluesky（AT Protocol）の publisher（036-sns-bluesky 設計 §9）。
@@ -62,9 +70,6 @@ const LANG_MAX_LENGTH = 16;
 /** `providerOptions` で受け付ける唯一のキー。 */
 const LANGS_KEY = 'langs';
 
-/** 手動投稿の受け皿。**PDS の設定と関係がない**（設計 §7.1）。 */
-const MANUAL_INTENT_URL = 'https://bsky.app/intent/compose';
-
 const MANUAL_NOTE =
   'Bluesky の投稿画面が開きます。内容を確かめて投稿してください。' +
   '画像を添える場合はその画面で添付してください。';
@@ -97,10 +102,11 @@ export interface BlueskyPublisherOptions {
   readonly now?: () => Date;
 }
 
-/** `deliveryMode: 'manual'` で実際に投稿画面へ渡す文字列。 */
-function manualText(body: string, link: string | null): string {
-  return link === null || link === '' ? body : `${body}\n${link}`;
-}
+/** 手動投稿で対になっていないサロゲートを見つけたときの文言（042-social-api-input-fixes 設計 §9.2 の 7）。 */
+const LONE_SURROGATE_MESSAGE = '本文に扱えない文字が含まれています。';
+
+/** 手動投稿の Web Intent の URL が長すぎるときの文言（042-social-api-input-fixes 設計 §9.2 の 8）。 */
+const INTENT_URL_TOO_LONG_MESSAGE = '投稿画面の URL が長くなりすぎます。本文を短くしてください。';
 
 /**
  * 本文として数える文字列。
@@ -108,9 +114,10 @@ function manualText(body: string, link: string | null): string {
  * `manual` のときは `body + '\n' + link`（§9.4 で実際に渡す文字列だから）。
  */
 function countedBody(post: SocialPostDraftView): string {
-  const body = typeof post.body === 'string' ? post.body : '';
-  const link = typeof post.link === 'string' ? post.link : null;
-  return post.deliveryMode === 'manual' ? manualText(body, link) : body;
+  if (post.deliveryMode === 'manual') {
+    return manualTextOf(post);
+  }
+  return typeof post.body === 'string' ? post.body : '';
 }
 
 /** `providerOptions.langs` の形（配列・要素は文字列・3 件以内・各 2〜16 文字）。 */
@@ -151,6 +158,18 @@ function validateDraft(post: SocialPostDraftView): readonly PublisherValidationP
       field: 'body',
       message: `本文が長すぎます（Bluesky の上限は${BODY_MAX_BYTES}バイトです）。`,
     });
+  }
+
+  // 手動投稿だけ：画面の「投稿画面を開く」で渡す URL を登録時に確かめる
+  // （042-social-api-input-fixes 設計 §9.2 の 7・8）。自動配信は Web Intent を使わない。
+  if (post.deliveryMode === 'manual') {
+    if (hasLoneSurrogate(body)) {
+      // 7 に当たったら 8 を数えない（U+FFFD への置き換えで長さが変わり、数えを誤る）。
+      problems.push({ field: 'body', message: LONE_SURROGATE_MESSAGE });
+    } else if (buildBlueskyIntentUrl(post).length > MANUAL_URL_MAX_LENGTH) {
+      // 本文の grapheme 数・バイト数の問題と重ねて返す（違反はすべて返す）。
+      problems.push({ field: 'body', message: INTENT_URL_TOO_LONG_MESSAGE });
+    }
   }
 
   const media = Array.isArray(post.media) ? post.media : [];
@@ -668,12 +687,8 @@ export function createBlueskyPublisher(options: BlueskyPublisherOptions): Publis
     manual(input: ManualInput): ManualHandoff {
       // **`store` を読まない・`await` しない・例外を投げない。**
       // 2 秒で打ち切られ、1 画面で最大 50 行ぶん呼ばれる（設計 §9.4）。
-      const post = input.post;
-      const link = typeof post.link === 'string' ? post.link : null;
-      return {
-        url: `${MANUAL_INTENT_URL}?text=${encodeURIComponent(manualText(post.body, link))}`,
-        note: MANUAL_NOTE,
-      };
+      // URL は validate() が数えたものと同じ関数で組み立てる（042-social-api-input-fixes 設計 §9.2）。
+      return { url: buildBlueskyIntentUrl(input.post), note: MANUAL_NOTE };
     },
   };
 }
