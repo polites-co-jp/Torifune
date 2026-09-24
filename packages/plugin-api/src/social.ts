@@ -80,7 +80,15 @@ export interface ManualInput {
 }
 
 export interface ManualHandoff {
-  /** 投稿内容を反映した投稿画面の URL。https の絶対 URL、または `/` で始まる Torifune 内のパス。 */
+  /**
+   * 投稿内容を反映した投稿画面の URL。https の絶対 URL、または `/` で始まる Torifune 内のパス。
+   *
+   * **https の絶対 URL は 2048 文字以内。** 超えると Torifune は使えない URL として扱い、
+   * 手動投稿待ちの行が「Plugin が返した URL を開けません」になる。
+   * 本文を URL に埋め込む Plugin は、`validate()` で手動投稿のときに URL の長さを確かめ、登録時に断る
+   * （日本語 1 文字は URL の中で 9 文字になる）。
+   * `/` で始まるパスもいまは長さを検査していないが、同じく 2048 文字以内に収める。
+   */
   readonly url: string;
   /** 画面に添える注意書き（例：「画像は投稿画面で添付してください」）。 */
   readonly note?: string;

@@ -10,13 +10,27 @@
 
 export interface Page<T> {
   readonly items: readonly T[];
+  /** 条件に合う全件数。全件が要るときは、ここまでページを送る。 */
   readonly total: number;
+  /** 採ったページ番号。**丸めた後の値**（要求した値とは限らない）。 */
   readonly page: number;
+  /** 採った 1 ページの件数。**丸めた後の値**（要求した値とは限らない。上限は 100）。 */
   readonly perPage: number;
 }
 
+/**
+ * 一覧のページング。
+ *
+ * **範囲外の値は例外にせず丸める。** `page` は 1 以上、`perPage` は 1〜100。
+ * 小数は切り捨て、数にならない値（`NaN`・`Infinity` など）は省略と同じに扱う。
+ * 採った値は `Page.page` / `Page.perPage` に返る。
+ *
+ * 1 回で返るのは 100 件まで。全件が要るときは `Page.total` までページを送る。
+ */
 export interface ListOptions {
+  /** 1 始まり。省略すると 1。1 未満は 1 に丸める。 */
   readonly page?: number;
+  /** 省略すると 20。1〜100 に丸める。 */
   readonly perPage?: number;
 }
 
@@ -171,6 +185,7 @@ export interface AnalyticsInput {
 
 export interface PluginDataApi {
   readonly sites: {
+    /** `page` / `perPage` は丸める（`ListOptions`）。 */
     list(options?: ListOptions): Promise<Page<SiteView>>;
     get(id: string): Promise<SiteView | null>;
     create(input: SiteInput): Promise<SiteView>;
@@ -180,6 +195,13 @@ export interface PluginDataApi {
 
   /** キャンペーン（05_API設計.md §22、017-campaigns）。 */
   readonly campaigns: {
+    /**
+     * `page` / `perPage` は丸める（`ListOptions`）。
+     *
+     * `siteId` はそのサイトを対象に含むものに絞る。**UUID の形（8-4-4-4-12 の 16 進）で渡す。**
+     * 形が違えば（空文字を含む）返す `Promise` が `PluginDataInputError`（`field` は `'siteId'`）で reject される。
+     * 絞らないときは省略する。UUID の形で存在しない ID なら空の `Page` が返る。
+     */
     list(options?: ListOptions & { siteId?: string }): Promise<Page<CampaignView>>;
     get(id: string): Promise<CampaignView | null>;
     create(input: CampaignInput): Promise<CampaignView>;
@@ -200,11 +222,19 @@ export interface PluginDataApi {
   };
 
   readonly socialAccounts: {
+    /** `page` / `perPage` は丸める（`ListOptions`）。 */
     list(options?: ListOptions): Promise<Page<SocialAccountView>>;
     get(id: string): Promise<SocialAccountView | null>;
   };
 
   readonly socialPosts: {
+    /**
+     * `page` / `perPage` は丸める（`ListOptions`）。
+     *
+     * `accountId` はその SNS アカウントの投稿に絞る。**UUID の形（8-4-4-4-12 の 16 進）で渡す。**
+     * 形が違えば（空文字を含む）返す `Promise` が `PluginDataInputError`（`field` は `'accountId'`）で reject される。
+     * 絞らないときは省略する。UUID の形で存在しない ID なら空の `Page` が返る。
+     */
     list(options?: ListOptions & { accountId?: string }): Promise<Page<SocialPostView>>;
     get(id: string): Promise<SocialPostView | null>;
     /**
@@ -228,6 +258,7 @@ export interface PluginDataApi {
    * 「誰がやったか」を表示するために要る、という用途に限る。
    */
   readonly users: {
+    /** `page` / `perPage` は丸める（`ListOptions`）。 */
     list(options?: ListOptions): Promise<Page<UserView>>;
     get(id: string): Promise<UserView | null>;
   };
