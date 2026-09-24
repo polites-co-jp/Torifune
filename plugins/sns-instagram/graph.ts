@@ -6,6 +6,8 @@
  * 文言の組み立てと `PublishResult` への変換は `social.ts` が持つ。
  */
 
+import { isValidIgUserId } from './token';
+
 /* -------------------------------------------------------------------------- */
 /* 宛先と版（設計 §6.1）                                                          */
 /* -------------------------------------------------------------------------- */
@@ -70,6 +72,13 @@ export const PERMALINK_TIMEOUT_MS = 3_000;
 
 /** トークンの延長 1 本の制限時間。 */
 export const REFRESH_TIMEOUT_MS = 3_000;
+
+/**
+ * 自分のユーザー ID の問い合わせ（R0）1 本の制限時間（041-plugin-help-docs 設計 §6.4.2）。
+ *
+ * 読むだけの要求なので R5 / R6 と同じ長さ。**準備の期限の中で**送る（合計の期限は変えない）。
+ */
+export const ME_TIMEOUT_MS = 3_000;
 
 /** carousel の子の作成と状態の確認を同時に飛ばす本数の上限。 */
 export const CAROUSEL_CHILD_CONCURRENCY = 5;
@@ -545,10 +554,11 @@ export async function sendGraphRequest(request: GraphRequest): Promise<GraphOutc
 /**
  * どの段階の失敗か。`retryable` と `reason` はこれで決まる（設計 §6.9）。
  *
+ * `me` = R0（ユーザー ID の問い合わせ。041 設計 §6.4。R1 と同じ扱い）、
  * `container` = R1 / R2、`status` = R3（とその状態・準備の期限）、`publish` = R4、
  * `permalink` = R5、`refresh` = R6。
  */
-export type GraphPhase = 'container' | 'status' | 'publish' | 'permalink' | 'refresh';
+export type GraphPhase = 'me' | 'container' | 'status' | 'publish' | 'permalink' | 'refresh';
 
 export type GraphFailureKind =
   | 'network'
@@ -600,7 +610,8 @@ function errorObjectOf(body: unknown): Record<string, unknown> | undefined {
 /**
  * 失敗の `retryable`（設計 §6.9 の支配的な規則）。
  *
- * `container` / `status`（R4 の前）は既定で `true`、直らないものだけ `false`。
+ * `me` / `container` / `status`（R4 の前）は既定で `true`、直らないものだけ `false`。
+ * `me`（R0）は `container`（R1）と同じ規則（041 設計 §6.4.2）。
  * `publish`（R4）は既定で `false`、レート制限だけ `true`。
  */
 export function retryableFor(
@@ -694,6 +705,54 @@ function notOk(phase: GraphPhase, outcome: GraphOutcome): GraphResult<never> {
     default:
       return transportFailure(phase, outcome.kind);
   }
+}
+
+/**
+ * R0 の応答の `user_id` を、パスに入れてよい数字の ID にする（041 設計 §6.4.2）。
+ *
+ * - 文字列：`isValidIgUserId`（数字だけ・64 桁まで）に合うときだけ
+ * - 数値：`Number.isSafeInteger` のときだけ `String(値)`。**安全な整数を超える値は使わない**
+ *   （JSON の解釈で下の桁が失われている）
+ * - それ以外（無い・空・形に合わない）：`undefined`
+ */
+function meUserIdOf(body: unknown): string | undefined {
+  const value: unknown = isRecord(body) ? body['user_id'] : undefined;
+  if (typeof value === 'string') {
+    return isValidIgUserId(value) ? value : undefined;
+  }
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) {
+    return String(value);
+  }
+  return undefined;
+}
+
+/**
+ * R0：アクセストークンの持ち主のユーザー ID を問い合わせる（041 設計 §6.4.2。ユーザー裁定 U1）。
+ *
+ * `GET /<版>/me?fields=user_id`。トークンは R1〜R5 と同じ **`Authorization: Bearer`** で渡し、
+ * **URL のクエリに `access_token` を載せない**。`redirect: 'manual'` と本体の上限は `sendGraphRequest` のまま。
+ *
+ * 応答が 2xx で `user_id` が形に合わなければ `value: undefined`（呼び出し側が
+ * `ID_UNRESOLVED_REASON` で断る）。**得た ID・応答の本体・URL を失敗に持たせない。**
+ */
+export async function readMeUserId(params: {
+  readonly impl: FetchImpl;
+  readonly accessToken: string;
+  readonly signal: AbortSignal;
+}): Promise<GraphResult<string | undefined>> {
+  const outcome = await sendGraphRequest({
+    impl: params.impl,
+    method: 'GET',
+    path: versioned('me'),
+    query: { fields: 'user_id' },
+    bearerToken: params.accessToken,
+    timeoutMs: ME_TIMEOUT_MS,
+    signal: params.signal,
+  });
+  if (outcome.kind !== 'ok') {
+    return notOk('me', outcome);
+  }
+  return { ok: true, value: meUserIdOf(outcome.body) };
 }
 
 interface ContainerRequestBase {

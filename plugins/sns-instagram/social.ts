@@ -24,6 +24,7 @@ import {
   createImageContainer,
   publishContainer,
   readContainerStatus,
+  readMeUserId,
   readPermalink,
   refreshAccessToken,
   resolveFetch,
@@ -32,7 +33,9 @@ import {
   type GraphResult,
 } from './graph';
 import {
+  UNKNOWN_EXPIRY,
   expiryFromExpiresIn,
+  isAutoIgUserId,
   isValidAccessToken,
   isValidIgUserId,
   parseExpiry,
@@ -100,9 +103,10 @@ const CREDENTIAL_FIELDS: readonly PluginSettingsField[] = [
     label: 'Instagram ユーザー ID',
     description:
       'Instagram のプロアカウント（ビジネスまたはクリエイター）の ID。数字だけの文字列です。' +
-      '@ で始まるユーザーネームではありません。',
+      '@ で始まるユーザーネームではありません。' +
+      '分からなければ auto と入れてください。次の配信のとき、Torifune がアクセストークンから ID を確かめて保存し直します。',
     kind: 'text',
-    placeholder: '17841400000000000',
+    placeholder: 'auto',
   },
   {
     key: 'accessToken',
@@ -200,6 +204,14 @@ const CREDENTIAL_REASON =
   'Instagram の資格情報の形が正しくありません（ユーザー ID は数字だけ、長期アクセストークンは空白や改行を含まない' +
   ' 2048 文字以内の文字列）。SNS アカウントの資格情報を登録し直してください。';
 
+/**
+ * R0（`auto` のユーザー ID の問い合わせ）の応答の形が期待と違う（041 設計 §6.4.2）。
+ *
+ * 再試行で直らない（Graph API の仕様の変更か、別の窓口のトークン）。人が数字の ID を入れれば直る。
+ */
+export const ID_UNRESOLVED_REASON =
+  'Instagram のユーザー ID を自動で確かめられませんでした。「資格情報を設定」で、ユーザー ID の欄に数字だけの ID を入れてください。';
+
 const UNEXPECTED_BEFORE_PUBLISH_REASON =
   'Instagram への配信の準備中に予期しない問題が起きました。公開の要求は送っていないので、時間をおいて再試行します。';
 
@@ -232,6 +244,7 @@ function detailOf(failure: GraphFailure): string {
 }
 
 const PHASE_LABELS: Readonly<Record<GraphFailure['phase'], string>> = {
+  me: 'ユーザー ID の確認',
   container: 'container の作成',
   status: 'container の状態の確認',
   publish: '公開',
@@ -317,6 +330,9 @@ function beforePublishReason(failure: GraphFailure, detail: string): string {
   }
   if (failure.retryable) {
     return `Instagram が一時的に応答できませんでした（${phase}）${detail}。時間をおいて再試行します。`;
+  }
+  if (failure.phase === 'me') {
+    return `Instagram がユーザー ID の確認を断りました${detail}。Instagram 側でアカウントの状態を確かめてください。`;
   }
   return failure.phase === 'container'
     ? `Instagram が画像を受け付けませんでした${detail}。media の URL が公開された JPEG 画像を指しているか確かめてください。`
@@ -573,9 +589,19 @@ async function afterPublish(
   session: Session,
   mediaId: string | undefined,
   credential: Readonly<Record<string, string>>,
+  resolvedFromAuto: boolean,
   log: (message: string, phase: string, detail?: Record<string, unknown>) => void,
 ): Promise<PublishResult> {
   const result: AfterPublish = {};
+  if (resolvedFromAuto) {
+    // `auto` を R0 で解決した ID を書き戻す（041 設計 §6.4.3）。延長したら下で延長後の値に置き換わる。
+    // **3 つを明示して組む。** `...credential` で写さない。期限は入っていた値そのまま（unknown を含む）。
+    result.rotatedCredential = {
+      igUserId: session.igUserId,
+      accessToken: session.accessToken,
+      accessTokenExpiresAt: credential['accessTokenExpiresAt'] ?? UNKNOWN_EXPIRY,
+    };
+  }
   try {
     if (mediaId === undefined) {
       // **失敗にしない。** 200 を返した以上、公開されている（設計 §6.5）。
@@ -682,9 +708,11 @@ async function publishPost(
       log('instagram input rejected', 'input');
       return { ok: false, reason: LINK_REASON, retryable: false };
     }
-    const igUserId = credential['igUserId'];
+    const enteredUserId = credential['igUserId'];
     const accessToken = credential['accessToken'];
-    if (!isValidIgUserId(igUserId) || !isValidAccessToken(accessToken)) {
+    // `auto` は数字の ID の代わりに通す（041 設計 §6.4。ユーザー裁定 U1）。それ以外の形の誤りは従来どおり。
+    const autoUserId = isAutoIgUserId(enteredUserId);
+    if ((!autoUserId && !isValidIgUserId(enteredUserId)) || !isValidAccessToken(accessToken)) {
       log('instagram credential rejected', 'input');
       return { ok: false, reason: CREDENTIAL_REASON, retryable: false };
     }
@@ -694,18 +722,7 @@ async function publishPost(
     // **入口で合計の期限を 1 つ作り、すべての要求の外側に混ぜる**（設計 §6.8）。
     const outer = AbortSignal.any([signal, AbortSignal.timeout(PUBLISH_TOTAL_BUDGET_MS)]);
     const prepare = AbortSignal.any([outer, AbortSignal.timeout(PREPARE_BUDGET_MS)]);
-    const session: Session = {
-      impl: resolveFetch(options.fetch),
-      clock,
-      wait: options.wait ?? defaultWait,
-      igUserId,
-      accessToken,
-      input: signal,
-      outer,
-      prepare,
-      prepareDeadline: startedAt + PREPARE_BUDGET_MS,
-      totalDeadline: startedAt + PUBLISH_TOTAL_BUDGET_MS,
-    };
+    const impl = resolveFetch(options.fetch);
 
     const fail = (failure: GraphFailure): PublishResult => {
       if (signal.aborted) {
@@ -718,6 +735,40 @@ async function publishPost(
         retryable: failure.retryable,
         ...(failure.retryAfterMs === undefined ? {} : { retryAfterMs: failure.retryAfterMs }),
       };
+    };
+
+    // R0：`auto` なら準備の最初に、準備の signal の下で自分の ID を問い合わせる（041 設計 §6.4.2）。
+    // 1 回の配信につき 1 回まで。失敗したら R1 以降を送らない。**ID の値をログに載せない。**
+    let igUserId: string;
+    if (autoUserId) {
+      const me = await readMeUserId({ impl, accessToken, signal: prepare });
+      if (!me.ok) {
+        return fail(me.failure);
+      }
+      if (me.value === undefined) {
+        if (signal.aborted) {
+          return { ok: false, reason: ABORTED_REASON, retryable: false };
+        }
+        log('instagram user id unresolved', 'me');
+        return { ok: false, reason: ID_UNRESOLVED_REASON, retryable: false };
+      }
+      igUserId = me.value;
+      log('instagram user id resolved', 'me');
+    } else {
+      igUserId = enteredUserId as string;
+    }
+
+    const session: Session = {
+      impl,
+      clock,
+      wait: options.wait ?? defaultWait,
+      igUserId,
+      accessToken,
+      input: signal,
+      outer,
+      prepare,
+      prepareDeadline: startedAt + PREPARE_BUDGET_MS,
+      totalDeadline: startedAt + PUBLISH_TOTAL_BUDGET_MS,
     };
 
     const prepared = await prepareContainer(session, media, post.body);
@@ -744,7 +795,7 @@ async function publishPost(
     }
     logger.info('Instagram へ配信した', base);
 
-    return await afterPublish(session, published.value.mediaId, credential, log);
+    return await afterPublish(session, published.value.mediaId, credential, autoUserId, log);
   } catch {
     // 送っていなければ `true`、送っていれば・分からなければ `false`（設計 §6.11）。
     //

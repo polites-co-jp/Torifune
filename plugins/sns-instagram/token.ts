@@ -42,6 +42,18 @@ export function isValidIgUserId(value: unknown): value is string {
   return typeof value === 'string' && IG_USER_ID_PATTERN.test(value);
 }
 
+/** ユーザー ID の欄の「分からない」を表す決まった語（041-plugin-help-docs 設計 §6.4.1）。 */
+const AUTO_IG_USER_ID_PATTERN = /^auto$/i;
+
+/**
+ * ユーザー ID の欄が `auto`（大文字・小文字は問わない。前後の空白は許さない）か。
+ *
+ * `auto` なら配信の入口で Plugin が R0 で数字の ID を確かめる（ユーザー裁定 U1）。
+ */
+export function isAutoIgUserId(value: unknown): value is string {
+  return typeof value === 'string' && AUTO_IG_USER_ID_PATTERN.test(value);
+}
+
 /** アクセストークンの形（空白・制御文字・非 ASCII を含まない、2048 文字まで）。 */
 export function isValidAccessToken(value: unknown): value is string {
   return typeof value === 'string' && ACCESS_TOKEN_PATTERN.test(value);
