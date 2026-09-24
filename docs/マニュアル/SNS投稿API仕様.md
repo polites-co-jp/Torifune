@@ -1132,6 +1132,7 @@ while True:
 | 2026-09-24 | 初版。コード（Core の SNS API と `sns-bluesky` / `sns-x-api` / `sns-x-manual` / `sns-threads` / `sns-instagram` の 5 Plugin）から起こした |
 | 2026-09-24 | 検証を受けて訂正。認証失敗時の 403 `CSRF_FAILED`、`media.<n>.url` のキー、`failureReason` の 422、409 の `details`、`externalRef` が SNS をまたいで衝突すること、`page` / `perPage` / `accountId` の範囲外の振る舞い、Rate Limit の送信元 IP、Webhook の回数、例の不具合を直し、§10 を整理した |
 | 2026-09-24 | コードの課題（旧 §10.1 の 1・2・4・5）を直したのに合わせて更新。Bluesky の手動投稿は、投稿画面の URL が 2048 文字を超える本文と対になっていないサロゲートを登録時に 422 `body` で断る（§5.2・§5.5）。SNS の一覧の `page` / `perPage` の範囲外を丸める（§3.6。従来は `page=0`・`perPage=-1` などが 500、`perPage=0` は空の 200）。OpenAPI に `createSocialPost` の 200・`{id}` の 6 操作の 404・`publishSocialPosts` の 409 を宣言した（§3.7）。**動作の変更が 2 つある**：(1) **`perPage` を 101 以上で送ると 100 件までしか返らない**（従来は要求した件数まで返っていた。`meta.perPage` が `100` になるので検知でき、`meta.total` までページを送れば全件取れる）。(2) **`GET /social/posts` の `accountId` が UUID の形でない値（空文字を含む）は 422 `accountId`**（従来は絞り込みが黙って外れて全件が返っていた。§4.5）。どちらも初版から送らないよう書いていた値で、API のバージョンは v1 のまま。あわせて OpenAPI の `accountId` に `format: uuid` が付いた（生成クライアントでは引数の型が変わることがある。§3.7） |
+| 2026-09-24 | §10.1 の「初版の 1 の記述の訂正」を、SNS 以外の一覧の `page` / `perPage`・`GET /campaigns?siteId=`・SNS 以外の OpenAPI の宣言を直したことに合わせて更新した。**記述の更新だけで、SNS 投稿 API の振る舞い・OpenAPI は変わらない** |
 
 ### 関連文書
 
@@ -1161,8 +1162,8 @@ Bluesky の手動投稿の URL の長さ、OpenAPI の 200・404・409 の宣言
 
 **初版の 1 の記述の訂正**：初版は「他の一覧 API は `paginationSchema` で 1〜100 に丸めている」と書いたが、誤りだった。
 丸めているのは `/analytics`・`/analytics/breakdown` だけで、`/sites`・`/users`・`/campaigns` の一覧も、直す前の
-SNS の一覧と同じく `page` / `perPage` の範囲を検査していない。これらと、`GET /campaigns?siteId=` の絞り込みが
-UUID の形でない値で外れること、SNS 以外のエンドポイントの 404・409 の OpenAPI の宣言は、後続の作業単位でまとめて直す予定
+SNS の一覧と同じく `page` / `perPage` の範囲を検査していなかった。これらと、`GET /campaigns?siteId=` の絞り込みが
+UUID の形でない値で外れること、SNS 以外のエンドポイントの 404・409 の OpenAPI の宣言は、`043` で直した
 （SNS 投稿 API の振る舞いには影響しない）。
 
 ### 10.2 文書間の食い違い
