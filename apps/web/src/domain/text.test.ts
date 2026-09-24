@@ -253,3 +253,118 @@ describe('#5 文言の定数', () => {
     });
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* 検証の指摘（2026-09-25）M1・M2                                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * M1：`Object.prototype` の名前（`__proto__`・`constructor`・`toString`・`valueOf`・`hasOwnProperty`）の項目でも、
+ * 例外を投げずにその名前をキーにして返す（046 実装プラン §8「検証の指摘への処置」）。
+ *
+ * `JSON.parse` は `"__proto__"` を**自分のプロパティ**として作る。オブジェクトのリテラルの `__proto__:` は
+ * 原型を変えてしまうので、入力は JSON の文字列から作る。返り値は `Object.entries` で見る（原型の名前と区別するため）。
+ */
+const PROTOTYPE_NAMES = ['__proto__', 'constructor', 'toString', 'valueOf', 'hasOwnProperty'];
+
+const PROTOTYPE_NAME_CASES = PROTOTYPE_NAMES.flatMap((name) => [
+  { name, label: 'NUL', escaped: '\\u0000', text: NUL_TEXT },
+  { name, label: '片割れ', escaped: '\\ud800', text: SURROGATE_TEXT },
+]);
+
+describe('M1 unusableTextDetailsOf は原型の名前の項目でも例外を投げない', () => {
+  it.each(PROTOTYPE_NAME_CASES)(
+    'M1 最上位の項目 $name に $label → その名前をキーにして返す',
+    ({ name, escaped, text }) => {
+      const value = JSON.parse(`{"ok":"x","${name}":"v${escaped}"}`) as unknown;
+
+      expect(Object.entries(unusableTextDetailsOf(value))).toEqual([[name, [text]]]);
+    },
+  );
+
+  it.each(PROTOTYPE_NAME_CASES)(
+    'M1 入れ子の項目 $name に $label → 最上位の項目名で返す',
+    ({ name, escaped, text }) => {
+      const value = JSON.parse(`{"p":{"${name}":"v${escaped}"}}`) as unknown;
+
+      expect(Object.entries(unusableTextDetailsOf(value))).toEqual([['p', [text]]]);
+    },
+  );
+
+  it.each(PROTOTYPE_NAMES)('M1 使えない文字の無い項目 %s → 空', (name) => {
+    const value = JSON.parse(`{"${name}":"v"}`) as unknown;
+
+    expect(Object.entries(unusableTextDetailsOf(value))).toEqual([]);
+  });
+
+  it('M1 返り値は通常のオブジェクトで、__proto__ は自分のプロパティ（原型を変えない）', () => {
+    const details = unusableTextDetailsOf(JSON.parse('{"__proto__":"v\\u0000"}') as unknown);
+
+    expect(Object.getPrototypeOf(details)).toBe(Object.prototype);
+    expect(Object.getOwnPropertyDescriptor(details, '__proto__')?.value).toEqual([NUL_TEXT]);
+    expect(JSON.stringify(details)).toBe(JSON.stringify({ ['__proto__']: [NUL_TEXT] }));
+  });
+});
+
+/**
+ * M2：入れ子の深さで例外（`RangeError`）にならない。`JSON.parse` は 10,000 段の入れ子を読めるので、
+ * 認証の要らない口にも 10KB ほどで届く（046 実装プラン §8「検証の指摘への処置」）。
+ * 入力は JSON の文字列から作る（`JSON.stringify` は深い入れ子を書けない）。
+ */
+const DEPTH = 10_000;
+
+function nestedArrays(depth: number, leafJson: string): string {
+  return `${'['.repeat(depth)}${leafJson}${']'.repeat(depth)}`;
+}
+
+function nestedObjects(depth: number, leafJson: string): string {
+  return `${'{"a":'.repeat(depth)}${leafJson}${'}'.repeat(depth)}`;
+}
+
+describe('M2 unusableTextDetailsOf は深い入れ子でも例外を投げない', () => {
+  it('M2 10,000 段の配列の底に NUL → 最上位の項目名で NUL の文言', () => {
+    const value = JSON.parse(`{"p":${nestedArrays(DEPTH, '"v\\u0000"')}}`) as unknown;
+
+    expect(unusableTextDetailsOf(value)).toEqual({ p: [NUL_TEXT] });
+  });
+
+  it('M2 10,000 段のオブジェクトの底に片割れ → 最上位の項目名でサロゲートの文言', () => {
+    const value = JSON.parse(`{"p":${nestedObjects(DEPTH, '"v\\ud800"')}}`) as unknown;
+
+    expect(unusableTextDetailsOf(value)).toEqual({ p: [SURROGATE_TEXT] });
+  });
+
+  it('M2 10,000 段のオブジェクトの底のキーに NUL → 最上位の項目名で返す', () => {
+    const value = JSON.parse(`{"p":${nestedObjects(DEPTH, '{"k\\u0000":1}')}}`) as unknown;
+
+    expect(unusableTextDetailsOf(value)).toEqual({ p: [NUL_TEXT] });
+  });
+
+  it('M2 深さの違う場所に片割れと NUL → 文言は NUL が先の 2 つ', () => {
+    const value = JSON.parse(`{"p":["\\ud800",${nestedArrays(DEPTH, '"v\\u0000"')}]}`) as unknown;
+
+    expect(unusableTextDetailsOf(value)).toEqual({ p: [NUL_TEXT, SURROGATE_TEXT] });
+  });
+
+  it('M2 最上位が 10,000 段の配列で底に NUL → `_`', () => {
+    const value = JSON.parse(nestedArrays(DEPTH, '"v\\u0000"')) as unknown;
+
+    expect(unusableTextDetailsOf(value)).toEqual({ _: [NUL_TEXT] });
+  });
+
+  it('M2 使えない文字の無い 10,000 段の入れ子 → 空', () => {
+    const value = JSON.parse(
+      `{"p":${nestedArrays(DEPTH, '"v"')},"q":${nestedObjects(DEPTH, '"w"')}}`,
+    ) as unknown;
+
+    expect(unusableTextDetailsOf(value)).toEqual({});
+  });
+
+  it('M2 項目の順は深さに左右されない（本文の順）', () => {
+    const value = JSON.parse(
+      `{"a":${nestedArrays(DEPTH, '"v\\u0000"')},"b":"w\\u0000"}`,
+    ) as unknown;
+
+    expect(Object.keys(unusableTextDetailsOf(value))).toEqual(['a', 'b']);
+  });
+});

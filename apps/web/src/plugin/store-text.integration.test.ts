@@ -148,3 +148,123 @@ describe('#31 keys の接頭辞・setSecret・絵文字', () => {
     await expect(store.get('emoji-object')).resolves.toEqual(value);
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* 検証の指摘（2026-09-25）M1・M2                                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * M1：`Object.prototype` の名前のキーの値に NUL・片割れがあっても、`TypeError` ではなく `PluginStoreError`。
+ * `__proto__` は `JSON.parse` で自分のプロパティとして作る（リテラルの `__proto__:` は原型を変える）。
+ */
+const PROTOTYPE_NAMED: readonly (readonly [string, unknown])[] = [
+  ['{ __proto__: NUL }', JSON.parse(`{"__proto__":"v${MARKER}\\u0000"}`) as unknown],
+  ['{ constructor: NUL }', { constructor: `v${MARKER}\u0000` }],
+  ['{ toString: NUL }', { toString: `x${MARKER}\u0000` }],
+  ['{ valueOf: 片割れ }', { valueOf: `v${MARKER}\ud800` }],
+  ['{ hasOwnProperty: 片割れ }', { hasOwnProperty: `v${MARKER}\ud800` }],
+];
+
+describe('M1 原型の名前のキーの値に NUL・片割れがあっても PluginStoreError', () => {
+  it.each(PROTOTYPE_NAMED)(
+    'M1 set(k, %s) → PluginStoreError（TypeError ではない）',
+    async (_label, value) => {
+      const error = await rejectionOf(store.set('k', value));
+
+      expect(error).not.toBeInstanceOf(TypeError);
+      expect(error).toBeInstanceOf(PluginStoreError);
+      expect((error as PluginStoreError).key).toBe('k');
+    },
+  );
+
+  it.each(PROTOTYPE_NAMED)('M1 set(k, %s) の後、前に入れた値が残る', async (_label, value) => {
+    await store.set('k', { previous: true });
+
+    await rejectionOf(store.set('k', value));
+
+    await expect(store.get('k')).resolves.toEqual({ previous: true });
+  });
+
+  it('M1 対照：原型の名前のキーでも使えない文字が無ければ保存できる', async () => {
+    await store.set('k', { constructor: 'c', toString: 't' });
+
+    await expect(store.get('k')).resolves.toEqual({ constructor: 'c', toString: 't' });
+  });
+});
+
+/**
+ * M2：深い入れ子の値でも `RangeError` にならず `PluginStoreError`。
+ *
+ * Store は値をいったん `JSON.stringify` に通すので、それが書けない深さ（10,000 段）は従来どおり「JSON にできない値」。
+ * **`JSON.stringify` が書ける深さの 9 割**（この実行環境で測る）の底に NUL・片割れを置き、JSON にした後の検査が深さで落ちないことを見る。
+ */
+function nestedArray(depth: number, leaf: unknown): unknown {
+  let value = leaf;
+  for (let index = 0; index < depth; index += 1) {
+    value = [value];
+  }
+  return value;
+}
+
+function nestedObject(depth: number, leaf: unknown): unknown {
+  let value = leaf;
+  for (let index = 0; index < depth; index += 1) {
+    value = { a: value };
+  }
+  return value;
+}
+
+/** この実行環境で `JSON.stringify` が書ける配列の入れ子の深さ。 */
+function stringifiableDepth(): number {
+  let low = 1;
+  let high = 200_000;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    try {
+      JSON.stringify(nestedArray(middle, 'v'));
+      low = middle;
+    } catch {
+      high = middle - 1;
+    }
+  }
+  return low;
+}
+
+describe('M2 深い入れ子の値でも PluginStoreError', () => {
+  const depth = Math.floor(stringifiableDepth() * 0.9);
+
+  const DEEP: readonly (readonly [string, unknown])[] = [
+    ['配列の底に NUL', nestedArray(depth, `v${MARKER}\u0000`)],
+    ['配列の底に片割れ', nestedArray(depth, `v${MARKER}\ud800`)],
+    ['オブジェクトの底に NUL', nestedObject(depth, `v${MARKER}\u0000`)],
+    ['オブジェクトの底のキーに片割れ', nestedObject(depth, { [`k${MARKER}\ud800`]: 1 })],
+  ];
+
+  it.each(DEEP)(
+    'M2 JSON にできる深さの%s → PluginStoreError（RangeError ではない）',
+    async (_label, value) => {
+      const error = await rejectionOf(store.set('k', value));
+
+      expect(error).not.toBeInstanceOf(RangeError);
+      expect(error).toBeInstanceOf(PluginStoreError);
+      expect((error as PluginStoreError).key).toBe('k');
+    },
+  );
+
+  it.each(DEEP)(
+    'M2 JSON にできる深さの%s → message に値が無く、保存されない',
+    async (_label, value) => {
+      const error = await rejectionOf(store.set('k', value));
+
+      expect((error as Error).message).not.toContain(MARKER);
+      await expect(store.get('k')).resolves.toBeNull();
+    },
+  );
+
+  it('M2 10,000 段の入れ子（JSON にできない深さ）→ PluginStoreError（RangeError ではない）', async () => {
+    const error = await rejectionOf(store.set('k', nestedArray(10_000, 'v\u0000')));
+
+    expect(error).not.toBeInstanceOf(RangeError);
+    expect(error).toBeInstanceOf(PluginStoreError);
+  });
+});

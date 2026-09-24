@@ -147,18 +147,21 @@ export class RouteDefinitionError extends Error {
 /**
  * 本文とクエリの保存できない文字（NUL・対になっていないサロゲート）の誤りをまとめる
  * （046-input-500-nul-and-ranges 設計 §6.2）。本文 → クエリの順。同じキーは文言を重ねない。
+ *
+ * **キーは送った側が決める**（`constructor`・`__proto__` も来る）ので、オブジェクトではなく `Map` に積み、
+ * `Object.fromEntries` で自分のプロパティとして返す（046 検証の指摘 M1）。
  */
 function mergeUnusableTextDetails(
   ...parts: readonly Record<string, string[]>[]
 ): Record<string, string[]> {
-  const merged: Record<string, string[]> = {};
+  const merged = new Map<string, string[]>();
   for (const part of parts) {
     for (const [key, messages] of Object.entries(part)) {
-      const current = merged[key] ?? [];
-      merged[key] = [...current, ...messages.filter((message) => !current.includes(message))];
+      const current = merged.get(key) ?? [];
+      merged.set(key, [...current, ...messages.filter((message) => !current.includes(message))]);
     }
   }
-  return merged;
+  return Object.fromEntries(merged);
 }
 
 /** Rate Limit のキー。IP を使う。 */
@@ -334,13 +337,12 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
       }
 
       // クエリは宣言したルートだけ集める。宣言していないルート（`/auth/callback`）の値は入力として扱わない。
-      let rawQuery: Record<string, string> | undefined;
-      if (definition.query !== undefined) {
-        rawQuery = {};
-        for (const [key, value] of new URL(request.url).searchParams) {
-          rawQuery[key] = value;
-        }
-      }
+      // 同じ名前が並べば後のものを使う。`Object.fromEntries` で作るのは、`?__proto__=` のような名前も
+      // 代入で原型を差し替えずに自分のプロパティとして残し、検査から漏らさないため（046 検証の指摘 M1）。
+      const rawQuery: Record<string, string> | undefined =
+        definition.query !== undefined
+          ? Object.fromEntries(new URL(request.url).searchParams)
+          : undefined;
 
       // **保存できない文字は認可の後、Zod の前で断る**（046-input-500-nul-and-ranges 設計 §6.2）。
       // NUL は PostgreSQL が保存できず、片割れは黙って U+FFFD に化けるか jsonb で断られる。

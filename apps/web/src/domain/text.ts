@@ -56,38 +56,54 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return prototype === Object.prototype || prototype === null;
 }
 
-/** 値の中（入れ子の値とオブジェクトのキー）に NUL・片割れがあるかを集める。 */
-function collect(value: unknown, found: { nul: boolean; surrogate: boolean }): void {
-  if (found.nul && found.surrogate) {
-    return;
-  }
-  if (typeof value === 'string') {
-    if (!found.nul && containsNul(value)) {
-      found.nul = true;
+/**
+ * 値の中（入れ子の値とオブジェクトのキー）に NUL・片割れがあるかを集める。
+ *
+ * **再帰しない**（046 検証の指摘 M2）。`JSON.parse` は 10,000 段の入れ子も読めるので、再帰すると
+ * 認証の要らない口へ 10KB ほどの本文を送るだけで `RangeError`（500）になる。明示のスタックでたどり、
+ * 同じオブジェクト・配列は 1 回しか見ない（入れ子の段数と要素の数に対して線形。循環でも止まる）。
+ * 両方が見つかった時点でやめる。
+ */
+function collect(root: unknown): { nul: boolean; surrogate: boolean } {
+  const found = { nul: false, surrogate: false };
+  const pending: unknown[] = [root];
+  const seen = new Set<object>();
+
+  while (pending.length > 0 && !(found.nul && found.surrogate)) {
+    const value = pending.pop();
+    if (typeof value === 'string') {
+      if (!found.nul && containsNul(value)) {
+        found.nul = true;
+      }
+      if (!found.surrogate && containsLoneSurrogate(value)) {
+        found.surrogate = true;
+      }
+      continue;
     }
-    if (!found.surrogate && containsLoneSurrogate(value)) {
-      found.surrogate = true;
+    if (typeof value !== 'object' || value === null || seen.has(value)) {
+      continue;
     }
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      collect(item, found);
+    if (Array.isArray(value)) {
+      seen.add(value);
+      for (const item of value as unknown[]) {
+        pending.push(item);
+      }
+      continue;
     }
-    return;
-  }
-  if (isPlainObject(value)) {
-    for (const [key, item] of Object.entries(value)) {
-      collect(key, found);
-      collect(item, found);
+    if (isPlainObject(value)) {
+      seen.add(value);
+      for (const [key, item] of Object.entries(value)) {
+        pending.push(key, item);
+      }
     }
+    // Date・Uint8Array などの中は見ない（文字列として保存しない）。
   }
-  // Date・Uint8Array などの中は見ない（文字列として保存しない）。
+
+  return found;
 }
 
 function messagesIn(value: unknown): string[] {
-  const found = { nul: false, surrogate: false };
-  collect(value, found);
+  const found = collect(value);
   const messages: string[] = [];
   if (found.nul) {
     messages.push(NUL_MESSAGE);
@@ -98,15 +114,22 @@ function messagesIn(value: unknown): string[] {
   return messages;
 }
 
-function mergeInto(details: Record<string, string[]>, key: string, messages: string[]): void {
+/**
+ * 項目名 → 文言を `Map` に重ねる（NUL → 片割れの順、重複しない）。
+ *
+ * **オブジェクトに積まない**（046 検証の指摘 M1）。項目名は送った側が決めるので、`constructor`・`toString`・
+ * `__proto__` のような `Object.prototype` の名前が来る。`details[key] ?? []` は継承した関数を返して `TypeError`（500）になり、
+ * `details['__proto__'] = …` は原型を差し替えてしまう。
+ */
+function mergeInto(details: Map<string, string[]>, key: string, messages: string[]): void {
   if (messages.length === 0) {
     return;
   }
-  const current = details[key] ?? [];
+  const current = details.get(key) ?? [];
   const merged = [NUL_MESSAGE, LONE_SURROGATE_MESSAGE].filter(
     (message) => current.includes(message) || messages.includes(message),
   );
-  details[key] = merged;
+  details.set(key, merged);
 }
 
 /**
@@ -115,18 +138,21 @@ function mergeInto(details: Record<string, string[]>, key: string, messages: str
  * * 最上位がプレーンなオブジェクトなら、項目ごとに値（入れ子の値とキーを含む）を見る
  * * 最上位のキー自体に含むとき、最上位がオブジェクトでない（配列・文字列）ときは `_`
  * * 何も無ければ `{}`。送った値は載せない
+ *
+ * 返すのは通常のオブジェクト。`Object.fromEntries` で作るので、`__proto__` のような名前も**自分のプロパティ**になる
+ * （読むときは `Object.entries`・`Object.hasOwn` を使い、`details[key] ?? []` のように継承したものを拾わないこと）。
  */
 export function unusableTextDetailsOf(value: unknown): Record<string, string[]> {
-  const details: Record<string, string[]> = {};
+  const details = new Map<string, string[]>();
   if (isPlainObject(value)) {
     for (const [key, item] of Object.entries(value)) {
       mergeInto(details, '_', messagesOf(key));
       mergeInto(details, key, messagesIn(item));
     }
-    return details;
+  } else {
+    mergeInto(details, '_', messagesIn(value));
   }
-  mergeInto(details, '_', messagesIn(value));
-  return details;
+  return Object.fromEntries(details);
 }
 
 /**
