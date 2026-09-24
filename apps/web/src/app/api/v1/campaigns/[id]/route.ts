@@ -12,6 +12,12 @@ import {
   updateCampaignSchema,
 } from '@/api/schemas/campaign';
 
+/** `{id}` のキャンペーンが無いときの応答（043-api-input-fixes-rest 設計 §6.4）。 */
+const CAMPAIGN_NOT_FOUND = {
+  status: 404,
+  description: 'キャンペーンが存在しない（UUID の形でない ID を含む）',
+} as const;
+
 export const GET = defineRoute({
   operationId: 'getCampaign',
   method: 'GET',
@@ -19,6 +25,7 @@ export const GET = defineRoute({
   summary: 'キャンペーンを取得する',
   permission: 'campaign.read',
   response: campaignEnvelopeSchema,
+  additionalResponses: [CAMPAIGN_NOT_FOUND],
   handler: async ({ context, params }) => {
     const campaign = await getCampaign(context, { id: params['id'] ?? '' });
     return dataResponse(toCampaignResponse(campaign));
@@ -33,6 +40,7 @@ export const PATCH = defineRoute({
   permission: 'campaign.write',
   body: updateCampaignSchema,
   response: campaignEnvelopeSchema,
+  additionalResponses: [CAMPAIGN_NOT_FOUND],
   handler: async ({ context, params, body }) => {
     const campaign = await updateCampaign(context, {
       id: params['id'] ?? '',
@@ -57,6 +65,7 @@ export const DELETE = defineRoute({
   permission: 'campaign.delete',
   body: z.object({ csrfToken: z.string().optional() }),
   successStatus: 204,
+  additionalResponses: [CAMPAIGN_NOT_FOUND],
   handler: async ({ context, params }) => {
     await deleteCampaign(context, { id: params['id'] ?? '' });
     return noContentResponse();

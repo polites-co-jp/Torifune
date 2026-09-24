@@ -4,6 +4,12 @@ import { defineRoute } from '@/api/route';
 import { toUserResponse, updateUserSchema, userEnvelopeSchema } from '@/api/schemas/user';
 import { deleteUser, getUser, updateUser } from '@/application/user/user-use-cases';
 
+/** `{id}` のユーザーが無いときの応答（043-api-input-fixes-rest 設計 §6.4）。 */
+const USER_NOT_FOUND = {
+  status: 404,
+  description: 'ユーザーが存在しない（UUID の形でない ID を含む）',
+} as const;
+
 export const GET = defineRoute({
   operationId: 'getUser',
   method: 'GET',
@@ -11,6 +17,7 @@ export const GET = defineRoute({
   summary: 'ユーザーを取得する',
   permission: 'user.manage',
   response: userEnvelopeSchema,
+  additionalResponses: [USER_NOT_FOUND],
   handler: async ({ context, params }) => {
     return dataResponse(toUserResponse(await getUser(context, { id: params['id'] ?? '' })));
   },
@@ -24,6 +31,13 @@ export const PATCH = defineRoute({
   permission: 'user.manage',
   body: updateUserSchema,
   response: userEnvelopeSchema,
+  additionalResponses: [
+    USER_NOT_FOUND,
+    {
+      status: 409,
+      description: 'メールアドレスが既に使われている',
+    },
+  ],
   handler: async ({ context, body, params, request }) => {
     const updated = await updateUser(context, {
       id: params['id'] ?? '',
@@ -46,6 +60,7 @@ export const DELETE = defineRoute({
   summary: 'ユーザーを削除する',
   permission: 'user.manage',
   successStatus: 204,
+  additionalResponses: [USER_NOT_FOUND],
   handler: async ({ context, params }) => {
     await deleteUser(context, { id: params['id'] ?? '' });
     return noContentResponse();

@@ -32,6 +32,12 @@ export const POST = defineRoute({
   successStatus: 201,
   permission: 'plugin.manage',
   body: installPluginSchema,
+  additionalResponses: [
+    {
+      status: 404,
+      description: '指定した ID の Plugin が配置されていない',
+    },
+  ],
   handler: async ({ context, body }) => {
     const result = await installPluginUseCase(context, { pluginId: body.pluginId });
 

@@ -69,6 +69,12 @@ export const POST = defineRoute({
       csrfToken: z.string().optional(),
     })
     .optional(),
+  additionalResponses: [
+    {
+      status: 409,
+      description: '他の集計が実行中（`details.job` と `Retry-After: 10` が付く）',
+    },
+  ],
   handler: async ({ context, body }) => {
     // 既定は「昨日と今日」。**API の互換をそのまま保つ。**
     // 「最後の成功から最大 7 日」は定期実行（`input` 無し）だけの規則で、ここは常に `input` を渡す。

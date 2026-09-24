@@ -27,6 +27,16 @@ export const POST = defineRoute({
     password: z.string().default(''),
     csrfToken: z.string().optional(),
   }),
+  additionalResponses: [
+    {
+      status: 404,
+      description: 'セットアップは済んでいる（管理者が既にいる）',
+    },
+    {
+      status: 409,
+      description: 'ログイン ID またはメールアドレスが既に使われている',
+    },
+  ],
   handler: async ({ request, body }) => {
     if (!(await isSetupOpen())) {
       return errorResponse('NOT_FOUND');

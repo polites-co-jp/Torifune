@@ -24,6 +24,12 @@ export const POST = defineRoute({
   summary: '予約された Webhook 配信を送る',
   permission: 'system.manage',
   body: z.object({ csrfToken: z.string().optional() }).optional(),
+  additionalResponses: [
+    {
+      status: 409,
+      description: '他の配信処理が実行中（`details.job` と `Retry-After: 10` が付く）',
+    },
+  ],
   handler: async ({ context }) => {
     const outcome = await runJob(context.connection, WEBHOOK_JOB, {
       trigger: 'manual',

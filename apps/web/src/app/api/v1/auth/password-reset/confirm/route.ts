@@ -19,6 +19,12 @@ export const POST = defineRoute({
   }),
   successStatus: 204,
   rateLimit: { windowMs: 60_000, max: 20 },
+  additionalResponses: [
+    {
+      status: 401,
+      description: '再設定のトークンが無効または期限切れ',
+    },
+  ],
   handler: async ({ request, body }) => {
     const outcome = await confirmPasswordReset({
       token: body.token,

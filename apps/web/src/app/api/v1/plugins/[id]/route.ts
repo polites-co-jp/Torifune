@@ -11,6 +11,12 @@ export const DELETE = defineRoute({
   summary: 'Plugin を削除する',
   permission: 'plugin.manage',
   body: uninstallPluginSchema,
+  additionalResponses: [
+    {
+      status: 404,
+      description: 'Plugin が導入されていない',
+    },
+  ],
   handler: async ({ context, params, body }) => {
     const result = await uninstallPluginUseCase(context, {
       pluginId: params['id'] ?? '',

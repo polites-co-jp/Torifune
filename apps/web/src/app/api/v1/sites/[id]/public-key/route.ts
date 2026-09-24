@@ -11,6 +11,12 @@ export const POST = defineRoute({
   permission: 'site.write',
   body: regenerateSitePublicKeySchema,
   response: sitePublicKeyEnvelopeSchema,
+  additionalResponses: [
+    {
+      status: 404,
+      description: 'サイトが存在しない（UUID の形でない ID を含む）',
+    },
+  ],
   handler: async ({ context, params }) => {
     // 旧キーは即時に無効になる。新しいキーは応答でだけ返す（一般の取得には出さない）。
     const result = await regenerateSitePublicKey(context, { id: params['id'] ?? '' });

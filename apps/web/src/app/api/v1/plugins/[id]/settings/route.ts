@@ -12,12 +12,19 @@ const saveSettingsSchema = z.object({
   csrfToken: z.string().optional(),
 });
 
+/** `{id}` の Plugin の設定が無いときの応答（043-api-input-fixes-rest 設計 §6.4）。 */
+const SETTINGS_NOT_FOUND = {
+  status: 404,
+  description: 'Plugin が読み込まれていない、または設定を持たない',
+} as const;
+
 export const GET = defineRoute({
   operationId: 'getPluginSettings',
   method: 'GET',
   path: '/plugins/{id}/settings',
   summary: 'Plugin の設定項目と現在値を取得する',
   permission: 'plugin.manage',
+  additionalResponses: [SETTINGS_NOT_FOUND],
   handler: async ({ context, params }) => {
     // Secret の平文は返らない（06_画面設計.md §38）。
     const settings = await getPluginSettings(context, { pluginId: params['id'] ?? '' });
@@ -32,6 +39,7 @@ export const PUT = defineRoute({
   summary: 'Plugin の設定を保存する',
   permission: 'plugin.manage',
   body: saveSettingsSchema,
+  additionalResponses: [SETTINGS_NOT_FOUND],
   handler: async ({ context, params, body }) => {
     const result = await savePluginSettings(context, {
       pluginId: params['id'] ?? '',
