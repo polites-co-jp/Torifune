@@ -28,6 +28,12 @@ export const POST = defineRoute({
   permission: 'system.manage',
   body: z.object({ csrfToken: z.string().optional() }).optional(),
   response: publishSummaryEnvelopeSchema,
+  additionalResponses: [
+    {
+      status: 409,
+      description: '他の配信処理が実行中（`details.job` と `Retry-After: 10` が付く）',
+    },
+  ],
   handler: async ({ context }) => {
     // publisher の登録簿は activate() で埋まる。Bearer 認証の経路は
     // Plugin の起動を通らないので、ここで起こす（設計 §6.7 / §6.5.1 の `prepare`）。

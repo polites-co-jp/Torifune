@@ -20,7 +20,7 @@ import { verifyCsrf } from './csrf';
 import { assertValidDeprecation, deprecationHeaders, type DeprecationNotice } from './deprecation';
 import { errorResponse } from './errors';
 import { UnknownSortFieldError } from './query';
-import { registerEndpoint, type EndpointSpec } from './registry';
+import { registerEndpoint, type AdditionalResponse, type EndpointSpec } from './registry';
 import { createRateLimiter, DEFAULT_RATE_LIMIT, type RateLimitPolicy } from './rate-limit';
 import { validate } from './validation';
 
@@ -92,6 +92,13 @@ export interface RouteDefinition<TBodySchema extends z.ZodType, TQuerySchema ext
    * 応答に `Deprecation` / `Sunset` ヘッダが付く（`api/deprecation.ts`）。
    */
   readonly deprecated?: DeprecationNotice;
+  /**
+   * 成功・共通のエラー以外に、この操作が返しうる応答（05_API設計.md §40）。
+   *
+   * OpenAPI の `responses` に足される。200 の本文は `response` と同じ形、404 / 409 はエラーの形。
+   * 書かなければ `responses` は変わらない（042-social-api-input-fixes 設計 §6.4）。
+   */
+  readonly additionalResponses?: readonly AdditionalResponse[];
   /** 公開 API 仕様に載せるか。内部エンドポイントは false。 */
   readonly documented?: boolean;
   /**
@@ -142,6 +149,40 @@ function rateLimitKey(request: Request, operationId: string): string {
   return `${operationId}:${info.ipAddress ?? 'unknown'}`;
 }
 
+/**
+ * `additionalResponses` の定義の誤りを起動時に見つける（042-social-api-input-fixes 設計 §6.4）。
+ *
+ * 書いたつもりの宣言が成功の応答を上書きしたり、本文の形の無い 200 を出したりしないようにする。
+ */
+function assertValidAdditionalResponses(definition: {
+  readonly operationId: string;
+  readonly successStatus?: 200 | 201 | 204;
+  readonly response?: z.ZodType;
+  readonly additionalResponses?: readonly AdditionalResponse[];
+}): void {
+  const successStatus = definition.successStatus ?? 200;
+  const seen = new Set<number>();
+
+  for (const additional of definition.additionalResponses ?? []) {
+    if (additional.status === successStatus) {
+      throw new RouteDefinitionError(
+        `${definition.operationId}: additionalResponses に成功と同じ ${additional.status} は書けない`,
+      );
+    }
+    if (seen.has(additional.status)) {
+      throw new RouteDefinitionError(
+        `${definition.operationId}: additionalResponses の ${additional.status} が重複している`,
+      );
+    }
+    if (additional.status === 200 && definition.response === undefined) {
+      throw new RouteDefinitionError(
+        `${definition.operationId}: additionalResponses の 200 には response が要る`,
+      );
+    }
+    seen.add(additional.status);
+  }
+}
+
 export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends z.ZodType>(
   definition: RouteDefinition<TBodySchema, TQuerySchema>,
 ): (request: Request, args?: { params?: Promise<Record<string, string>> }) => Promise<Response> {
@@ -168,6 +209,8 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
     );
   }
 
+  assertValidAdditionalResponses(definition);
+
   const spec: EndpointSpec = {
     operationId: definition.operationId,
     method: definition.method,
@@ -181,6 +224,7 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
     responseSchema: definition.response,
     successStatus: definition.successStatus,
     deprecated: definition.deprecated,
+    additionalResponses: definition.additionalResponses,
   };
   registerEndpoint(spec);
 

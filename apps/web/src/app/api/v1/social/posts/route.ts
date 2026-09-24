@@ -42,6 +42,12 @@ export const POST = defineRoute({
   body: createPostSchema,
   response: postEnvelopeSchema,
   successStatus: 201,
+  additionalResponses: [
+    {
+      status: 200,
+      description: '同じ `externalRef` の再送。既存の投稿を返す（新しい投稿は作らない）',
+    },
+  ],
   handler: async ({ context, body }) => {
     // publisher の登録簿は activate() で埋まる。Bearer 認証の経路は
     // Plugin の起動を通らないので、ここで起こす（設計 §6.7）。
@@ -60,7 +66,7 @@ export const POST = defineRoute({
     });
 
     // **同じ登録要求の再送は 200 で既存を返す**（設計 §6.1.3）。
-    // `successStatus` は 1 つしか宣言できないので、OpenAPI は 201 のまま。
+    // OpenAPI には `additionalResponses` で 200 を宣言している（042-social-api-input-fixes 設計 §6.4）。
     return created ? createdResponse(toPostResponse(post)) : dataResponse(toPostResponse(post));
   },
 });

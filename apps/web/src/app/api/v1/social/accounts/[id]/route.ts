@@ -13,6 +13,12 @@ import {
 } from '@/api/schemas/social';
 import { ensurePluginsStartedAnonymously } from '@/plugin/runtime';
 
+/** `{id}` のアカウントが無いときの応答（042-social-api-input-fixes 設計 §6.4）。 */
+const ACCOUNT_NOT_FOUND = {
+  status: 404,
+  description: 'アカウントが存在しない（UUID の形でない ID を含む）',
+} as const;
+
 export const GET = defineRoute({
   operationId: 'getSocialAccount',
   method: 'GET',
@@ -20,6 +26,7 @@ export const GET = defineRoute({
   summary: 'SNSアカウントを取得する',
   permission: 'social.read',
   response: accountEnvelopeSchema,
+  additionalResponses: [ACCOUNT_NOT_FOUND],
   handler: async ({ context, params }) => {
     const account = await getSocialAccount(context, { id: params['id'] ?? '' });
     return dataResponse(toAccountResponse(account));
@@ -34,6 +41,7 @@ export const PATCH = defineRoute({
   permission: 'social.write',
   body: updateAccountSchema,
   response: accountEnvelopeSchema,
+  additionalResponses: [ACCOUNT_NOT_FOUND],
   handler: async ({ context, params, body }) => {
     // `credentials` の突き合わせが publisher の登録簿を引く（設計 §6.7）。
     await ensurePluginsStartedAnonymously();
@@ -58,6 +66,7 @@ export const DELETE = defineRoute({
   permission: 'social.delete',
   body: z.object({ csrfToken: z.string().optional() }),
   successStatus: 204,
+  additionalResponses: [ACCOUNT_NOT_FOUND],
   handler: async ({ context, params }) => {
     await deleteSocialAccount(context, { id: params['id'] ?? '' });
     return noContentResponse();

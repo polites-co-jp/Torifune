@@ -89,6 +89,20 @@ function responsesFor(endpoint: EndpointSpec): Record<string, unknown> {
     };
   }
 
+  // ルートの定義で明示した追加の応答（042-social-api-input-fixes 設計 §6.4）。
+  // 200 の本文は成功の応答と同じ形、404 / 409 はエラーの形。
+  for (const additional of endpoint.additionalResponses ?? []) {
+    responses[String(additional.status)] =
+      additional.status === 200
+        ? {
+            description: additional.description,
+            ...(responseSchema === undefined
+              ? {}
+              : { content: { 'application/json': { schema: responseSchema } } }),
+          }
+        : { description: additional.description, content: ERROR_CONTENT };
+  }
+
   return responses;
 }
 
