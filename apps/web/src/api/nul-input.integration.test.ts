@@ -977,6 +977,18 @@ describe('#11 422 の応答に送った値が無く、500 のログが出ない'
     expect(records.map((record) => record.message)).not.toContain('unhandled error in route');
   });
 
+  // 検証の指摘（2026-09-25）spec 軽微 1：500 のログに限らず、422 を返すまでの**どのレベルのログにも**送った値が載らない。
+  it.each(TABLE_H_MATRIX)('#11 $label → どのレベルのログにも marker-046 が無い', async (entry) => {
+    const { records } = capture();
+
+    await send(entry, entry.variant);
+
+    const logged = JSON.stringify(records, (_key, value: unknown) =>
+      value instanceof Error ? `${value.name}: ${value.message}` : value,
+    );
+    expect(logged).not.toContain(MARKER);
+  });
+
   it.each(QUERY_CASES)(
     '#11 $name に %00 → unhandled error in route のログが出ない',
     async ({ route, path }) => {
