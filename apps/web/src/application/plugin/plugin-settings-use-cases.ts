@@ -1,3 +1,4 @@
+import { assertUsableText } from '@/application/text-input';
 import type { AuthorizationContext } from '@/application/authorization/authorize';
 import { defineUseCase } from '@/application/authorization/use-case';
 import { NotFoundError, ValidationError } from '@/domain/repository';
@@ -147,6 +148,8 @@ export const savePluginSettings = defineUseCase<SaveSettingsInput, { saved: read
   name: 'plugin.settings.save',
   permission: 'plugin.manage',
   handler: async (context, input) => {
+    // secret の項目も含めて、キーと値の保存できない文字を断る（046-input-500-nul-and-ranges 設計 §4.2）。
+    assertUsableText('Plugin の設定', { values: input.values });
     const { settings } = requireSettings(input.pluginId);
     const byKey = new Map(settings.fields.map((field) => [field.key, field]));
 

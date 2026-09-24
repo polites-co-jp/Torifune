@@ -3,8 +3,10 @@ import { uuidv7 } from 'uuidv7';
 import { requireAuthenticated } from '@/application/authorization/authorize';
 import { defineUseCase } from '@/application/authorization/use-case';
 import { emit } from '@/application/events';
+import { assertUsableText } from '@/application/text-input';
 import {
   DEFAULT_LISTED_CAMPAIGN_STATUSES,
+  isCampaignStatus,
   isValidCampaignName,
   isValidDateOnly,
   isValidPeriod,
@@ -54,6 +56,8 @@ export const listCampaigns = defineUseCase<ListCampaignsInput, CampaignPage>({
   name: 'campaign.list',
   permission: 'campaign.read',
   handler: async (context, input) => {
+    assertUsableText('Campaign', { keyword: input.keyword });
+
     // 形（YYYY-MM-DD）は API の Zod が見る。暦に無い日付（2026-02-30 など）は DB の ::date まで届くと
     // 例外（500）になるので、ここで断る（045-campaign-input-500 設計 §6.2）。
     if (input.activeOn !== null && !isValidDateOnly(input.activeOn)) {
@@ -117,7 +121,9 @@ export const createCampaign = defineUseCase<CreateCampaignInput, Campaign>({
     detail: (_input, campaign) => ({ name: campaign.name, status: campaign.status }),
   },
   handler: async (context, input) => {
+    assertUsableText('Campaign', { name: input.name, description: input.description });
     assertValid(input.name, input.startsOn, input.endsOn);
+    assertValidStatus(input.status);
     const links = normalizeLinks({
       siteIds: input.siteIds,
       // 省略（undefined）だけが「紐づけない」。null は配列でない値として断る（設計 §9.2）。
@@ -169,8 +175,12 @@ export const updateCampaign = defineUseCase<UpdateCampaignInput, Campaign>({
     detail: (input) => ({ changed: Object.keys(input).filter((key) => key !== 'id') }),
   },
   handler: async (context, input) => {
+    assertUsableText('Campaign', { name: input.name, description: input.description });
     if (input.name !== undefined && !isValidCampaignName(input.name)) {
       throw new ValidationError('Campaign', 'name', '名前を入力してください（200文字以内）。');
+    }
+    if (input.status !== undefined) {
+      assertValidStatus(input.status);
     }
 
     // **期間は片方だけ変えられる。** いまの値と突き合わせないと逆転を見逃す。
@@ -352,4 +362,16 @@ function throwLinkErrors(errors: Partial<Record<LinkField, readonly string[]>>):
     (errors[first] ?? [])[0] ?? '',
     errors as Readonly<Record<string, readonly string[]>>,
   );
+}
+
+/**
+ * 状態が列挙の値か（046-input-500-nul-and-ranges 設計 §9.2 の N1）。
+ *
+ * HTTP は Zod の `enum` が断るが、Data API（Plugin）は型だけで値を確かめずに渡しうる。
+ * 見なければ CHECK 制約の `DatabaseError` になる。
+ */
+function assertValidStatus(status: string): void {
+  if (!isCampaignStatus(status)) {
+    throw new ValidationError('Campaign', 'status', '状態の値が正しくありません。');
+  }
 }

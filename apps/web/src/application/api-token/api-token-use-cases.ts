@@ -1,4 +1,5 @@
 import { uuidv7 } from 'uuidv7';
+import { assertUsableText } from '@/application/text-input';
 import { requireAuthenticated } from '@/application/authorization/authorize';
 import { defineUseCase } from '@/application/authorization/use-case';
 import {
@@ -40,6 +41,7 @@ export const createApiToken = defineUseCase<CreateApiTokenInput, CreatedApiToken
   handler: async (context, input) => {
     const identity = requireAuthenticated(context);
 
+    assertUsableText('ApiToken', { name: input.name });
     if (!isValidApiTokenName(input.name)) {
       throw new ValidationError(
         'ApiToken',

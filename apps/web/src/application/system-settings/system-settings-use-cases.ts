@@ -1,3 +1,4 @@
+import { assertUsableText } from '@/application/text-input';
 import { defineUseCase } from '@/application/authorization/use-case';
 import { withConnection } from '@/application/transaction';
 import { ValidationError } from '@/domain/repository';
@@ -68,6 +69,7 @@ export const updateSystemSettings = defineUseCase<UpdateSystemSettingsInput, Pub
     detail: (input) => ({ changed: Object.keys(input) }),
   },
   handler: async (context, input) => {
+    assertUsableText('SystemSettings', { serviceName: input.serviceName });
     if (input.serviceName !== undefined && !isValidServiceName(input.serviceName)) {
       throw new ValidationError(
         'SystemSettings',

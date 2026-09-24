@@ -3,6 +3,7 @@ import { uuidv7 } from 'uuidv7';
 import { defineUseCase } from '@/application/authorization/use-case';
 import { emit } from '@/application/events';
 import { findPublisher, type RegisteredPublisher } from '@/application/social/publisher-registry';
+import { assertUsableText } from '@/application/text-input';
 import { NotFoundError, ValidationError } from '@/domain/repository';
 import type { Secret } from '@/domain/secret';
 import {
@@ -26,6 +27,7 @@ import {
   isValidManualUrl,
   isValidPostBody,
   isValidProvider,
+  isValidScheduledAt,
   type AccountStatus,
   type DeliveryMode,
   type PostMedia,
@@ -175,12 +177,14 @@ export interface ListAccountsInput {
 export const listSocialAccounts = defineUseCase<ListAccountsInput, SocialAccountPage>({
   name: 'social.account.list',
   permission: 'social.read',
-  handler: async (context, input) =>
-    socialRepository.listAccounts(context.connection, {
+  handler: async (context, input) => {
+    assertUsableText('SocialAccount', { provider: input.provider });
+    return socialRepository.listAccounts(context.connection, {
       page: input.page,
       perPage: input.perPage,
       provider: input.provider,
-    }),
+    });
+  },
 });
 
 export const getSocialAccount = defineUseCase<{ id: string }, SocialAccount>({
@@ -222,6 +226,7 @@ export const createSocialAccount = defineUseCase<CreateAccountInput, SocialAccou
     detail: (_input, account) => ({ provider: account.provider }),
   },
   handler: async (context, input) => {
+    assertUsableText('SocialAccount', { displayName: input.displayName, handle: input.handle });
     if (!isValidProvider(input.provider)) {
       throw new ValidationError(
         'SocialAccount',
@@ -291,6 +296,7 @@ export const updateSocialAccount = defineUseCase<UpdateAccountInput, SocialAccou
     detail: (input) => ({ changed: Object.keys(input).filter((key) => key !== 'id') }),
   },
   handler: async (context, input) => {
+    assertUsableText('SocialAccount', { displayName: input.displayName, handle: input.handle });
     if (input.displayName !== undefined && !isValidDisplayName(input.displayName)) {
       throw new ValidationError('SocialAccount', 'displayName', '表示名を入力してください。');
     }
@@ -735,6 +741,22 @@ async function assertPostIsDeliverable(
   );
 }
 
+/**
+ * 予約日時の範囲（046-input-500-nul-and-ranges 設計 §6.5 の B3）。
+ *
+ * 範囲外は PostgreSQL の `timestamptz` が断る（500）か、応答の `toISOString()` が拡張形式の年になる。
+ * HTTP の Zod は `z.coerce.date()` で JavaScript の範囲を通すので、UseCase で見る。
+ */
+function assertScheduledAtInRange(scheduledAt: Date): void {
+  if (!isValidScheduledAt(scheduledAt)) {
+    throw new ValidationError(
+      'SocialPost',
+      'scheduledAt',
+      '0001-01-01T00:00:00Z から 9999-12-31T23:59:59.999Z までの日時を指定してください。',
+    );
+  }
+}
+
 export interface CreatePostInput {
   readonly socialAccountId: string;
   readonly body: string;
@@ -781,9 +803,22 @@ export const createSocialPost = defineUseCase<CreatePostInput, CreatePostOutput>
     }),
   },
   handler: async (context, input) => {
+    // 保存できない文字（NUL・片割れ）は他の検査と配信 Plugin の `validate()` より先に断る
+    // （046-input-500-nul-and-ranges 設計 §4.2・§6.8）。
+    assertUsableText('SocialPost', {
+      body: input.body,
+      link: input.link,
+      media: input.media,
+      providerOptions: input.providerOptions,
+      externalRef: input.externalRef,
+    });
+
     // a: 本文。
     if (!isValidPostBody(input.body)) {
       throw new ValidationError('SocialPost', 'body', '本文を入力してください（10000文字以内）。');
+    }
+    if (input.scheduledAt !== null) {
+      assertScheduledAtInRange(input.scheduledAt);
     }
 
     // b: 存在しないアカウントへの投稿を、FK 違反（500）ではなく 422 で返す。
@@ -934,8 +969,21 @@ export const updateSocialPost = defineUseCase<UpdatePostInput, SocialPost>({
     detail: (input) => ({ changed: Object.keys(input).filter((key) => key !== 'id') }),
   },
   handler: async (context, input) => {
+    assertUsableText('SocialPost', {
+      body: input.body,
+      link: input.link,
+      media: input.media,
+      providerOptions: input.providerOptions,
+      externalId: input.externalId,
+      externalUrl: input.externalUrl,
+      failureReason: input.failureReason,
+    });
+
     if (input.body !== undefined && !isValidPostBody(input.body)) {
       throw new ValidationError('SocialPost', 'body', '本文を入力してください（10000文字以内）。');
+    }
+    if (input.scheduledAt !== undefined && input.scheduledAt !== null) {
+      assertScheduledAtInRange(input.scheduledAt);
     }
 
     const current = await socialRepository.findPostById(context.connection, input.id);

@@ -121,10 +121,22 @@ export const postListQuerySchema = z.object({
   status: postStatusSchema.optional(),
 });
 
+/**
+ * 予約日時（046-input-500-nul-and-ranges 設計 §6.5）。範囲の検査は UseCase（`isValidScheduledAt`）が行う。
+ * OpenAPI の `date-time` には範囲を表す仕組みが無いので、説明に書く。
+ */
+const scheduledAtSchema = z.coerce
+  .date()
+  .nullable()
+  .optional()
+  .describe(
+    '予約日時。0001-01-01T00:00:00Z から 9999-12-31T23:59:59.999Z まで（範囲外は 422）。null は予約しない。',
+  );
+
 export const createPostSchema = z.object({
   socialAccountId: z.string().min(1, '入力してください。'),
   body: z.string().min(1, '入力してください。').max(POST_BODY_MAX_LENGTH),
-  scheduledAt: z.coerce.date().nullable().optional(),
+  scheduledAt: scheduledAtSchema,
   status: postStatusSchema.default('draft'),
   deliveryMode: deliveryModeSchema.default('auto'),
   media: mediaSchema.default([]),
@@ -148,7 +160,7 @@ export const createPostSchema = z.object({
 
 export const updatePostSchema = z.object({
   body: z.string().min(1).max(POST_BODY_MAX_LENGTH).optional(),
-  scheduledAt: z.coerce.date().nullable().optional(),
+  scheduledAt: scheduledAtSchema,
   status: postStatusSchema.optional(),
   deliveryMode: deliveryModeSchema.optional(),
   media: mediaSchema.optional(),

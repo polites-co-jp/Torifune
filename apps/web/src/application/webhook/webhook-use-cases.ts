@@ -1,5 +1,6 @@
 import { CORE_EVENTS } from '@torifune/plugin-api';
 import { uuidv7 } from 'uuidv7';
+import { assertUsableText } from '@/application/text-input';
 import { defineUseCase } from '@/application/authorization/use-case';
 import { withConnection } from '@/application/transaction';
 import { ValidationError, NotFoundError } from '@/domain/repository';
@@ -55,6 +56,7 @@ export const createWebhook = defineUseCase<CreateWebhookInput, CreatedWebhook>({
     detail: (input) => ({ url: input.url, events: [...input.events] }),
   },
   handler: async (context, input) => {
+    assertUsableText('Webhook', { name: input.name, url: input.url });
     if (!isValidWebhookName(input.name)) {
       throw new ValidationError(
         'Webhook',

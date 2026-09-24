@@ -1,5 +1,6 @@
 import { isSafeReturnTo } from '../authorization-state';
 import type { Secret } from '../secret';
+import { containsNul } from '../text';
 import type { SkipReason } from './publishing';
 
 /**
@@ -186,6 +187,21 @@ export const POST_BODY_MAX_LENGTH = 10_000;
  */
 export const FAILURE_REASON_MAX_LENGTH = 2000;
 
+/**
+ * 予約日時の範囲（046-input-500-nul-and-ranges 設計 §6.5）。`0001-01-01T00:00:00.000Z`〜`9999-12-31T23:59:59.999Z`。
+ *
+ * **`Date.UTC(1, …)` で作らない**（2 桁の年は 1900 年代になる）。エポックミリ秒のリテラルで持つ。
+ * PostgreSQL の `timestamptz` の下限より十分内側で、応答の `toISOString()` が 4 桁の年の形に収まる。
+ */
+export const SCHEDULED_AT_MIN_MS = -62135596800000;
+export const SCHEDULED_AT_MAX_MS = 253402300799999;
+
+/** 予約日時として受け付けるか。`Invalid Date` は偽。 */
+export function isValidScheduledAt(value: Date): boolean {
+  const time = value.getTime();
+  return !Number.isNaN(time) && time >= SCHEDULED_AT_MIN_MS && time <= SCHEDULED_AT_MAX_MS;
+}
+
 export function isValidPostBody(value: string): boolean {
   return value.trim() !== '' && value.length <= POST_BODY_MAX_LENGTH;
 }
@@ -210,6 +226,11 @@ export const PROVIDER_OPTIONS_MAX_BYTES = 4096;
  */
 function isValidExternalHttpsUrl(value: string, maxLength: number): boolean {
   if (value.length > maxLength) {
+    return false;
+  }
+  if (containsNul(value)) {
+    // new URL() は NUL をパーセント符号化して通すが、元の文字列は text 列に保存できない
+    // （046-input-500-nul-and-ranges 設計 §9.4）。ブラウザでも開けない URL として断る。
     return false;
   }
   let url: URL;

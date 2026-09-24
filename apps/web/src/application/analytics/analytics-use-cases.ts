@@ -1,5 +1,6 @@
 import type { AuthorizationContext } from '@/application/authorization/authorize';
 import { defineUseCase } from '@/application/authorization/use-case';
+import { assertUsableText } from '@/application/text-input';
 import {
   CORE_SOURCE,
   isReservedSource,
@@ -15,6 +16,7 @@ import {
   type TopPath,
   type TrackedSite,
 } from '@/domain/analytics/analytics';
+import { isUuidShape } from '@/domain/id';
 import { NotFoundError, ValidationError } from '@/domain/repository';
 import { resolveAnalyticsTimeZone } from '@/application/analytics/timezone';
 import { schedulerConfig } from '@/application/jobs/config';
@@ -28,6 +30,7 @@ import {
 } from '@/infrastructure/analytics-repository';
 import { jobRunRepository } from '@/infrastructure/job-run-repository';
 import { log } from '@/infrastructure/logging';
+import { siteRepository } from '@/infrastructure/site-repository';
 
 /**
  * アクセス・分析データの参照（05_API設計.md §20、018-analytics）。
@@ -59,6 +62,8 @@ export interface AnalyticsRangeInput {
  * 渡さないとパス別の行を全部読むことになる。
  */
 function rangeOf(input: AnalyticsRangeInput) {
+  // 検索の条件として DB へ渡す文字列（046-input-500-nul-and-ranges 設計 §4.2）。
+  assertUsableText('Analytics', { source: input.source, key: input.key });
   assertRange(input.from, input.to);
 
   if (input.metrics !== undefined) {
@@ -175,6 +180,8 @@ async function breakdownPage(
   context: AuthorizationContext,
   input: BreakdownInput,
 ): Promise<AnalyticsPage<BreakdownItem>> {
+  // `keys` は対象外（片割れは一致する行が無いだけ。NUL は下の既存の検査が断る。設計 §4.2）。
+  assertUsableText('Analytics', { source: input.source });
   assertRange(input.from, input.to);
 
   if (!isValidMetricName(input.metric)) {
@@ -282,20 +289,40 @@ export const recordAnalytics = defineUseCase<RecordAnalyticsInput, void>({
     if (!isValidBreakdownKey(key)) {
       throw new ValidationError('Analytics', 'key', '内訳キーの形式が不正です。');
     }
+    // NUL は上の既存の検査が従来の文言で断る。片割れだけがここに届く（046-input-500-nul-and-ranges 設計 §4.2）。
+    assertUsableText('Analytics', { key });
     if (!Number.isFinite(input.value) || input.value < 0) {
       throw new ValidationError('Analytics', 'value', '0以上の数値を指定してください。');
     }
+    // Data API（Plugin）は型だけで値を確かめずに渡しうる。形・上限・存在を見ないと
+    // DB の例外（22P02・23503）がそのまま Plugin へ上がる（046 設計 §9.2）。
+    if (!isUuidShape(input.siteId)) {
+      throw new ValidationError('Analytics', 'siteId', 'UUID の形で指定してください。');
+    }
+    const value = Math.floor(input.value);
+    if (value > Number.MAX_SAFE_INTEGER) {
+      throw new ValidationError(
+        'Analytics',
+        'value',
+        '9007199254740991以下の数値を指定してください。',
+      );
+    }
 
-    await context.connection.transaction((tx) =>
-      analyticsRepository.putPoint(tx, {
+    await context.connection.transaction(async (tx) => {
+      // 書き込みと同じトランザクションで確かめる。確かめてから書くまでに消された場合は
+      // 外部キー違反が残りうる（設計 §13 の 6。頻度が低く、残っても不具合として見える）。
+      if ((await siteRepository.findById(tx, input.siteId)) === null) {
+        throw new ValidationError('Analytics', 'siteId', '存在しないWebサイトです。');
+      }
+      await analyticsRepository.putPoint(tx, {
         siteId: input.siteId,
         metricDate: input.metricDate,
         source: input.source,
         metric: input.metric,
         key,
-        value: Math.floor(input.value),
-      }),
-    );
+        value,
+      });
+    });
   },
 });
 

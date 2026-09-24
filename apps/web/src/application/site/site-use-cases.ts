@@ -2,10 +2,12 @@ import { uuidv7 } from 'uuidv7';
 import { requireAuthenticated } from '@/application/authorization/authorize';
 import { defineUseCase } from '@/application/authorization/use-case';
 import { emit } from '@/application/events';
+import { assertUsableText } from '@/application/text-input';
 import { generateSitePublicKey } from '@/domain/analytics/access-log';
 import { NotFoundError, ValidationError } from '@/domain/repository';
 import {
   DEFAULT_LISTED_STATUSES,
+  isSiteStatus,
   isValidSiteName,
   isValidSiteUrl,
   type Site,
@@ -36,6 +38,8 @@ export const listSites = defineUseCase<ListSitesInput, SitePage>({
   name: 'site.list',
   permission: 'site.read',
   handler: async (context, input) => {
+    assertUsableText('Site', { keyword: input.keyword });
+
     // 状態を指定しなければ archived を隠す。
     // 「もう使わないが記録は残す」ものが既定の一覧に混ざると、実運用で邪魔になる。
     const statuses: readonly SiteStatus[] =
@@ -82,7 +86,13 @@ export const createSite = defineUseCase<CreateSiteInput, Site>({
     detail: (_input, site) => ({ name: site.name, url: site.url }),
   },
   handler: async (context, input) => {
+    assertUsableText('Site', {
+      name: input.name,
+      url: input.url,
+      description: input.description,
+    });
     assertValid(input.name, input.url);
+    assertValidStatus(input.status);
 
     const identity = requireAuthenticated(context);
 
@@ -124,6 +134,11 @@ export const updateSite = defineUseCase<UpdateSiteInput, Site>({
     }),
   },
   handler: async (context, input) => {
+    assertUsableText('Site', {
+      name: input.name,
+      url: input.url,
+      description: input.description,
+    });
     if (input.name !== undefined && !isValidSiteName(input.name)) {
       throw new ValidationError('Site', 'name', '名前を入力してください（200文字以内）。');
     }
@@ -133,6 +148,9 @@ export const updateSite = defineUseCase<UpdateSiteInput, Site>({
         'url',
         'http:// または https:// で始まるURLを入力してください。',
       );
+    }
+    if (input.status !== undefined) {
+      assertValidStatus(input.status);
     }
 
     const site = await context.connection.transaction((tx) =>
@@ -232,5 +250,17 @@ function assertValid(name: string, url: string): void {
       'url',
       'http:// または https:// で始まるURLを入力してください。',
     );
+  }
+}
+
+/**
+ * 状態が列挙の値か（046-input-500-nul-and-ranges 設計 §9.2 の N1）。
+ *
+ * HTTP は Zod の `enum` が断るが、Data API（Plugin）は型だけで値を確かめずに渡しうる。
+ * 見なければ CHECK 制約の `DatabaseError` になる。
+ */
+function assertValidStatus(status: string): void {
+  if (!isSiteStatus(status)) {
+    throw new ValidationError('Site', 'status', '状態の値が正しくありません。');
   }
 }

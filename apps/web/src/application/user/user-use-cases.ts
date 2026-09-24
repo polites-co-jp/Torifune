@@ -1,4 +1,5 @@
 import { uuidv7 } from 'uuidv7';
+import { assertUsableText } from '@/application/text-input';
 import { requireAuthenticated } from '@/application/authorization/authorize';
 import { defineUseCase } from '@/application/authorization/use-case';
 import { withTransaction } from '@/application/transaction';
@@ -118,6 +119,7 @@ export const listUsers = defineUseCase<ListUsersInput, UserWithRolesPage>({
   name: 'user.list',
   permission: 'user.manage',
   handler: async (context, input) => {
+    assertUsableText('User', { keyword: input.keyword });
     const page: UserPage = await userRepository.list(context.connection, {
       page: input.page,
       perPage: input.perPage,
@@ -170,6 +172,7 @@ export const createUser = defineUseCase<CreateUserInput, UserWithRoles>({
   handler: async (context, input) => {
     const actor = requireAuthenticated(context);
 
+    assertUsableText('User', { displayName: input.displayName, email: input.email });
     if (!isValidLoginId(input.loginId)) {
       throw new ValidationError('User', 'loginId', 'ログインIDの形式が正しくありません。');
     }
@@ -250,6 +253,7 @@ export const updateUser = defineUseCase<UpdateUserInput, UserWithRoles>({
   handler: async (context, input) => {
     const actor = requireAuthenticated(context);
 
+    assertUsableText('User', { displayName: input.displayName, email: input.email });
     if (input.email !== undefined && !isValidEmail(input.email)) {
       throw new ValidationError('User', 'email', 'メールアドレスの形式が正しくありません。');
     }
