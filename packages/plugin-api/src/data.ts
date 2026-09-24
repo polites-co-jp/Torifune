@@ -257,3 +257,20 @@ export class PluginPermissionError extends Error {
     this.name = 'PluginPermissionError';
   }
 }
+
+/**
+ * Data API に渡した引数の形が正しくない（例：`socialPosts.list({ accountId: 'abc' })`）。
+ *
+ * **渡した値は `message` にも項目にも含めない**（ログにそのまま残るため）。
+ * 誤っていた引数の名前は `field` で分かる。
+ */
+export class PluginDataInputError extends Error {
+  constructor(
+    readonly pluginId: string,
+    /** 誤っていた引数の名前（`'accountId'` / `'siteId'`）。 */
+    readonly field: string,
+  ) {
+    super(`Data API の引数 ${field} の形が正しくない`);
+    this.name = 'PluginDataInputError';
+  }
+}

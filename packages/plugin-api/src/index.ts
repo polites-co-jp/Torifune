@@ -58,6 +58,7 @@ export type {
 } from './events';
 
 export { PluginPermissionError } from './data';
+export { PluginDataInputError } from './data';
 export type {
   AnalyticsInput,
   AnalyticsPointView,
