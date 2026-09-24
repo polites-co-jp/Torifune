@@ -1,3 +1,4 @@
+import { ownValue } from '@/domain/own-value';
 import { Alert, Card } from '@/ui/components';
 
 /**
@@ -83,7 +84,10 @@ export function PermissionMatrix(props: PermissionMatrixProps) {
                     </code>
                   </th>
                   {props.roles.map((role) => {
-                    const granted = props.grants[role.name]?.includes(permission.name) ?? false;
+                    // ロール名は運用者が DB に直接書ける。`constructor` などで継承した
+                    // 関数を拾わないよう、自分のプロパティだけを見る（047 設計 §4.1）。
+                    const granted =
+                      ownValue(props.grants, role.name)?.includes(permission.name) ?? false;
                     return (
                       <td
                         key={role.id}
