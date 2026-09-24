@@ -206,6 +206,8 @@ export interface AnalyticsInput {
  * 作成・更新・検索の文字列の引数に NUL（U+0000）か対になっていないサロゲートを含むと、返す `Promise` が
  * `name === 'ValidationError'` の例外で reject され、何も書き込まれない。誤っていた項目は `field` で分かる。
  * 例外の `message` に渡した値は含まれない。絵文字（対になったサロゲート）はそのまま使える。
+ * ID の引数はこの規則の外で、これまでどおり ID の形の検査が扱う（`get(id)` は `null` を返し、
+ * `socialPosts.list` の `accountId`・`campaigns.list` の `siteId` は `PluginDataInputError` で reject される）。
  */
 export interface PluginDataApi {
   readonly sites: {

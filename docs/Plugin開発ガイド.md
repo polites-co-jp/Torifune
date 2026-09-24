@@ -256,6 +256,7 @@ const campaigns = await data.campaigns.list({ siteId: site.id });
 返す `Promise` が `error.name === 'ValidationError'` の例外で reject され、何も書き込まれない。誤っていた項目は `field` で分かる（`markFailed` の `reason` は `'failureReason'`。渡した値は例外に載らない）。
 どちらもデータベースに保存できない文字である。対になっていないサロゲートは、文字列を UTF-16 の長さで切って絵文字を半分にしたときに生じることが多いので、**コードポイント単位で切る**。
 絵文字（対になったサロゲート）はそのまま使える。`analytics.record` の `key` は、NUL を含めこれまでどおり制御文字を断り（`内訳キーの形式が不正です。`）、対になっていないサロゲートも断る。
+ID の引数はこの規則の外で、これまでどおり ID の形の検査が扱う（`get(id)` は `null` を返し、`socialPosts.list` の `accountId`・`campaigns.list` の `siteId` は `PluginDataInputError` で reject される）。
 
 アナリティクスの値にはほかに次の規則がある。
 
@@ -544,6 +545,10 @@ context.authentication.registerProvider({
   実在しなければログインは資格情報の誤りとして扱われる。
   返した `displayName` / `email` / `providerId` は採用されず、
   本体が持つユーザー情報と、登録された Provider の ID が使われる
+
+`POST /api/v1/auth/login` の `loginId`・`password` に NUL（U+0000）か対になっていないサロゲートを含む要求は、
+Core が 422 で先に断るので `authenticate()` には届かない（`046` 設計 §6.3）。`authenticate()` の契約は変わらず、
+Provider の側で同じ検査を持っていても害は無い（Core を経ずに呼ばれることは無いが、古い Core で動くときの守りになる）。
 
 外部の利用者を初回ログインで自動作成する仕組み（JIT プロビジョニング）は、
 まだ提供していない。新規ユーザーへどのロールを与えるかが決まっていないため。
