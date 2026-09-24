@@ -244,7 +244,8 @@ const campaigns = await data.campaigns.list({ siteId: site.id });
 
 `campaigns.create` / `campaigns.update` の `siteIds` / `socialPostIds` は、**UUID の形（8-4-4-4-12 の 16 進）で、存在するサイト／SNS 投稿の ID を 1000 件まで**渡す。
 大文字・小文字は同じ ID として扱い、戻り値は小文字・重複なし・昇順になる。
-満たさなければ（配列でない値・形の誤り・存在しない ID・1001 件以上）、返す `Promise` が `error.name === 'ValidationError'` の例外で reject され、何も書き込まれない。誤っていた項目は `field`（`'siteIds'` / `'socialPostIds'`）で分かる（渡した値は例外に載らない）。
+省略（`undefined`）は、作成では「紐づけない」、更新では「変えない」。
+満たさなければ（`null` を含む配列でない値・形の誤り・存在しない ID・1001 件以上）、返す `Promise` が `error.name === 'ValidationError'` の例外で reject され、何も書き込まれない。誤っていた項目は `field`（`'siteIds'` / `'socialPostIds'`）で分かる（渡した値は例外に載らない）。
 
 ---
 
