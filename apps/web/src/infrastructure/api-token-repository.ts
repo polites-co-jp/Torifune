@@ -56,6 +56,9 @@ export interface InsertApiTokenInput {
   readonly expiresAt: Date | null;
 }
 
+/** UUID の形をしているか。不正な値で 500 にせず、見つからない扱いにする。 */
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export const apiTokenRepository = {
   async insert(connection: Connection, input: InsertApiTokenInput): Promise<ApiToken> {
     const row = await connection.db
@@ -98,6 +101,9 @@ export const apiTokenRepository = {
   },
 
   async findById(connection: Connection, id: string): Promise<ApiToken | null> {
+    if (!UUID_PATTERN.test(id)) {
+      return null;
+    }
     const row = await connection.db
       .selectFrom('api_tokens')
       .select(COLUMNS)

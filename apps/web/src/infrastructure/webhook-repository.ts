@@ -55,6 +55,9 @@ export interface PendingDelivery {
   readonly encryptedSecret: string;
 }
 
+/** UUID の形をしているか。不正な値で 500 にせず、見つからない扱いにする。 */
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export const webhookRepository = {
   async list(connection: Connection): Promise<readonly Webhook[]> {
     const rows = await connection.db
@@ -84,6 +87,9 @@ export const webhookRepository = {
 
   /** 消せた件数を返す。0 なら存在しなかった。 */
   async delete(connection: Connection, id: string): Promise<number> {
+    if (!UUID_PATTERN.test(id)) {
+      return 0;
+    }
     const result = await connection.db
       .deleteFrom('webhooks')
       .where('id', '=', id)
