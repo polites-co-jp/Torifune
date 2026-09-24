@@ -8,10 +8,16 @@ import {
   isValidCampaignName,
   isValidDateOnly,
   isValidPeriod,
+  normalizeCampaignLinkIds,
   type Campaign,
   type CampaignStatus,
 } from '@/domain/campaign/campaign';
-import type { CampaignListQuery, CampaignPage } from '@/domain/campaign/campaign-repository';
+import type {
+  CampaignLinks,
+  CampaignListQuery,
+  CampaignPage,
+} from '@/domain/campaign/campaign-repository';
+import type { Connection } from '@/database/provider';
 import { NotFoundError, ValidationError } from '@/domain/repository';
 import { campaignRepository } from '@/infrastructure/campaign-repository';
 
@@ -112,22 +118,27 @@ export const createCampaign = defineUseCase<CreateCampaignInput, Campaign>({
   },
   handler: async (context, input) => {
     assertValid(input.name, input.startsOn, input.endsOn);
+    const links = normalizeLinks({
+      siteIds: input.siteIds,
+      socialPostIds: input.socialPostIds ?? [],
+    });
 
     const identity = requireAuthenticated(context);
 
-    const campaign = await context.connection.transaction((tx) =>
-      campaignRepository.insert(tx, {
+    const campaign = await context.connection.transaction(async (tx) => {
+      await assertLinksExist(tx, links);
+      return campaignRepository.insert(tx, {
         id: uuidv7(),
         name: input.name.trim(),
         description: input.description,
         status: input.status,
         startsOn: input.startsOn,
         endsOn: input.endsOn,
-        siteIds: input.siteIds,
-        socialPostIds: input.socialPostIds ?? [],
+        siteIds: links.siteIds ?? [],
+        socialPostIds: links.socialPostIds ?? [],
         createdBy: identity.userId,
-      }),
-    );
+      });
+    });
 
     // トランザクションの外で発火する。購読側の失敗で作成が取り消されないように。
     await emit('campaign.created', payloadOf(campaign));
@@ -172,17 +183,30 @@ export const updateCampaign = defineUseCase<UpdateCampaignInput, Campaign>({
       assertPeriod(startsOn, endsOn);
     }
 
-    const campaign = await context.connection.transaction((tx) =>
-      campaignRepository.update(tx, input.id, {
+    // 指定したものだけを検査する。省略は「変えない」。
+    const links = normalizeLinks({
+      ...(input.siteIds === undefined ? {} : { siteIds: input.siteIds }),
+      ...(input.socialPostIds === undefined ? {} : { socialPostIds: input.socialPostIds }),
+    });
+
+    const campaign = await context.connection.transaction(async (tx) => {
+      if (links.siteIds !== undefined || links.socialPostIds !== undefined) {
+        // 存在しないキャンペーンは 404 を先に返す（紐づけ先の存在より前。045 設計 §6.3 の検査の順序）。
+        if ((await campaignRepository.findById(tx, input.id)) === null) {
+          throw new NotFoundError('Campaign', input.id);
+        }
+        await assertLinksExist(tx, links);
+      }
+      return campaignRepository.update(tx, input.id, {
         ...(input.name === undefined ? {} : { name: input.name.trim() }),
         ...(input.description === undefined ? {} : { description: input.description }),
         ...(input.status === undefined ? {} : { status: input.status }),
         ...(input.startsOn === undefined ? {} : { startsOn: input.startsOn }),
         ...(input.endsOn === undefined ? {} : { endsOn: input.endsOn }),
-        ...(input.siteIds === undefined ? {} : { siteIds: input.siteIds }),
-        ...(input.socialPostIds === undefined ? {} : { socialPostIds: input.socialPostIds }),
-      }),
-    );
+        ...(links.siteIds === undefined ? {} : { siteIds: links.siteIds }),
+        ...(links.socialPostIds === undefined ? {} : { socialPostIds: links.socialPostIds }),
+      });
+    });
 
     if (campaign === null) {
       throw new NotFoundError('Campaign', input.id);
@@ -235,4 +259,94 @@ function assertPeriod(startsOn: string, endsOn: string | null): void {
       '期間を確認してください（終了日は開始日以降にしてください）。',
     );
   }
+}
+
+/** 指定された紐づけ先（省略したものは `undefined` のまま）。 */
+interface LinkInput {
+  readonly siteIds?: unknown;
+  readonly socialPostIds?: unknown;
+}
+
+/** 検査・正規化した紐づけ先。指定されなかったものは `undefined`。 */
+interface NormalizedLinks {
+  readonly siteIds?: readonly string[];
+  readonly socialPostIds?: readonly string[];
+}
+
+const LINK_FIELDS = ['siteIds', 'socialPostIds'] as const;
+type LinkField = (typeof LINK_FIELDS)[number];
+
+const LINK_REASON_MESSAGES = {
+  shape: 'UUID の形で指定してください。',
+  tooMany: '1000件以内で指定してください。',
+} as const;
+
+const LINK_NOT_FOUND_MESSAGES: Readonly<Record<LinkField, string>> = {
+  siteIds: '存在しないWebサイトが含まれています。',
+  socialPostIds: '存在しないSNS投稿が含まれています。',
+};
+
+/**
+ * 紐づけ先の形と件数を検査し、小文字・重複なし・昇順にそろえる（045-campaign-input-500 設計 §6.3）。
+ *
+ * API の Zod は件数の上限しか見ない。**UseCase を直接呼ぶ経路（Data API）がある**ため、
+ * 配列であること・要素の形もここで確かめる。DB は読まない。
+ * 両方に誤りがあれば `details` にまとめる。**送った値は載せない。**
+ */
+function normalizeLinks(input: LinkInput): NormalizedLinks {
+  const normalized: { siteIds?: readonly string[]; socialPostIds?: readonly string[] } = {};
+  const errors: Partial<Record<LinkField, readonly string[]>> = {};
+
+  for (const field of LINK_FIELDS) {
+    if (input[field] === undefined) {
+      continue;
+    }
+    const result = normalizeCampaignLinkIds(input[field]);
+    if (result.ok) {
+      normalized[field] = result.ids;
+    } else {
+      errors[field] = [LINK_REASON_MESSAGES[result.reason]];
+    }
+  }
+
+  throwLinkErrors(errors);
+  return normalized;
+}
+
+/**
+ * 紐づけ先がすべて存在することを確かめ、その行を押さえる（045-campaign-input-500 設計 §6.4）。
+ *
+ * **書き込みと同じトランザクションの中で呼ぶ。** 押さえた行は書き込みが終わるまで消されないので、
+ * 確かめた後に消されて外部キー違反（500）になることが無い。
+ */
+async function assertLinksExist(tx: Connection, links: NormalizedLinks): Promise<void> {
+  const wanted: CampaignLinks = {
+    siteIds: links.siteIds ?? [],
+    socialPostIds: links.socialPostIds ?? [],
+  };
+  const found = await campaignRepository.lockExistingLinks(tx, wanted);
+
+  const errors: Partial<Record<LinkField, readonly string[]>> = {};
+  for (const field of LINK_FIELDS) {
+    const existing = new Set(found[field]);
+    if (wanted[field].some((id) => !existing.has(id))) {
+      errors[field] = [LINK_NOT_FOUND_MESSAGES[field]];
+    }
+  }
+
+  throwLinkErrors(errors);
+}
+
+/** 誤りが 1 つでもあれば `ValidationError`。`field` / `detail` は先頭の 1 件、`details` に全部。 */
+function throwLinkErrors(errors: Partial<Record<LinkField, readonly string[]>>): void {
+  const first = LINK_FIELDS.find((field) => errors[field] !== undefined);
+  if (first === undefined) {
+    return;
+  }
+  throw new ValidationError(
+    'Campaign',
+    first,
+    (errors[first] ?? [])[0] ?? '',
+    errors as Readonly<Record<string, readonly string[]>>,
+  );
 }
