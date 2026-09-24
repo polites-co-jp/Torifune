@@ -49,8 +49,11 @@ const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme
  * **空白だけでなく、非 ASCII の文字でも終わる。** 日本語の文では URL の直後に空白を置かないことが多く、
  * 空白までを URL とすると後ろの日本語が 23 に潰れて少なく数える（2026-09-23 の訂正）。
  * 国際化ドメイン名と path の非 ASCII の文字は X の数え方と食い違う（設計 §11 #3）。
+ *
+ * **次の `https?://` の直前でも終わる**（2026-09-24 の訂正）。ASCII の記号（`,` `|` `(` `)` `"`）で繋いだ URL を
+ * 1 本にまとめると、何本あっても 23 と数えて少なく数え、登録を通した本文を X が配信の時刻に断る。
  */
-const URL_PATTERN = /https?:\/\/[\x21-\x7E]+/g;
+const URL_PATTERN = /https?:\/\/(?:(?!https?:\/\/)[\x21-\x7E])+/g;
 
 /** ホスト名まで揃っているか（末尾を削った結果 `https://` だけになったものは URL と数えない）。 */
 const URL_WITH_HOST_PATTERN = /^https?:\/\/[^\s/?#]+/;
@@ -131,7 +134,8 @@ function weightOfPlainText(text: string): number {
  * X の数え方による重み付きの長さ（設計 §9.4 の 1〜4）。
  *
  * 1. NFC に正規化する
- * 2. `https?://` から ASCII の表示文字が続く限りを URL とし（空白・非 ASCII の文字で終わる。末尾の句読点・閉じ括弧を外す）、
+ * 2. `https?://` から ASCII の表示文字が続く限りを URL とし（空白・非 ASCII の文字・次の `https?://` の直前で終わる。
+ *    末尾の句読点・閉じ括弧を外す）、
  *    1 つにつき 23 と数えて取り除く
  * 3. 残りを grapheme に分け、絵文字なら 2、それ以外はコードポイントごとに 1 か 2
  *

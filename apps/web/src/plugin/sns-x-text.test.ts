@@ -210,6 +210,74 @@ const CASES: readonly TextCase[] = [
     manual: [],
     auto: [],
   },
+  /*
+   * #14 の続き：**URL は次の `https?://` の直前でも終わる**（設計 §9.4 の 2。2026-09-24 の訂正。040 検証の中-1 と同じ問題）。
+   * ASCII の記号（`,` `|` `(` `)` `"`）は ASCII の表示文字なので、記号で繋いだ URL が 1 本にまとまり 23 に潰れていた。
+   * 少なく数えると登録を通し、自動配信は X が 400 で断る（`failed`）。
+   */
+  {
+    // URL 23 + ,(1) + URL 23 = 47。初版は 1 本にまとめて 23。
+    label: '#14 カンマで繋いだ 2 本の URL は別々に 23 ずつ',
+    body: 'https://a.example,https://b.example',
+    link: null,
+    weight: 47,
+    manual: [],
+    auto: [],
+  },
+  {
+    // URL 23（末尾の | は外さないので | を含めて 1 本）+ URL 23 = 46。初版は 23。
+    label: '#14 縦線で繋いだ 2 本の URL は別々に 23 ずつ',
+    body: 'https://a.example|https://b.example',
+    link: null,
+    weight: 46,
+    manual: [],
+    auto: [],
+  },
+  {
+    // ((1) + URL 23（")(" を含めて 1 本）+ URL 23 + )(1) = 48。初版は 1 + 23 + 1 = 25。
+    label: '#14 丸括弧で囲んで並べた 2 本の URL は別々に 23 ずつ',
+    body: '(https://a.example)(https://b.example)',
+    link: null,
+    weight: 48,
+    manual: [],
+    auto: [],
+  },
+  {
+    // "(1) + URL 23 + URL 23 = 47（二重引用符は末尾から外さないので URL に含まれる）。初版は 1 + 23 = 24。
+    label: '#14 二重引用符で囲んで並べた 2 本の URL は別々に 23 ずつ',
+    body: '"https://a.example","https://b.example"',
+    link: null,
+    weight: 47,
+    manual: [],
+    auto: [],
+  },
+  {
+    // URL 23 + URL 23 = 46。初版は 23。
+    label: '#14 空白を挟まず直に繋いだ 2 本の URL は別々に 23 ずつ',
+    body: 'https://a.examplehttps://b.example',
+    link: null,
+    weight: 46,
+    manual: [],
+    auto: [],
+  },
+  {
+    // URL 23 × 12 + ,(1) × 11 = 287。初版は 1 本にまとめて 23 と数え、登録を通していた。
+    label: '#14 カンマで繋いだ 12 本の URL は 287 で上限を超える',
+    body: Array.from({ length: 12 }, (_, n) => `https://a.example/${n}`).join(','),
+    link: null,
+    weight: 287,
+    manual: ['body'],
+    auto: ['body'],
+  },
+  {
+    // URL 23（https://a.example/?u=）+ URL 23 = 46。X は 1 本と数えうる（多めの側。§11 #3 の c）。
+    label: '#14（§11 #3 の c）クエリの中の URL も別に 23 と数える',
+    body: 'https://a.example/?u=https://b.example',
+    link: null,
+    weight: 46,
+    manual: [],
+    auto: [],
+  },
   {
     label: '#15 分解された é は NFC で 1',
     body: 'e\u0301',
