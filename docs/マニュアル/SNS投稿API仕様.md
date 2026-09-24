@@ -52,6 +52,13 @@
 * **知らない項目は無視される**（エラーにならない）。将来の項目を送っても壊れない代わりに、
   **項目名の綴りを間違えても黙って無視される**ので注意する（例：`scheduled_at` は無視され、
   `scheduledAt` が未指定の扱いになる）
+* **NUL（U+0000）と対になっていないサロゲートを含む文字列は受け付けない（422）。** 本文のどの項目（入れ子の値・オブジェクトのキー・
+  知らない項目・`csrfToken` を含む）とクエリの値が対象で、ほかのどの検査よりも先に見る（認証・権限の検査の後）。
+  `details` のキーは**その値を含む最上位の項目名**（`media[0].alt` なら `media`、`providerOptions` の中のキーなら `providerOptions`）、
+  値は `使用できない文字（NUL）が含まれています。` か `使用できない文字（対になっていないサロゲート）が含まれています。`
+  （同じ項目に両方あれば NUL が先の 2 つ）。送った値は応答に載らない。このときは他の項目の誤りは返らない（直して送り直すと返る）
+* 対になっていないサロゲートは、**文字列を UTF-16 の長さ（JavaScript の `slice`・`substring`・`length`）で切って絵文字を半分にした**ときに生じる。
+  本文を切り詰めるクライアントは**コードポイント単位（`Array.from(text)` など）か grapheme 単位で切る**。絵文字（対になったサロゲート）はそのまま送れる
 
 ### 1.4 時刻の形式とタイムゾーン
 
@@ -63,6 +70,8 @@
 **要求では必ず UTC オフセット付きの ISO 8601 で送る**（`2026-10-01T09:00:00+09:00` か
 `2026-10-01T00:00:00Z`）。オフセットを省いた `2026-10-01T09:00:00` は**サーバのローカル時刻**として
 解釈され、コンテナの設定次第で 9 時間ずれる。数値を送るとエポックミリ秒として解釈される。
+**`scheduledAt` は `0001-01-01T00:00:00Z` から `9999-12-31T23:59:59.999Z` まで**（両端を含む）。範囲外は 422 `scheduledAt`
+（`0001-01-01T00:00:00Z から 9999-12-31T23:59:59.999Z までの日時を指定してください。`）。
 Torifune の画面の「基準タイムゾーン」設定は API の時刻解釈に**関係しない**。
 
 ---
@@ -180,6 +189,8 @@ CORS ヘッダが付く（`*` は指定できない）。ただし **API トー�
   （例：`providerOptions.langs`）。Plugin が返したキーが英数字と `_` `.` の 64 文字以内の形でなければ
   `providerOptions` に丸められる
 * 要求本文が JSON のオブジェクトでない（配列・文字列など）ときは、項目に紐づかない問題として `_` に入る
+* NUL・対になっていないサロゲートの誤り（§1.3）は、値を含む**最上位の項目名**のキーに `使用できない文字（NUL）が含まれています。` /
+  `使用できない文字（対になっていないサロゲート）が含まれています。` の 2 つの文言で入る。本文の最上位の**キー**に含むときは `_`
 * 理由の文字列は**そのまま人に見せてよい日本語**が基本だが、型違い・必須項目の欠落・列挙外の値など
   入力の形の誤りは**検証ライブラリ（Zod）の既定の英文**（例 `Invalid input: expected string, received undefined`・
   `Invalid option: expected one of "auto"|"manual"`）になる。**文字列の中身で分岐しない。キーで分岐する**
@@ -429,7 +440,7 @@ curl -H "Authorization: Bearer $TORIFUNE_TOKEN" \
 | `socialAccountId` | string | **必須** | — | 存在するアカウントの `id`。無ければ 422 `socialAccountId`（404 ではない） |
 | `body` | string | **必須** | — | 1〜10000 文字（UTF-16 の長さ）。空白だけは不可。**SNS ごとの上限は §5** |
 | `status` | enum | 任意 | `draft` | `draft`（下書き。配信しない）/ `scheduled`（予約。配信する）。`published` / `failed` も形式上は受け付けるが、配信されず `publishedAt` / `failedAt` も入らない。外部アプリは使わない |
-| `scheduledAt` | string \| null | `scheduled` のとき必須 | `null` | §1.4 の形式。`status: "scheduled"` で無ければ 422 `scheduledAt`。**過去の時刻も可**（次の定期実行で配信） |
+| `scheduledAt` | string \| null | `scheduled` のとき必須 | `null` | §1.4 の形式。`0001-01-01T00:00:00Z`〜`9999-12-31T23:59:59.999Z`（範囲外は 422 `scheduledAt`）。`status: "scheduled"` で無ければ 422 `scheduledAt`。**過去の時刻も可**（次の定期実行で配信） |
 | `deliveryMode` | enum | 任意 | `auto` | `auto`（Torifune が配信）/ `manual`（人が SNS の投稿画面から投稿。§6.5）。provider によって使えない値がある（§5） |
 | `media` | array | 任意 | `[]` | 最大 10 件。各要素 `{ "url": string, "alt"?: string \| null }`。`url` は **https のみ**・2048 文字以内・`user:pass@` を含まない。`alt` は 1000 文字以内。**`manual` では 1 件も付けられない**。SNS ごとの枚数・形式は §5 |
 | `link` | string \| null | 任意 | `null` | 添える URL。**https のみ**・2048 文字以内・`user:pass@` を含まない。空文字は不可（消すなら `null`）。SNS ごとの扱いは §5 |
@@ -490,8 +501,9 @@ curl -X POST https://torifune.example.com/api/v1/social/posts \
 
 | 順 | 検査 | 422 の `details` のキー |
 | ---: | --- | --- |
+| 0 | NUL・対になっていないサロゲート（§1.3）。**違反はまとめて返り、1 以降は行わない** | 値を含む最上位の項目名 |
 | 1 | 要求全体の形（型・必須・長さ・https・件数・列挙値）。**違反はまとめて返る** | 各項目名 |
-| 2 | 本文が空白だけでない | `body` |
+| 2 | 本文が空白だけでない。続けて `scheduledAt` の範囲（§1.4） | `body` / `scheduledAt` |
 | 3 | `socialAccountId` のアカウントが存在する | `socialAccountId` |
 | 4 | `externalRef` をトークン認証で付けている | `externalRef` |
 | — | （`externalRef` が既存と一致したら、ここで 200 を返して終わる） | — |
@@ -501,6 +513,8 @@ curl -X POST https://torifune.example.com/api/v1/social/posts \
 | 8a | 配信 Plugin が宣言した上限（本文の長さ・媒体の最大数・媒体の必須）。**違反が複数あっても先頭の 1 つだけ**を返す | `body` / `media` |
 | 8b | 配信 Plugin の検査（`validate()`。SNS ごとの数え方・リンク・`providerOptions` など）。**違反をすべて**返す | `body` / `media` / `link` / `deliveryMode` / `providerOptions.<キー>` など（§5） |
 
+* 0 で落ちると 8b の配信 Plugin の検査（`validate()`）は呼ばれない。本文・`link` の対になっていないサロゲートは、
+  どの provider でも 0 の Core の文言（キーは送った項目名 `body` / `link`）で返る
 * 表の 2〜8a は最初の違反で止まる。**8a で落ちると 8b は走らない**ので、直して送り直すと
   8b の違反が新たに返ることがある。**1 回の 422 に複数の項目のキーが並びうるのは 1 と 8b だけ**
 * **8a・8b は `status: "draft"` でも掛かる**（作成時）
@@ -533,7 +547,7 @@ curl -X POST https://torifune.example.com/api/v1/social/posts \
 | 項目 | 型 | 制約・意味 |
 | --- | --- | --- |
 | `body` | string | 1〜10000 文字。空白だけは不可 |
-| `scheduledAt` | string \| null | §1.4。**未来の時刻にすると支度待ちの待ち時刻（`nextAttemptAt`）が消える**（§6.3） |
+| `scheduledAt` | string \| null | §1.4（`0001-01-01T00:00:00Z`〜`9999-12-31T23:59:59.999Z`。範囲外は 422 `scheduledAt`）。**未来の時刻にすると支度待ちの待ち時刻（`nextAttemptAt`）が消える**（§6.3） |
 | `status` | enum | 遷移の規則（§6.1）に従う。`draft` へ戻す＝**取りやめ** |
 | `deliveryMode` | enum | `auto` / `manual`。`manual` へ変えるときは provider の対応を検査する |
 | `media` | array | §4.4 と同じ |
@@ -615,7 +629,7 @@ curl -X PATCH https://torifune.example.com/api/v1/social/posts/$POST_ID \
 | `deliveryMode: auto` | ○ | ○ | **×**（422 `deliveryMode`） | ○ | ○ |
 | `deliveryMode: manual` | ○ | ○ | ○ | ○ | **×**（422 `deliveryMode`） |
 | 本文の上限 | **300 grapheme** かつ **3000 UTF-8 バイト**（別に Core が UTF-16 長 3000 で先に見る） | **重み付き 280**（§5.3） | **重み付き 280**（§5.3） | **500**（§5.4） | **2200**（UTF-16 の長さ） |
-| 本文のその他の上限 | 手動投稿では対になっていないサロゲートは不可 | 対になっていないサロゲートは不可 | 同左 | リンクは**異なる URL 5 本まで**。対になっていないサロゲートは不可 | ハッシュタグ 30 個・メンション 20 件まで |
+| 本文のその他の上限 | —（対になっていないサロゲートは全 SNS 共通で Core が断る。表の下の注） | 同左 | 同左 | リンクは**異なる URL 5 本まで** | ハッシュタグ 30 個・メンション 20 件まで |
 | `link` の扱い（`auto`） | **リンクカード**（本文には足さない。カードの見出しはホスト名） | **本文の末尾に改行して足す**（長さに含む） | —（`auto` 不可） | **本文の末尾に改行して足す**（長さ・本数に含む） | **指定不可**（422 `link`） |
 | `link` の扱い（`manual`） | 本文の末尾に改行して足す（長さに含む） | 同左 | 同左 | 同左 | — |
 | `media` の枚数 | 0〜4 | 0〜4 | —（`manual` のみのため 0） | 0〜10（2 枚以上はカルーセル） | **1〜10 必須**（0 枚は 422 `media`） |
@@ -629,6 +643,10 @@ curl -X PATCH https://torifune.example.com/api/v1/social/posts/$POST_ID \
 
 **手動投稿（`manual`）では `media` を 1 件も付けられない**（全 SNS 共通。422 `media`）。
 画像は人が SNS の投稿画面で添付する。
+
+**本文・`link` の NUL と対になっていないサロゲートは、すべての provider で Core が先に 422 で断る**（§1.3。キーは `body` / `link`、文言は Core のもの）。
+X（`sns-x-api`・`sns-x-manual`）・Threads・Bluesky の手動投稿の配信 Plugin も対になっていないサロゲートを検査するが、Core が先に断るのでその検査の文言
+（`本文に扱えない文字が含まれています。`）は返らない。
 
 ### 5.3 X の本文の数え方（重み付き 280）
 
@@ -678,6 +696,7 @@ Threads の長さ（500）の数え方では URL を特別扱いしない（X �
 | Bluesky | `https://bsky.app/intent/compose?text=` | **約 223 文字**（本文の上限 300 grapheme より先に効く） | あり（422 `body`） |
 
 改行は 3 文字（`%0A`）、英数字は 1 文字として数える。`link` も本文に含めて埋め込まれる。
+本文・`link` の対になっていないサロゲートは、この検査より先に Core が 422（`body` / `link`）で断る（§1.3・§5.2）。
 
 ### 5.6 `credentials` のキー（アカウント登録用）
 
@@ -1133,6 +1152,7 @@ while True:
 | 2026-09-24 | 検証を受けて訂正。認証失敗時の 403 `CSRF_FAILED`、`media.<n>.url` のキー、`failureReason` の 422、409 の `details`、`externalRef` が SNS をまたいで衝突すること、`page` / `perPage` / `accountId` の範囲外の振る舞い、Rate Limit の送信元 IP、Webhook の回数、例の不具合を直し、§10 を整理した |
 | 2026-09-24 | コードの課題（旧 §10.1 の 1・2・4・5）を直したのに合わせて更新。Bluesky の手動投稿は、投稿画面の URL が 2048 文字を超える本文と対になっていないサロゲートを登録時に 422 `body` で断る（§5.2・§5.5）。SNS の一覧の `page` / `perPage` の範囲外を丸める（§3.6。従来は `page=0`・`perPage=-1` などが 500、`perPage=0` は空の 200）。OpenAPI に `createSocialPost` の 200・`{id}` の 6 操作の 404・`publishSocialPosts` の 409 を宣言した（§3.7）。**動作の変更が 2 つある**：(1) **`perPage` を 101 以上で送ると 100 件までしか返らない**（従来は要求した件数まで返っていた。`meta.perPage` が `100` になるので検知でき、`meta.total` までページを送れば全件取れる）。(2) **`GET /social/posts` の `accountId` が UUID の形でない値（空文字を含む）は 422 `accountId`**（従来は絞り込みが黙って外れて全件が返っていた。§4.5）。どちらも初版から送らないよう書いていた値で、API のバージョンは v1 のまま。あわせて OpenAPI の `accountId` に `format: uuid` が付いた（生成クライアントでは引数の型が変わることがある。§3.7） |
 | 2026-09-24 | §10.1 の「初版の 1 の記述の訂正」を、SNS 以外の一覧の `page` / `perPage`・`GET /campaigns?siteId=`・SNS 以外の OpenAPI の宣言を直したことに合わせて更新した。**記述の更新だけで、SNS 投稿 API の振る舞い・OpenAPI は変わらない** |
+| 2026-09-25 | 入力の文字と範囲の規則を足した（§1.3・§1.4・§3.2・§4.4・§4.7・§5.2・§5.5）。**動作の変更がある**：(1) **対になっていないサロゲートを含む文字列は 422**（従来は `body`・`link`・`externalRef`・`externalId`・`externalUrl`・`failureReason`・アカウントの `displayName` / `handle` などで 2xx になり、U+FFFD に置き換わって保存されていた。`media`・`providerOptions` は 500）。絵文字を UTF-16 の長さで半分に切るクライアントは、コードポイント単位で切るよう直す必要がある。(2) 本文・`link` の対になっていないサロゲートの 422 は、X・Threads・Bluesky の手動投稿でも **Core の文言**になり、`link` の片割れは**キーが `link`** になる（従来は配信 Plugin の `本文に扱えない文字が含まれています。` を `body` で返していた）。(3) **NUL（U+0000）を含む文字列は 422**（従来は多くの項目で 500、`scheduledAt`・`credentials` などは 2xx）。(4) **`scheduledAt` の `0001-01-01T00:00:00Z` より前・`9999-12-31T23:59:59.999Z` より後は 422 `scheduledAt`**（従来は 201 か 500）。どれも正当な利用で送る値ではなく、API のバージョンは v1 のまま。OpenAPI の `scheduledAt` に範囲の説明が付いた |
 
 ### 関連文書
 

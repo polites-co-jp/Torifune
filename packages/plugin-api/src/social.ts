@@ -58,15 +58,25 @@ export interface PublishInput {
 export type PublishResult =
   | {
       readonly ok: true;
+      /** SNS 側の投稿 ID。NUL（U+0000）と対になっていないサロゲートは U+FFFD に置き換えて記録する。 */
       readonly externalId?: string;
-      /** https の URL。履歴画面から辿れるようにする。 */
+      /**
+       * https の URL。履歴画面から辿れるようにする。
+       *
+       * NUL（U+0000）を含む URL は使わない（開けない URL として記録しない。配信の結果は記録される）。
+       */
       readonly externalUrl?: string;
       /** 更新後の資格情報（キーは credentialFields のまま）。Torifune が暗号化して書き戻す。 */
       readonly rotatedCredential?: Readonly<Record<string, string>>;
     }
   | {
       readonly ok: false;
-      /** 利用者に見せる理由（履歴画面に出る）。**資格情報を含めない。** 2000 文字で切られる。 */
+      /**
+       * 利用者に見せる理由（履歴画面に出る）。**資格情報を含めない。** 2000 文字で切られる。
+       *
+       * NUL（U+0000）と対になっていないサロゲートは、資格情報の伏せ字の後に U+FFFD に置き換えて記録する
+       * （`publish()` が投げた例外の文言も同じ）。
+       */
       readonly reason: string;
       readonly retryable: boolean;
       /** 再試行までの待ち（ms）。Torifune の既定（1 → 2 → 4 → 8 分）より長いときだけ使われる。上限 24 時間。 */
@@ -88,6 +98,8 @@ export interface ManualHandoff {
    * 本文を URL に埋め込む Plugin は、`validate()` で手動投稿のときに URL の長さを確かめ、登録時に断る
    * （日本語 1 文字は URL の中で 9 文字になる）。
    * `/` で始まるパスもいまは長さを検査していないが、同じく 2048 文字以内に収める。
+   *
+   * **NUL（U+0000）を含む URL は使わない。** Torifune は開けない URL として扱う（上と同じ「Plugin が返した URL を開けません」）。
    */
   readonly url: string;
   /** 画面に添える注意書き（例：「画像は投稿画面で添付してください」）。 */

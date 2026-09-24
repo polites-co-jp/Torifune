@@ -200,6 +200,13 @@ export interface AnalyticsInput {
   readonly value: number;
 }
 
+/**
+ * Core のデータへの口（05_API設計.md §22）。
+ *
+ * 作成・更新・検索の文字列の引数に NUL（U+0000）か対になっていないサロゲートを含むと、返す `Promise` が
+ * `name === 'ValidationError'` の例外で reject され、何も書き込まれない。誤っていた項目は `field` で分かる。
+ * 例外の `message` に渡した値は含まれない。絵文字（対になったサロゲート）はそのまま使える。
+ */
 export interface PluginDataApi {
   readonly sites: {
     /** `page` / `perPage` は丸める（`ListOptions`）。 */

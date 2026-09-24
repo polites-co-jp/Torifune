@@ -23,9 +23,20 @@ export const MAX_VALUE_BYTES = 256 * 1024;
 export interface PluginStore {
   /** 値を取り出す。無ければ `null`。 */
   get<T = unknown>(key: string): Promise<T | null>;
+  /**
+   * 値を保存する。JSON にできる値に限る（上限は `MAX_VALUE_BYTES`）。
+   *
+   * 値（入れ子の文字列とオブジェクトのキーを含む）に NUL（U+0000）か対になっていないサロゲートを含むと、
+   * 返す `Promise` が `PluginStoreError` で reject され、保存されない（JSON として保存できない文字）。
+   * 例外の `message` に値は含まれない。
+   */
   set<T = unknown>(key: string, value: T): Promise<void>;
   delete(key: string): Promise<void>;
-  /** キーの一覧。接頭辞で絞り込める。**Secret のキーも含む（値は含まない）。** */
+  /**
+   * キーの一覧。接頭辞で絞り込める。**Secret のキーも含む（値は含まない）。**
+   *
+   * `prefix` に NUL（U+0000）か対になっていないサロゲートを含むと空の配列を返す（キーに使える文字ではないため）。
+   */
   keys(prefix?: string): Promise<string[]>;
 
   /**

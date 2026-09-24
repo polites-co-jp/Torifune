@@ -247,6 +247,24 @@ const campaigns = await data.campaigns.list({ siteId: site.id });
 省略（`undefined`）は、作成では「紐づけない」、更新では「変えない」。
 満たさなければ（`null` を含む配列でない値・形の誤り・存在しない ID・1001 件以上）、返す `Promise` が `error.name === 'ValidationError'` の例外で reject され、何も書き込まれない。誤っていた項目は `field`（`'siteIds'` / `'socialPostIds'`）で分かる（渡した値は例外に載らない）。
 
+`sites.create` / `sites.update`・`campaigns.create` / `campaigns.update` の `status` は列挙の値だけを渡す。列挙外の値は `ValidationError`（`field` は `'status'`）になる。
+
+### 文字列の引数
+
+作成・更新・検索の文字列の引数（`sites` の `name`・`url`・`description`、`campaigns` の `name`・`description`、`analytics.list` の `source`・`key`、
+`socialPosts.markPublished` の `externalId`・`externalUrl`、`markFailed` の `reason` など）に **NUL（U+0000）か対になっていないサロゲート**を含むと、
+返す `Promise` が `error.name === 'ValidationError'` の例外で reject され、何も書き込まれない。誤っていた項目は `field` で分かる（`markFailed` の `reason` は `'failureReason'`。渡した値は例外に載らない）。
+どちらもデータベースに保存できない文字である。対になっていないサロゲートは、文字列を UTF-16 の長さで切って絵文字を半分にしたときに生じることが多いので、**コードポイント単位で切る**。
+絵文字（対になったサロゲート）はそのまま使える。`analytics.record` の `key` は、NUL を含めこれまでどおり制御文字を断り（`内訳キーの形式が不正です。`）、対になっていないサロゲートも断る。
+
+アナリティクスの値にはほかに次の規則がある。
+
+* `analytics.list` の `from` / `to`、`analytics.record` の `metricDate` は `0001-01-01`〜`9999-12-31` の実在する日付（西暦 0 年は `ValidationError`。`field` は `'to'` / `'metricDate'`）
+* `analytics.record` の `siteId` は UUID の形で、存在するサイトの ID（形が違えば `UUID の形で指定してください。`、無ければ `存在しないWebサイトです。`。`field` は `'siteId'`）
+* `analytics.record` の `value` は 0 以上で、切り捨てた後に `Number.MAX_SAFE_INTEGER`（9007199254740991）以下（超えれば `field` は `'value'`）
+
+これらは以前は Postgres の `DatabaseError` がそのまま reject されていた（または対になっていないサロゲートが U+FFFD に置き換わって黙って保存されていた）。
+
 ---
 
 ## 5. データを保存する
@@ -259,6 +277,13 @@ const value = await context.store.get<string>('last-run');
 await context.store.delete('last-run');
 const keys = await context.store.keys('report.');
 ```
+
+### 保存できない文字
+
+`set` の値（入れ子の文字列とオブジェクトのキーを含む）に **NUL（U+0000）か対になっていないサロゲート**を含むと、
+返す `Promise` が `PluginStoreError`（`key` はその key。`message` に値は載らない）で reject され、保存されない（前の値が残る）。
+`keys(prefix)` の `prefix` に NUL か対になっていないサロゲートを含むと空の配列が返る（キーに使える文字ではない）。
+`setSecret` は暗号化して保存するので、NUL を含む値もそのまま保存でき、`getSecret` で同じ値が返る。
 
 ### Secret
 
@@ -729,6 +754,11 @@ Torifune は配信の前に読んだ資格情報と、書き戻す時点の資�
   **伏せる仕掛けを当てにせず、値を渡さない**
 * **受け取った `credential` を保存し直さない。** その呼び出しの間だけ有効な値である
 * **自前のタイマーを持たない。** 複数プロセスで動かすと二重投稿になる
+* **戻り値に NUL（U+0000）を含む URL を返さない。** `publish()` の `externalUrl` は記録されず（配信の結果は記録される）、
+  `manual()` の `url` は「Plugin が返した URL を開けません」になる。
+  `reason`・例外の文言・`externalId` の NUL と対になっていないサロゲートは、資格情報の伏せ字の後に U+FFFD に置き換えて記録する
+* **`validate()` には NUL・対になっていないサロゲートを含む `body` / `link` は届かない。** Torifune が登録の時点で先に 422 で断る。
+  それでも Plugin の側で検査してよい（Torifune の古い版では届く。Plugin は Core の内部の規則に依存しない）
 * **同じ `provider` を登録できるのは 1 つの Plugin だけ。**
   別の Plugin が既に登録していると `PluginPublisherConflictError` になり、後から有効化したほうが `disabled` に落ちる
   （同じ Plugin が同じ provider をもう一度登録した場合は置き換わる）
