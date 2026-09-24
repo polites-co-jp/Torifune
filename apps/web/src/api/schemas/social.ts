@@ -20,7 +20,7 @@ import {
   type SocialPost,
 } from '@/domain/social/social';
 import { SKIP_REASONS, type SkipReason } from '@/domain/social/publishing';
-import { DEFAULT_PER_PAGE, MAX_PER_PAGE } from '@/api/query';
+import { pageQuerySchema, perPageQuerySchema } from '@/api/query';
 import { dataEnvelope, pageEnvelope } from './envelope';
 
 /** SNS API の Zod スキーマ。 */
@@ -78,42 +78,9 @@ const credentialsSchema = z
 export const accountStatusSchema = z.enum(ACCOUNT_STATUSES);
 export const postStatusSchema = z.enum(POST_STATUSES);
 
-/**
- * SNS の一覧の `page` / `perPage`（042-social-api-input-fixes 設計 §6.2）。
- *
- * **規則は `api/query.ts` の `paginationSchema` と同じ**（`page` は 1 未満を 1、`perPage` は 1〜100 に丸める。
- * 整数でなければ 422。既定は 1 / 20）。範囲外の整数は意図が明らかなので断らずに丸め、打ち間違い（`abc`）は断る。
- *
- * `paginationSchema` の形（`transform` の後ろに `.default()`）のまま使うと OpenAPI から `default` が消えるので、
- * `.default()` を `transform` の前に置く（042 実装プラン §8 の 1）。
- * `.int()` が出す `minimum` / `maximum`（安全な整数の範囲）はキーごと消す。書くと「範囲外は断られる」と読めて、
- * 実際の振る舞い（丸める）と食い違う（同 §6.2 末尾）。
- */
-const listPageSchema = z.coerce
-  .number()
-  .int('整数を指定してください。')
-  .default(1)
-  .transform((value) => Math.max(1, value))
-  .meta({
-    description: '1 以上。範囲外は 1 に丸める。',
-    minimum: undefined,
-    maximum: undefined,
-  });
-
-const listPerPageSchema = z.coerce
-  .number()
-  .int('整数を指定してください。')
-  .default(DEFAULT_PER_PAGE)
-  .transform((value) => Math.min(MAX_PER_PAGE, Math.max(1, value)))
-  .meta({
-    description: `1〜${MAX_PER_PAGE}。範囲外は 1〜${MAX_PER_PAGE} に丸める。`,
-    minimum: undefined,
-    maximum: undefined,
-  });
-
 export const accountListQuerySchema = z.object({
-  page: listPageSchema,
-  perPage: listPerPageSchema,
+  page: pageQuerySchema,
+  perPage: perPageQuerySchema,
   provider: z.string().max(32).optional(),
 });
 
@@ -141,8 +108,8 @@ export const updateAccountSchema = z.object({
 });
 
 export const postListQuerySchema = z.object({
-  page: listPageSchema,
-  perPage: listPerPageSchema,
+  page: pageQuerySchema,
+  perPage: perPageQuerySchema,
   /**
    * UUID の形（8-4-4-4-12 の 16 進。大文字・小文字を問わず、版と variant を見ない）でなければ 422
    * （042-social-api-input-fixes 設計 §6.3）。**絞り込みを黙って外さない。** 空文字も 422。

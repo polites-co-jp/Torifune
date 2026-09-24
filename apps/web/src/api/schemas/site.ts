@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { pageQuerySchema, perPageQuerySchema } from '@/api/query';
 import { SITE_NAME_MAX_LENGTH, SITE_STATUSES } from '@/domain/site/site';
 import { dataEnvelope, pageEnvelope } from './envelope';
 
@@ -23,8 +24,8 @@ export const SITE_SORT_FIELDS = {
 export const siteStatusSchema = z.enum(SITE_STATUSES);
 
 export const siteListQuerySchema = z.object({
-  page: z.coerce.number().int('整数を指定してください。').default(1),
-  perPage: z.coerce.number().int('整数を指定してください。').default(20),
+  page: pageQuerySchema,
+  perPage: perPageQuerySchema,
   status: siteStatusSchema.optional(),
   q: z.string().max(200, '検索語が長すぎます。').optional(),
   sort: z.string().optional(),

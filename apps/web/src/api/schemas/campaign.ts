@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { pageQuerySchema, perPageQuerySchema } from '@/api/query';
 import {
   CAMPAIGN_NAME_MAX_LENGTH,
   CAMPAIGN_STATUSES,
@@ -31,8 +32,8 @@ export const campaignStatusSchema = z.enum(CAMPAIGN_STATUSES);
 const dateOnly = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD の形式で入力してください。');
 
 export const campaignListQuerySchema = z.object({
-  page: z.coerce.number().int('整数を指定してください。').default(1),
-  perPage: z.coerce.number().int('整数を指定してください。').default(20),
+  page: pageQuerySchema,
+  perPage: perPageQuerySchema,
   status: campaignStatusSchema.optional(),
   q: z.string().max(200, '検索語が長すぎます。').optional(),
   /** この日に実施中のものだけを返す。 */

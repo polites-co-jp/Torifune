@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { pageQuerySchema, perPageQuerySchema } from '@/api/query';
 import type { UserWithRoles } from '@/application/user/user-use-cases';
 import { USER_STATUSES } from '@/domain/user';
 import { dataEnvelope, pageEnvelope } from './envelope';
@@ -25,8 +26,8 @@ export const USER_SORT_FIELDS = {
 export const userStatusSchema = z.enum(USER_STATUSES);
 
 export const userListQuerySchema = z.object({
-  page: z.coerce.number().int('整数を指定してください。').default(1),
-  perPage: z.coerce.number().int('整数を指定してください。').default(20),
+  page: pageQuerySchema,
+  perPage: perPageQuerySchema,
   status: userStatusSchema.optional(),
   q: z.string().max(200, '検索語が長すぎます。').optional(),
   sort: z.string().optional(),
