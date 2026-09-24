@@ -953,3 +953,136 @@ describe('#114 登録の 422 本文も秘匿を通る', () => {
     expect(Object.keys(detailsOf(await validateResult()))).toContain('body');
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* 046 の 2 回目の検証の指摘 N2・I2                                                */
+/* -------------------------------------------------------------------------- */
+
+/** 本文を JSON の文字列のまま送る（`JSON.stringify` で書けない深さの入れ子を送るため）。 */
+async function callCreateRaw(rawJson: string): Promise<JsonResult> {
+  const response = await createSocialPostRoute(
+    new Request(ENDPOINT, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${writeToken}` },
+      body: rawJson,
+    }),
+  );
+  const text = await response.text();
+  return {
+    status: response.status,
+    body: text === '' ? {} : (JSON.parse(text) as Record<string, unknown>),
+  };
+}
+
+/** `JSON.stringify` が書けない深さ（この環境で約 4,800 段）を十分に超える。 */
+const DEEP = 10_000;
+const PROVIDER_OPTIONS_TOO_LARGE = 'JSON にして4096バイト以内にしてください。';
+
+/** `providerOptions` に 1 万段の入れ子を入れた本文（JSON の文字列）。 */
+function postWithDeepProviderOptions(shape: 'array' | 'object'): string {
+  const nested =
+    shape === 'array'
+      ? `${'['.repeat(DEEP)}${']'.repeat(DEEP)}`
+      : `${'{"a":'.repeat(DEEP)}1${'}'.repeat(DEEP)}`;
+  const head = JSON.stringify(minimalPost()).slice(0, -1);
+  return `${head},"providerOptions":{"k":${nested}}}`;
+}
+
+describe('N2 providerOptions の入れ子が深くても 500 にならず、大きさの 422', () => {
+  it.each(['array', 'object'] as const)(
+    'N2 providerOptions に 1 万段の入れ子（%s）→ 422、details.providerOptions が大きさの文言',
+    async (shape) => {
+      const result = await callCreateRaw(postWithDeepProviderOptions(shape));
+
+      expect(result.status, JSON.stringify(result.body)).toBe(422);
+      expect(errorCodeOf(result)).toBe('VALIDATION_ERROR');
+      expect(detailsOf(result)['providerOptions']).toEqual([PROVIDER_OPTIONS_TOO_LARGE]);
+    },
+  );
+
+  it.each(['array', 'object'] as const)(
+    'N2 providerOptions に 1 万段の入れ子（%s）→ unhandled error in route のログが出ない',
+    async (shape) => {
+      const { records } = capture();
+
+      await callCreateRaw(postWithDeepProviderOptions(shape));
+
+      expect(records.map((record) => record.message)).not.toContain('unhandled error in route');
+    },
+  );
+
+  it('N2 対照：providerOptions に 4096 バイト以内の値 → 従来どおり作れる', async () => {
+    registerPublisher('test-plugin', publisherFor({ validate: () => [] }));
+
+    const result = await callCreate(minimalPost({ providerOptions: { k: [[['v']]] } }));
+
+    expect(result.status).toBe(201);
+  });
+});
+
+/**
+ * 配信 Plugin の `validate()` が返す `field` は Plugin の文字列で、利用者が送った
+ * `providerOptions` のキーをそのまま返すことがある。`Object.prototype` の名前でも 500 にしない。
+ * `__proto__` は `field` の形（英字で始まる）に合わないので、従来どおり `providerOptions` に丸める。
+ */
+describe('I2 validate() の field が原型の名前でも 500 にならず 422', () => {
+  it.each(['constructor', 'toString', 'valueOf', 'hasOwnProperty'])(
+    'I2 field が %s → 422、details がその名前 1 つだけ',
+    async (field) => {
+      registerPublisher(
+        'test-plugin',
+        publisherFor({ validate: () => [{ field, message: 'i2-message' }] }),
+      );
+
+      const result = await callCreate(minimalPost());
+
+      expect(result.status, JSON.stringify(result.body)).toBe(422);
+      expect(Object.entries(detailsOf(result))).toEqual([[field, ['i2-message']]]);
+    },
+  );
+
+  it('I2 field が __proto__ → 422、従来どおり providerOptions に丸める', async () => {
+    registerPublisher(
+      'test-plugin',
+      publisherFor({ validate: () => [{ field: '__proto__', message: 'i2-proto' }] }),
+    );
+
+    const result = await callCreate(minimalPost());
+
+    expect(result.status, JSON.stringify(result.body)).toBe(422);
+    expect(Object.entries(detailsOf(result))).toEqual([['providerOptions', ['i2-proto']]]);
+  });
+
+  it('I2 同じ原型の名前の field が 2 つ → 1 つのキーに 2 つの文言', async () => {
+    registerPublisher(
+      'test-plugin',
+      publisherFor({
+        validate: () => [
+          { field: 'constructor', message: 'first' },
+          { field: 'constructor', message: 'second' },
+          { field: 'body', message: 'third' },
+        ],
+      }),
+    );
+
+    const result = await callCreate(minimalPost());
+
+    expect(result.status, JSON.stringify(result.body)).toBe(422);
+    expect(Object.entries(detailsOf(result))).toEqual([
+      ['constructor', ['first', 'second']],
+      ['body', ['third']],
+    ]);
+  });
+
+  it('I2 field が constructor → unhandled error in route のログが出ない', async () => {
+    registerPublisher(
+      'test-plugin',
+      publisherFor({ validate: () => [{ field: 'constructor', message: 'i2-log' }] }),
+    );
+    const { records } = capture();
+
+    await callCreate(minimalPost());
+
+    expect(records.map((record) => record.message)).not.toContain('unhandled error in route');
+  });
+});

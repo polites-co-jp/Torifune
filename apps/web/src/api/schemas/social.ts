@@ -53,11 +53,27 @@ const mediaSchema = z
     `代替テキストは${MEDIA_ALT_MAX_LENGTH}文字以内にしてください。`,
   );
 
+/**
+ * JSON にしたときの大きさが上限の内側か。
+ *
+ * **書けない値は上限を超えたものとして扱う**（046 検証の指摘 N2）。`JSON.parse` は読めても
+ * `JSON.stringify` は書けない深さの入れ子（数千段）があり、そのまま投げると 500 になる。
+ */
+function fitsProviderOptionsSize(value: Record<string, unknown>): boolean {
+  let json: string;
+  try {
+    json = JSON.stringify(value);
+  } catch {
+    return false;
+  }
+  return Buffer.byteLength(json, 'utf8') <= PROVIDER_OPTIONS_MAX_BYTES;
+}
+
 /** provider 固有の追加項目。**中身を検証するのは Plugin**（`validate()`）。 */
 const providerOptionsSchema = z
   .record(z.string(), z.unknown())
   .refine(
-    (value) => Buffer.byteLength(JSON.stringify(value), 'utf8') <= PROVIDER_OPTIONS_MAX_BYTES,
+    fitsProviderOptionsSize,
     `JSON にして${PROVIDER_OPTIONS_MAX_BYTES}バイト以内にしてください。`,
   );
 

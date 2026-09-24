@@ -724,14 +724,24 @@ async function assertPostIsDeliverable(
   // **Plugin 由来の自由文は 422 の本文へそのまま出る**（設計 §6.1.2、3 回目の検証の低-A）。
   // `message` も `field` も Plugin が書いた文字列なので、理由文を組み立てる前に伏せる。
   // 配信直前の再検査（`publish.ts`）と**同じ関数**を通す（経路によって差を作らない）。
-  const details: Record<string, string[]> = {};
+  //
+  // `field` は利用者が送った `providerOptions` のキーを Plugin がそのまま返しうる。`constructor` のような
+  // `Object.prototype` の名前で継承した値を拾わないよう、`Map` に積んで**自分のプロパティ**として返す
+  // （046 検証の指摘 I2）。
+  const collected = new Map<string, string[]>();
   for (const problem of problems) {
     // 見慣れない形のキーをそのまま応答へ出さない。丸め先は providerOptions。
     const key = VALIDATE_FIELD_PATTERN.test(problem.field)
       ? redactSecrets(problem.field)
       : 'providerOptions';
-    (details[key] ??= []).push(redactSecrets(problem.message));
+    const messages = collected.get(key);
+    if (messages === undefined) {
+      collected.set(key, [redactSecrets(problem.message)]);
+    } else {
+      messages.push(redactSecrets(problem.message));
+    }
   }
+  const details: Record<string, string[]> = Object.fromEntries(collected);
   const first = problems[0];
   throw new ValidationError(
     'SocialPost',
