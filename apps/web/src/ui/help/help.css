@@ -1,0 +1,146 @@
+/*
+ * 手順書（ヘルプ）の見た目（041-plugin-help-docs 設計 §7.3.2・§7.4.2）。
+ *
+ * 本文の規則は `.tf-help-body` の下に閉じ、画面の他の要素に効かせない。
+ * 色と余白は tokens.css の CSS 変数だけを使う。
+ */
+
+/* 視覚的に隠し、読み上げには残す（新しいタブで開くことの説明など）。 */
+.tf-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ヘルプボタン：小さな二次ボタン風のリンク。 */
+.tf-help-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tf-space-1);
+  padding: var(--tf-space-1) var(--tf-space-3);
+  border: 1px solid var(--tf-color-border);
+  border-radius: var(--tf-radius-pill);
+  background: var(--tf-color-bg);
+  color: var(--tf-color-text);
+  font-size: var(--tf-text-caption);
+  text-decoration: none;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.tf-help-link:hover {
+  background: var(--tf-color-surface);
+}
+
+.tf-help-link-note {
+  margin: var(--tf-space-1) 0 0;
+  color: var(--tf-color-text-muted);
+  font-size: var(--tf-text-caption);
+}
+
+/* 本文 */
+.tf-help-body {
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.tf-help-body h2 {
+  font-size: var(--tf-text-h2);
+  margin: var(--tf-space-8) 0 var(--tf-space-3);
+}
+
+.tf-help-body h3,
+.tf-help-body h4,
+.tf-help-body h5,
+.tf-help-body h6 {
+  font-size: var(--tf-text-body);
+  font-weight: 600;
+  margin: var(--tf-space-6) 0 var(--tf-space-2);
+}
+
+.tf-help-body p,
+.tf-help-body ul,
+.tf-help-body ol,
+.tf-help-body blockquote,
+.tf-help-body pre,
+.tf-help-body .tf-table-scroll {
+  margin: 0 0 var(--tf-space-4);
+}
+
+.tf-help-body ul {
+  list-style: disc;
+  padding-left: var(--tf-space-6);
+}
+
+.tf-help-body ol {
+  list-style: decimal;
+  padding-left: var(--tf-space-6);
+}
+
+.tf-help-body li + li {
+  margin-top: var(--tf-space-1);
+}
+
+.tf-help-body blockquote {
+  padding: var(--tf-space-2) var(--tf-space-4);
+  border-left: 3px solid var(--tf-color-border);
+  color: var(--tf-color-text-muted);
+}
+
+.tf-help-body a {
+  color: var(--tf-color-primary);
+  text-decoration: underline;
+}
+
+.tf-help-body code {
+  font-family: var(--tf-font-mono);
+  font-size: 0.9em;
+  background: var(--tf-color-surface);
+  border-radius: var(--tf-radius-sm);
+  padding: 0 var(--tf-space-1);
+}
+
+/* コードは枠の中で横に動かし、ページ全体を横に動かさない。 */
+.tf-help-body pre {
+  overflow-x: auto;
+  max-width: 100%;
+  padding: var(--tf-space-3) var(--tf-space-4);
+  background: var(--tf-color-surface);
+  border-radius: var(--tf-radius-md);
+}
+
+.tf-help-body pre code {
+  background: none;
+  padding: 0;
+  overflow-wrap: normal;
+  white-space: pre;
+}
+
+.tf-help-body table {
+  border-collapse: collapse;
+}
+
+.tf-help-body th,
+.tf-help-body td {
+  border: 1px solid var(--tf-color-border);
+  padding: var(--tf-space-2) var(--tf-space-3);
+  text-align: left;
+  vertical-align: top;
+}
+
+.tf-help-body th {
+  background: var(--tf-color-surface);
+  font-weight: 600;
+}
+
+.tf-help-body hr {
+  border: 0;
+  border-top: 1px solid var(--tf-color-border);
+  margin: var(--tf-space-6) 0;
+}
