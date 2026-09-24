@@ -1,6 +1,7 @@
 import type { Plugin, PluginManifest } from '@torifune/plugin-api';
 import { validateManifest } from '@torifune/plugin-api';
 import { CORE_PERMISSIONS } from '@/domain/permission';
+import { log } from '@/infrastructure/logging';
 import { PLUGIN_MODULES } from './generated-registry';
 
 /**
@@ -84,6 +85,17 @@ export function discoverPlugins(): DiscoveryResult {
         message: 'activate を持つオブジェクトを default export していない',
       });
       continue;
+    }
+
+    // **Manifest を拒否しない誤り**（いまは `help` だけ。041 設計 §9.2）。
+    // Plugin は読み込み、作者が誤りに気づけるようにログにだけ残す。呼ぶたびに出す。
+    const warnings = validation.warnings;
+    if (warnings !== undefined && warnings.length > 0) {
+      log.warn('plugin manifest has warnings', {
+        pluginId: manifest.id,
+        fields: warnings.map((w) => w.field),
+        messages: warnings.map((w) => w.message),
+      });
     }
 
     seen.add(manifest.id);
