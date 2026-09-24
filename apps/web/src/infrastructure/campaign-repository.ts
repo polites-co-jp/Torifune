@@ -3,6 +3,7 @@ import type { Connection } from '../database/provider';
 import type { Schema } from '../database/schema';
 import type { Campaign, CampaignStatus } from '../domain/campaign/campaign';
 import type {
+  CampaignLinks,
   CampaignListQuery,
   CampaignPage,
   CampaignRepository,
@@ -345,5 +346,38 @@ export const campaignRepository: CampaignRepository = {
       .where('id', '=', id)
       .executeTakeFirst();
     return Number(result.numDeletedRows) > 0;
+  },
+
+  async lockExistingLinks(connection: Connection, links: CampaignLinks): Promise<CampaignLinks> {
+    // FOR KEY SHARE：その行の DELETE（と主キーの更新）だけを、このトランザクションが終わるまで待たせる。
+    // 外部キーの検査が内部で取るロックと同じ強さで、名前などの通常の更新は妨げない（045 設計 §6.4）。
+    // 先に始まっていた削除があれば、その終わりを待ち、確定していれば行は見つからない（READ COMMITTED）。
+    const siteIds =
+      links.siteIds.length === 0
+        ? []
+        : (
+            await connection.db
+              .selectFrom('sites')
+              .select('id')
+              .where('id', 'in', [...links.siteIds])
+              .orderBy('id')
+              .forKeyShare()
+              .execute()
+          ).map((row) => row.id);
+
+    const socialPostIds =
+      links.socialPostIds.length === 0
+        ? []
+        : (
+            await connection.db
+              .selectFrom('social_posts')
+              .select('id')
+              .where('id', 'in', [...links.socialPostIds])
+              .orderBy('id')
+              .forKeyShare()
+              .execute()
+          ).map((row) => row.id);
+
+    return { siteIds, socialPostIds };
   },
 };
