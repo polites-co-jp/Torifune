@@ -77,17 +77,23 @@ Authorization: Bearer tfp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 * トークンは `tfp_` で始まる文字列（`apps/web/src/domain/api-token.ts`）。発行は管理画面から行う
   （**API からは発行できない**）。手順は [手順書 §1](SNS投稿の外部連携.md#1-apiトークンを発行する)
-* ヘッダは `Authorization: Bearer <トークン>`（`Bearer` の大文字・小文字は問わない）
-* **トークン認証の要求では CSRF トークンは要らない。** `Authorization` ヘッダが付いていれば
-  CSRF の検証を行わない（ブラウザが自動送信しないため）。要求本文の `csrfToken` 項目は画面用で、
-  外部アプリは送らなくてよい
+* ヘッダは `Authorization: Bearer <トークン>`（`Bearer` の大文字・小文字は問わない）。
+  値は正規表現 `/^Bearer\s+(\S+)$/i` で読む（`apps/web/src/domain/api-token.ts` の `bearerTokenOf`）。
+  `Bearer` と値の間は空白、値そのものに空白を含めない
+* **この形の `Authorization` ヘッダが付いている要求では CSRF の検証を行わない**（ブラウザが自動送信しないため）。
+  要求本文の `csrfToken` 項目は画面用で、外部アプリは送らなくてよい
 * `Authorization` とセッション Cookie の両方があると、**トークンのほうで認証する**
 
-次のときは **401 `UNAUTHENTICATED`** になる。
+**CSRF の検証は認証より前に行う**（`apps/web/src/api/route.ts`）。そのため、認証に失敗したときの
+応答はメソッドによって変わる。
 
-* `Authorization` ヘッダが無い（かつセッションも無い）
-* トークンが存在しない・失効している・有効期限が切れている
-* トークンの所有者が無効化されている
+| 要求 | GET | POST / PATCH / DELETE |
+| --- | --- | --- |
+| `Authorization` ヘッダが無い（セッションも無い） | 401 `UNAUTHENTICATED` | **403 `CSRF_FAILED`** |
+| `Authorization` が上の形に合わない（`Token xxx`・`Bearer` だけ・値に空白を含む など） | 401 `UNAUTHENTICATED` | **403 `CSRF_FAILED`** |
+| 形は合っているが、トークンが存在しない・失効している・有効期限が切れている・所有者が無効化されている | 401 `UNAUTHENTICATED` | 401 `UNAUTHENTICATED` |
+
+**更新系で 403 `CSRF_FAILED` が返ったら、まず `Authorization` ヘッダの付け方を疑う。**
 
 ### 2.2 スコープ（必要な権限）
 
@@ -156,14 +162,20 @@ CORS ヘッダが付く（`*` は指定できない）。ただし **API トー�
 | --- | --- | --- |
 | `error.code` | string | **プログラムで分岐に使う固定値**（下表） |
 | `error.message` | string | 表示用の固定文（日本語）。分岐に使わない |
-| `error.details` | object（任意） | **422 のときだけ付く。** キー＝問題のある項目名、値＝理由の文字列の配列 |
+| `error.details` | object（任意） | **422 と、`POST /social/publish` の 409（`details.job`）に付く。** キー＝問題のある項目名、値＝理由の文字列の配列 |
 
 `details` のキーの規則。
 
 * キーは**送った項目名**（`body`・`scheduledAt`・`media`・`link`・`deliveryMode`・`socialAccountId`・
   `externalRef`・`providerOptions`・`status`・`externalUrl`・`externalId`・`credentials`・`provider`・
   `displayName` など）
-* **`media` の要素ごとの問題も `media` 1 つにまとめる**（`media.0.url` のように分岐させない）
+* `media` の問題は**2 種類のキーに分かれる**（`apps/web/src/api/schemas/social.ts` の `mediaSchema`）
+  * **`media`**：件数（11 件以上）・URL が https でない／2048 文字超／`user:pass@` を含む・`alt` が 1000 文字超。
+    どの要素の問題でも `media` 1 つにまとまる。SNS ごとの規則（§5）の違反もこのキー
+  * **`media.<n>.url` / `media.<n>.alt`**（`<n>` は 0 始まりの位置）：要素の**型違い・欠落**
+    （`url` が無い、`url` が文字列でない、`alt` が文字列でも `null` でもない など）。
+    型の検査に落ちた要求では件数・https の検査は行われない
+  * 受け取る側は **`media` で始まるキー**をまとめて `media` の問題として扱うとよい
 * **配信 Plugin の検査（§5）は `providerOptions.<キー>` の形のキーを返すことがある**
   （例：`providerOptions.langs`）。Plugin が返したキーが英数字と `_` `.` の 64 文字以内の形でなければ
   `providerOptions` に丸められる
@@ -176,14 +188,14 @@ CORS ヘッダが付く（`*` は指定できない）。ただし **API トー�
 
 | HTTP | `code` | いつ |
 | ---: | --- | --- |
-| 401 | `UNAUTHENTICATED` | 認証が無い・トークンが無効（§2.1） |
+| 401 | `UNAUTHENTICATED` | GET で認証が無い／トークンが無効。更新系で `Bearer <トークン>` の形は合っているがトークンが無効（§2.1） |
 | 403 | `FORBIDDEN` | 権限（Scope）が足りない（§2.2） |
-| 403 | `CSRF_FAILED` | セッション（Cookie）認証で CSRF トークンが無い。**トークン認証では起きない** |
+| 403 | `CSRF_FAILED` | **更新系（POST / PATCH / DELETE）で `Authorization: Bearer <トークン>` の形のヘッダが無い**（ヘッダの欠落・形の誤り）。セッション（Cookie）認証で CSRF トークンが無いときも。形の合ったトークン認証では起きない（§2.1） |
 | 404 | `NOT_FOUND` | `{id}` の投稿・アカウントが無い（**UUID の形でない ID も 404**） |
-| 409 | `CONFLICT` | `POST /social/publish` で他の配信処理が実行中（`Retry-After: 10` が付く） |
+| 409 | `CONFLICT` | `POST /social/publish` で他の配信処理が実行中（`details.job` と `Retry-After: 10` が付く） |
 | 422 | `VALIDATION_ERROR` | 入力の検査に落ちた（§3.2 の `details` を見る） |
 | 429 | `TOO_MANY_ATTEMPTS` | Rate Limit を超えた（§3.4。`Retry-After` が付く） |
-| 500 | `INTERNAL_ERROR` | 想定外のエラー。配信 Plugin の事前検査が例外・5 秒超過になったときもこれ（§5.1） |
+| 500 | `INTERNAL_ERROR` | 想定外のエラー。配信 Plugin の事前検査が例外・5 秒超過になったとき（§4.4）、一覧の `page` / `perPage` が範囲外のとき（§3.6）もこれ |
 
 **400 `BAD_REQUEST` は SNS API では返らない**（壊れた JSON も 422）。
 
@@ -192,12 +204,16 @@ CORS ヘッダが付く（`*` は指定できない）。ただし **API トー�
 | 項目 | 値（`apps/web/src/api/rate-limit.ts` の `DEFAULT_RATE_LIMIT`） |
 | --- | --- |
 | 上限 | **60 秒あたり 300 回**（直近 60 秒の窓で数える） |
-| 数える単位 | **エンドポイント（operationId）× 送信元 IP ごと**。`GET /social/posts` と `POST /social/posts` は別枠。トークンごとではない |
+| 数える単位 | **エンドポイント（operationId）× 送信元 IP ごと**。`GET /social/posts` と `POST /social/posts` は別枠。トークンごとではない。送信元 IP は **`X-Forwarded-For` の先頭**、無ければ **`X-Real-IP`**（`apps/web/src/api/cookies.ts` の `clientIpOf`） |
 | 超えたとき | **429 `TOO_MANY_ATTEMPTS`** と **`Retry-After: <秒>`**（窓の最古の要求が外れるまでの秒数。切り上げ） |
 | 残り回数のヘッダ | **無い**（`X-RateLimit-*` は返さない） |
-| 認証との順序 | Rate Limit は認証より**前**に数える。401 になる要求も枠を消費する |
+| 認証との順序 | Rate Limit は認証より**前**に数える。401・403 になる要求も枠を消費する |
 
 * 数える場所はサーバのメモリ（プロセスごと）。複数プロセスで動かしている構成では枠がプロセスごとになる
+* **リバースプロキシの設定に注意する（運用者向け）。** `X-Forwarded-For` も `X-Real-IP` も届かない構成では、
+  送信元 IP が分からず、**すべてのクライアントが `unknown` という 1 つの枠を共有する**（1 分に 300 回を全員で分け合う）。
+  逆に、外部からの `X-Forwarded-For` をそのまま通すプロキシでは、クライアントがヘッダを偽って枠を逃れられる。
+  プロキシで `X-Forwarded-For` を付け直す（または `X-Real-IP` を設定する）こと
 * **429 を受けたら `Retry-After` の秒数だけ待ってから同じ要求を送り直す。** `POST /social/posts` を
   送り直すときは `externalRef` を付けたままにする（§3.5）
 
@@ -210,6 +226,18 @@ CORS ヘッダが付く（`*` は指定できない）。ただし **API トー�
 | **201**、新しい投稿を返す | **200**、**既存の投稿をそのまま**返す（新しい投稿は作らない） |
 
 * 冪等キーは **「登録したトークン」と `externalRef` の組**。別のトークンから同じ値を送ると別の投稿になる
+* **`socialAccountId` は比べない。`externalRef` はトークンの中で、全 SNS・全アカウントを通して一意にする。**
+  同じ記事を X と Bluesky へ同じ `externalRef` で登録すると、**2 つ目は 200 で 1 つ目（X）の投稿が返り、
+  Bluesky の投稿は作られない**（`apps/web/src/application/social/social-use-cases.ts` の再送判定）。
+  複数の SNS へ出すときは、投稿先ごとに値を変える
+
+  ```text
+  POST /social/posts  { "socialAccountId": "<X のアカウント>",       "externalRef": "article-1234:x" }        → 201
+  POST /social/posts  { "socialAccountId": "<Bluesky のアカウント>", "externalRef": "article-1234:bluesky" }  → 201
+  （誤り）両方を "article-1234" にすると、2 つ目は 200 で X の投稿が返り、Bluesky には何も登録されない
+  ```
+
+  応答の `socialAccountId` が送った値と違えば、この衝突が起きている
 * 値は前後の空白を取り除いてから比べる（`" a-1 "` と `"a-1"` は同じ）。1〜200 文字
 * **2 回目で本文などを変えて送っても、保存されている内容は 1 回目のまま**（200 で 1 回目の内容が返る）。
   内容を変えるのは `PATCH`
@@ -230,11 +258,19 @@ CORS ヘッダが付く（`*` は指定できない）。ただし **API トー�
 
 | クエリ | 型 | 既定 | 説明 |
 | --- | --- | --- | --- |
-| `page` | 整数 | `1` | 1 始まり |
-| `perPage` | 整数 | `20` | 1 ページの件数。**1〜100 の範囲で指定する**（§10 の 2） |
+| `page` | 整数 | `1` | 1 始まり。**1 以上で送る** |
+| `perPage` | 整数 | `20` | 1 ページの件数。**1〜100 で送る** |
 
 * 並び順は**作成日時の新しい順**（同じ時刻は `id` の昇順）。並び順を変えるクエリは無い
 * 整数でない値は 422（`details.page` / `details.perPage`）
+* **SNS の一覧は `page` / `perPage` の範囲を検査しない**（他の一覧 API のように 1〜100 へ丸めない。§10.1 の 1）。
+  範囲外の値は次のようになるので、**送る側で 1〜100・1 以上に収める**
+
+  | 送った値 | 結果 |
+  | --- | --- |
+  | `perPage=0` | 200 で `data` が空 |
+  | `perPage=-1`、`page=0`（0 以下） | **500 `INTERNAL_ERROR`** |
+  | `perPage=1000`（101 以上） | そのまま通り、1000 件まで返る |
 
 ### 3.7 OpenAPI
 
@@ -246,10 +282,12 @@ CORS ヘッダが付く（`*` は指定できない）。ただし **API トー�
 * 必要な権限は各操作の拡張項目 **`x-required-permission`** に書かれている
 * 認証方式は `session`（Cookie）と `bearer`（API トークン）の 2 つが宣言されている
 * **OpenAPI に載らないこと**（この文書で補う）
-  * `POST /social/posts` の**再送が 200 を返すこと**（成功は 201 だけが宣言されている）
+  * `POST /social/posts` の**再送の 200 の応答の宣言**。`createSocialPost` の `summary` には
+    「同じ externalRef の再送は 200 で既存を返す」と書かれているが、`responses` に宣言されている成功は 201 だけ。
+    コード生成したクライアントは 200 を想定外として扱うことがある
   * 404・409 の応答（宣言されているのは 401・403・422・429・500）
   * SNS ごとの規則（§5）と、配信 Plugin が返す 422 の `details` のキー
-  * `perPage` の推奨範囲（§3.6）
+  * `page` / `perPage` の範囲（§3.6。スキーマ上は整数であることだけ）
 
 ---
 
@@ -406,7 +444,7 @@ curl -X POST https://torifune.example.com/api/v1/social/posts \
         "status": "scheduled",
         "scheduledAt": "2026-10-01T09:00:00+09:00",
         "deliveryMode": "auto",
-        "externalRef": "article-1234"
+        "externalRef": "article-1234:x"
       }'
 ```
 
@@ -429,7 +467,7 @@ curl -X POST https://torifune.example.com/api/v1/social/posts \
     "media": [{ "url": "https://cdn.example.com/ogp/1234.jpg", "alt": "記事のサムネイル" }],
     "link": "https://example.com/articles/1234",
     "providerOptions": {},
-    "externalRef": "article-1234",
+    "externalRef": "article-1234:x",
     "externalId": null,
     "externalUrl": null,
     "attemptCount": 0,
@@ -454,9 +492,11 @@ curl -X POST https://torifune.example.com/api/v1/social/posts \
 | 5 | `status: "scheduled"` なら `scheduledAt` がある | `scheduledAt` |
 | 6 | `deliveryMode: "manual"` なら `media` が空 | `media` |
 | 7 | `deliveryMode: "manual"` なら、その provider の配信 Plugin が手動投稿に対応している（**Plugin が入っていない provider の `manual` も 422**） | `deliveryMode` |
-| 8a | 配信 Plugin が宣言した上限（本文の長さ・媒体の最大数・媒体の必須） | `body` / `media` |
-| 8b | 配信 Plugin の検査（`validate()`。SNS ごとの数え方・リンク・`providerOptions` など） | `body` / `media` / `link` / `deliveryMode` / `providerOptions.<キー>` など（§5） |
+| 8a | 配信 Plugin が宣言した上限（本文の長さ・媒体の最大数・媒体の必須）。**違反が複数あっても先頭の 1 つだけ**を返す | `body` / `media` |
+| 8b | 配信 Plugin の検査（`validate()`。SNS ごとの数え方・リンク・`providerOptions` など）。**違反をすべて**返す | `body` / `media` / `link` / `deliveryMode` / `providerOptions.<キー>` など（§5） |
 
+* 表の 2〜8a は最初の違反で止まる。**8a で落ちると 8b は走らない**ので、直して送り直すと
+  8b の違反が新たに返ることがある。**1 回の 422 に複数の項目のキーが並びうるのは 1 と 8b だけ**
 * **8a・8b は `status: "draft"` でも掛かる**（作成時）
 * **その provider の配信 Plugin が入っていなければ 8a・8b は行わない。** `auto` の予約は断られずに保存され、
   配信の時刻に「支度待ち」になる（§6.3）
@@ -468,7 +508,7 @@ curl -X POST https://torifune.example.com/api/v1/social/posts \
 | クエリ | 型 | 説明 |
 | --- | --- | --- |
 | `page` / `perPage` | 整数 | §3.6 |
-| `accountId` | string | そのアカウントの投稿だけに絞る。**UUID の形でない値は絞り込みが無視され、全件が返る**（§10 の 3） |
+| `accountId` | string（64 文字以内） | そのアカウントの投稿だけに絞る。**65 文字以上は 422 `accountId`。64 文字以内で UUID の形でない値は、絞り込みが黙って外れて全件が返る**（§10.1 の 2）。送る前に UUID の形を確かめる |
 | `status` | enum | `draft` / `scheduled` / `published` / `failed` のどれか 1 つ。列挙外は 422 `status` |
 
 並びは作成日時の新しい順。応答は §3.1 の一覧の形で、各要素は §4.3。
@@ -495,12 +535,14 @@ curl -X POST https://torifune.example.com/api/v1/social/posts \
 | `providerOptions` | object | §4.4 と同じ |
 | `externalId` | string \| null | SNS 側の投稿 ID。200 文字以内（**手動投稿の結果を記録するとき**に使う） |
 | `externalUrl` | string \| null | SNS 側の投稿の URL。**https のみ**・2048 文字以内 |
-| `failureReason` | string \| null | 失敗の理由。2000 文字を超えた分は切り詰めて保存（エラーにしない）。空文字は `null` 扱い |
+| `failureReason` | string \| null | 失敗の理由。**2000 文字以内**（超えると 422 `failureReason`）。前後の空白は取り除き、空文字は `null` 扱い。（2000 文字で切り詰めて保存するのは配信 Plugin の内部経路だけで、この API は切り詰めない） |
 
 * `socialAccountId` と `externalRef` は**変えられない**（送っても無視される）
 * **配信の最中（`auto` の予約で Torifune が SNS へ送っている間）は、`body`・`media`・`link`・
   `providerOptions`・`scheduledAt`・`deliveryMode`・`status` を変えられない**（422 `status`
-  「配信を開始しているため変更できません。」）。長くても数十秒で外れる
+  「配信を開始しているため変更できません。」）。通常は配信の結果が記録された時点（配信 Plugin の制限時間 30 秒以内）で外れる。
+  **配信の途中で Torifune のプロセスが落ちた場合は、次の定期実行が中断を判定して `failed`（結果不明）にするまで
+  （既定の間隔で 1 分以上）残る**。その間は `GET` で状態を見て待つ
 * 変更後の値に対して §4.4 の 5〜8 と同じ検査を掛ける。ただし
   * 5・6（予約日時・手動投稿の媒体）は**変更後が `draft` / `scheduled` のときだけ**
   * 7（手動投稿の対応）は **`deliveryMode: "manual"` を送ったときだけ**
@@ -547,7 +589,15 @@ curl -X PATCH https://torifune.example.com/api/v1/social/posts/$POST_ID \
 * **Plugin が入っていない provider には SNS ごとの規則が掛からない**（Core の規則だけ）
 * **provider `x` の Plugin は 2 種類あり、同時には有効にできない**（先に有効になったほうが担当する）。
   どちらが有効かで使える配信モードが変わる。**外部アプリからどちらが有効かを問い合わせる API は無い**
-  ので、運用者に確かめるか、`auto` で登録して 422 `deliveryMode` が返るかで判断する
+  ので、まず運用者に確かめる。API で確かめるなら次の手順にする
+
+  1. **`status: "draft"`**・`deliveryMode: "auto"`・`scheduledAt` なしで、確認用の本文を登録する
+     （作成時は `draft` でも §4.4 の 8b が掛かる）。`externalRef` は付けない
+  2. 422 `deliveryMode` なら `sns-x-manual`（手動投稿だけ）。201 なら `sns-x-api`（自動配信できる）か、
+     X の Plugin が 1 つも有効でない（どちらかは区別できない）
+  3. **201 で作られた確認用の投稿は `DELETE /social/posts/{id}` で消す**（`social.delete` が要る。無ければ運用者に頼む）
+
+  **`status: "scheduled"` で試さない。** `sns-x-api` が有効だと、そのまま予約として配信され、X に本当に投稿される
 * 以下の「上限」は登録時に 422 で断られる条件。「配信時の失敗」は登録を通った後に SNS 側の都合で
   `failed` / 再試行になる条件
 
@@ -566,9 +616,9 @@ curl -X PATCH https://torifune.example.com/api/v1/social/posts/$POST_ID \
 | `media` の形式・大きさ | PNG・JPEG・GIF・WebP、**1 MB（1,000,000 バイト）まで** | JPEG・PNG・WebP、**5 MB（5,000,000 バイト）まで** | — | JPEG・PNG、8 MB まで（Threads 側の条件。登録時は検査しない） | **JPEG のみ**（Instagram 側の条件。登録時は検査しない） |
 | 画像を取りに行くのは | **Torifune のサーバ** | **Torifune のサーバ** | — | **Threads（Meta）のサーバ** | **Instagram（Meta）のサーバ** |
 | `media` と `link` の併用 | **不可**（`auto` で 422 `link`） | 可 | — | 可 | —（`link` 不可） |
-| `alt` | 送る（1000 grapheme まで。超えると 422 `media`） | **送らない**（無視） | — | 送る（`alt_text`） | **送らない**（無視） |
+| `alt` | 送る（Core が先に UTF-16 の長さ 1000 で 422 `media` にするので、Plugin の 1000 grapheme の上限は実際には効かない） | **送らない**（無視） | — | 送る（`alt_text`） | **送らない**（無視） |
 | `providerOptions` | `langs` だけ受け付ける（言語コードの配列・3 件まで・各 2〜16 文字。例 `{"langs":["ja"]}`）。他のキーは 422 `providerOptions.<キー>` | どのキーも 422 `providerOptions.<キー>` | 同左 | 同左 | 同左 |
-| 手動投稿の URL の上限 | **登録時に検査しない**（§5.5・§10 の 5） | intent URL 2048 文字（422 `body`） | 同左 | intent URL 2048 文字（422 `body`） | — |
+| 手動投稿の URL の上限 | **登録時に検査しない**（§5.5・§10.1 の 4） | intent URL 2048 文字（422 `body`） | 同左 | intent URL 2048 文字（422 `body`） | — |
 | 配信後の `externalUrl` | `https://bsky.app/profile/<handle>/post/<rkey>` | `https://x.com/i/status/<id>` | —（人が PATCH で記録） | Threads が返す投稿の URL | Instagram が返す投稿の URL |
 
 **手動投稿（`manual`）では `media` を 1 件も付けられない**（全 SNS 共通。422 `media`）。
@@ -600,8 +650,15 @@ curl -X PATCH https://torifune.example.com/api/v1/social/posts/$POST_ID \
    それ以外は UTF-16 の長さ（日本語 1 文字 = 1）で数える。多くの絵文字は 1 つで 4 以上になる
 3. 合計が 500 以下なら通る
 
-リンクの本数は、X と同じ切り出し方で見つけた URL のうち**文字列として異なるもの**を数え、5 本まで
-（大文字・小文字や末尾の `/` の違いも別の URL として数える）。
+リンクの本数は、本文（と `link`）から URL を切り出し、**文字列として異なるもの**を数えて 5 本まで。
+切り出し方は X（§5.3 の 2）と似ているが、次の点が違う。
+
+* スキームの大文字・小文字を区別しない（`HTTPS://` も URL として拾う。X は小文字の `http(s)://` だけ）
+* ホスト名の形を確かめない。末尾の句読点を外した後に `https://` だけが残るものを除き、
+  `https://` の直後に何か続けば URL として数える（X はホスト名まで揃ったものだけを数える）
+* 同じかどうかは文字列の完全一致（大文字・小文字や末尾の `/` の違いも別の URL として数える）
+
+Threads の長さ（500）の数え方では URL を特別扱いしない（X のように 23 に置き換えず、そのままの長さで数える）。
 
 ### 5.5 手動投稿の URL の長さ
 
@@ -612,7 +669,7 @@ curl -X PATCH https://torifune.example.com/api/v1/social/posts/$POST_ID \
 | --- | --- | --- | --- |
 | X | `https://x.com/intent/tweet?text=` | 約 224 文字（ただし重み付き 280 の上限＝日本語 140 文字が先に効く） | あり（422 `body`「投稿画面の URL が長くなりすぎます…」） |
 | Threads | `https://www.threads.com/intent/post?text=` | **約 223 文字**（本文の上限 500 より先に効く） | あり（422 `body`） |
-| Bluesky | `https://bsky.app/intent/compose?text=` | 約 223 文字 | **無い**。超えると登録は通るが、画面の「投稿画面を開く」が失敗する（§10 の 5） |
+| Bluesky | `https://bsky.app/intent/compose?text=` | 約 223 文字 | **無い**。超えると登録は通るが、画面の「投稿画面を開く」が失敗する（§10.1 の 4） |
 
 改行は 3 文字（`%0A`）、英数字は 1 文字として数える。`link` も本文に含めて埋め込まれる。
 
@@ -746,7 +803,8 @@ Webhook の本文は `{ "event": "<イベント名>", "data": { "postId": "…",
 | `X-Torifune-Signature` | `sha256=<HMAC-SHA256(secret, "<timestamp>.<本文>") の 16 進>` |
 
 受け手は署名を定数時間比較で検証し、`X-Torifune-Timestamp` が現在から離れすぎていないことを確かめる
-（リプレイ対策は受け手の責任）。2xx 以外は失敗とみなされ、最大 5 回まで間隔を広げて送り直される。
+（リプレイ対策は受け手の責任）。2xx 以外は失敗とみなされ、**初回を含めて最大 5 回**
+（送り直しは最大 4 回。間隔は 1 → 2 → 4 → 8 分）送られる。
 Payload の定義は [`Eventリファレンス.md`](../Eventリファレンス.md)。
 
 ---
@@ -763,14 +821,23 @@ Payload の定義は [`Eventリファレンス.md`](../Eventリファレンス.m
 BASE=https://torifune.example.com/api/v1
 AUTH="Authorization: Bearer $TORIFUNE_TOKEN"
 
-# 1. 投稿先（X のアカウント）の id を引く
+# 1. 投稿先（X のアカウント）の id を引く。候補を確かめてから 1 つ選ぶ
 curl -sS -H "$AUTH" "$BASE/social/accounts?provider=x" | jq -r '.data[] | "\(.id)\t\(.displayName)"'
+ACCOUNT_ID=$(curl -sS -H "$AUTH" "$BASE/social/accounts?provider=x" | jq -r '.data[0].id // empty')
+[ -n "$ACCOUNT_ID" ] || { echo 'X のアカウントが登録されていません' >&2; exit 1; }
 
-# 2. 投稿を登録する（-i でステータスコードを見る。201=作った / 200=既にあった）
-curl -sS -i -X POST "$BASE/social/posts" -H "$AUTH" -H 'Content-Type: application/json' \
+# 2. 投稿を登録する。本文は post.json へ、ステータスコードは標準出力へ（201=作った / 200=既にあった）
+STATUS=$(curl -sS -o post.json -w '%{http_code}' -X POST "$BASE/social/posts" \
+  -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"socialAccountId":"'"$ACCOUNT_ID"'","body":"本日のお知らせです。",
        "status":"scheduled","scheduledAt":"2026-10-01T09:00:00+09:00",
-       "deliveryMode":"auto","externalRef":"notice-2026-10-01"}'
+       "deliveryMode":"auto","externalRef":"notice-2026-10-01:x"}')
+echo "HTTP $STATUS"
+if [ "$STATUS" != 201 ] && [ "$STATUS" != 200 ]; then
+  jq '.error' post.json >&2   # 422 なら .error.details のキーを見て直す
+  exit 1
+fi
+POST_ID=$(jq -r '.data.id' post.json)
 
 # 3. 結果を見る
 curl -sS -H "$AUTH" "$BASE/social/posts/$POST_ID" \
@@ -813,7 +880,7 @@ async function call<T>(
           Authorization: `Bearer ${TOKEN}`,
           ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
         },
-        body: body === undefined ? undefined : JSON.stringify(body),
+        body: body === undefined ? null : JSON.stringify(body),
         signal: AbortSignal.timeout(30_000),
       });
     } catch (error) {
@@ -874,7 +941,7 @@ async function main(): Promise<void> {
       scheduledAt: new Date().toISOString(), // いますぐ（次の定期実行で配信）
       deliveryMode: 'auto',
       providerOptions: { langs: ['ja'] }, // Bluesky だけが受け付ける
-      externalRef: 'article-1234',
+      externalRef: 'article-1234:bluesky',
     });
     post = created.data;
     console.log(created.status === 201 ? '登録しました' : '登録済みでした', post.id);
@@ -966,6 +1033,8 @@ def call(method, path, body=None):
 
 # 1. 投稿先を選ぶ
 _, accounts = call("GET", "/social/accounts?provider=x&perPage=100")
+if not accounts:
+    raise SystemExit("X のアカウントが登録されていません")
 account = accounts[0]
 
 # 2. 登録する（X の無料版 Plugin なら deliveryMode は manual にする）
@@ -980,7 +1049,7 @@ try:
             "status": "scheduled",
             "scheduledAt": "2026-10-01T09:00:00+09:00",
             "deliveryMode": "auto",
-            "externalRef": "notice-2026-10-01",
+            "externalRef": "notice-2026-10-01:x",
         },
     )
     print("登録しました" if status == 201 else "登録済みでした", post["id"])
@@ -1012,7 +1081,7 @@ while True:
 
 * **`POST /social/posts` には必ず `externalRef` を付ける。** 付けないと、応答を受け取り損ねて再送したときに
   投稿が 2 つでき、SNS に同じ内容が 2 回出る
-* `externalRef` は**外部アプリ側で一意に決まる値**（記事 ID・ジョブ ID など）にし、再送では**同じ値**を使う。
+* `externalRef` は**外部アプリ側で一意に決まる値**（記事 ID・ジョブ ID など）にし、再送では**同じ値**を使う。**トークンの中で全 SNS を通して一意**にする（複数の SNS へ出すなら `article-1234:x` のように投稿先ごとに変える。§3.5）。
   乱数を毎回作り直すと冪等にならない
 * **トークンを差し替えると冪等キーの名前空間が変わる。** 応答を受け取れていない登録が残っている間は
   差し替えない（[手順書 §4](SNS投稿の外部連携.md#トークンを差し替えるとき)）
@@ -1055,6 +1124,7 @@ while True:
 | 日付 | 内容 |
 | --- | --- |
 | 2026-09-24 | 初版。コード（Core の SNS API と `sns-bluesky` / `sns-x-api` / `sns-x-manual` / `sns-threads` / `sns-instagram` の 5 Plugin）から起こした |
+| 2026-09-24 | 検証を受けて訂正。認証失敗時の 403 `CSRF_FAILED`、`media.<n>.url` のキー、`failureReason` の 422、409 の `details`、`externalRef` が SNS をまたいで衝突すること、`page` / `perPage` / `accountId` の範囲外の振る舞い、Rate Limit の送信元 IP、Webhook の回数、例の不具合を直し、§10 を整理した |
 
 ### 関連文書
 
@@ -1067,22 +1137,41 @@ while True:
 
 ---
 
-## 10. 設計書・手順書とコードの食い違い、未確定の点
+## 10. コードの課題・文書間の食い違い・未確定の点
 
-この文書はコードに合わせた。以下は設計書・手順書の記述と違う、またはコードの振る舞いとして注意が要る点。
+この文書はコードの振る舞いに合わせて書いた。以下は、その過程で見つけた点。
+
+### 10.1 コードの課題（未修正）
+
+いまの振る舞いとして本文に書いたが、直すべき候補。外部アプリは本文の回避策に従う。
+
+1. **SNS の一覧の `page` / `perPage` の範囲を検査しない**（`apps/web/src/api/schemas/social.ts` の
+   `accountListQuerySchema` / `postListQuerySchema`）。他の一覧 API は `api/query.ts` の `paginationSchema` で 1〜100 に
+   丸めており、`05_API設計.md` §33 の方針とも揃っていない。`perPage=0` は 200 で空、`perPage=-1`・`page=0` は
+   500 `INTERNAL_ERROR`、`perPage=1000` はそのまま通る（§3.6）
+2. **`GET /social/posts?accountId=` の絞り込みが黙って外れる**：65 文字以上は 422 だが、64 文字以内で UUID の形でない値は
+   絞り込みが無視されて全件が返る（`apps/web/src/infrastructure/social-repository.ts` の `listPosts`）。
+   422 にも空の結果にもならない（§4.5）
+3. **Rate Limit の送信元 IP が取れないと全クライアントが 1 枠を共有する**：`X-Forwarded-For` も `X-Real-IP` も無い要求は
+   `unknown` という同じキーで数えられる（`apps/web/src/api/route.ts` の `rateLimitKey`）。リバースプロキシの設定次第で、
+   1 分 300 回を全員で分け合うことになる（§3.4）
+4. **Bluesky の手動投稿だけ、投稿画面の URL の長さを登録時に検査しない**：X と Threads は 2048 文字を超える本文を
+   422 で断るが、Bluesky（本文の上限 300 grapheme）は日本語で約 223 文字を超えると登録は通り、
+   画面で「投稿画面を開く」が失敗する（`plugins/sns-bluesky/social.ts` の `validateDraft`。§5.5）
+5. **OpenAPI の応答の宣言の不足**：`createSocialPost` の再送の 200 は `summary` に書かれているだけで `responses` に無い。
+   404・409 の応答も宣言されていない（§3.7）
+
+### 10.2 文書間の食い違い
 
 1. **`providerOptions` の例**：手順書 §3 は「返信先の ID など」と書くが、**いまの 5 Plugin で受け付けるキーは
    Bluesky の `langs` だけ**で、他はすべて 422。返信・引用などはできない
-2. **一覧の `perPage` に上限・下限が無い**：他の一覧 API（`api/query.ts` の `paginationSchema`）は 1〜100 に丸めるが、
-   SNS の一覧（`api/schemas/social.ts`）は整数であることしか検査しない。`05_API設計.md` §33 の方針と揃っていない。
-   100 を超える値や 0 以下の値の振る舞いは保証しないので、**1〜100 で送る**
-3. **`GET /social/posts?accountId=` に UUID の形でない値を渡すと、絞り込みが黙って外れて全件が返る**
-   （`infrastructure/social-repository.ts` の `listPosts`）。422 にも空の結果にもならない
-4. **OpenAPI の不足**：`createSocialPost` の再送（200）と、404・409 の応答が文書に載らない（§3.7）
-5. **Bluesky の手動投稿だけ、投稿画面の URL の長さを登録時に検査しない**：X と Threads は 2048 文字を超える
-   本文を 422 で断るが、Bluesky（本文の上限 300 grapheme）は日本語で約 223 文字を超えると
-   登録は通り、画面で「投稿画面を開く」が失敗する（`plugins/sns-bluesky/social.ts` の `validateDraft`）
-6. **`05_API設計.md` §18 のエンドポイント例**には `GET` / `PATCH /social/accounts/{id}` と `POST /social/publish` が無い。
+2. **`05_API設計.md` §18 のエンドポイント例**には `GET` / `PATCH /social/accounts/{id}` と `POST /social/publish` が無い。
    実装にはある（§4.1）
-7. **Threads の画像の形式・大きさ（JPEG・PNG、8 MB）と Instagram の JPEG のみ**は、Plugin の失敗時の文言から読んだ
+3. **手順書 §7 の `due` の説明**は「1 回あたり最大 20 件」だったが、`due` は 1 回の実行で**読んだ**期限切れの行の数で、
+   上限は 200（`PUBLISH_SCAN_LIMIT`）。20（`PUBLISH_BATCH_SIZE`）は**配信に着手する**上限
+   （`apps/web/src/domain/social/publishing.ts`）。手順書は 2026-09-24 に直した
+
+### 10.3 未確定の点
+
+1. **Threads の画像の形式・大きさ（JPEG・PNG、8 MB）と Instagram の JPEG のみ**は、Plugin の失敗時の文言から読んだ
    各 SNS 側の条件で、Torifune のコードでは検査していない。SNS 側の仕様変更で変わりうる
