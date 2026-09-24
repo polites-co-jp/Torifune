@@ -135,8 +135,23 @@ export interface CampaignInput {
   readonly status?: string;
   readonly startsOn: string;
   readonly endsOn?: string | null;
+  /**
+   * 対象の Webサイト。**指定したら丸ごと置き換える。**
+   *
+   * UUID の形（8-4-4-4-12 の 16 進）で、存在するサイトの ID を 1000 件まで。
+   * 大文字・小文字は同じ ID として扱い、戻り値は小文字。
+   * 満たさなければ返す `Promise` が reject される（`name` は `'ValidationError'`、`field` は `'siteIds'`）。
+   * 何も書き込まれない。
+   */
   readonly siteIds?: readonly string[];
-  /** 紐づくSNS投稿。**指定したら丸ごと置き換える**（`siteIds` と同じ）。 */
+  /**
+   * 紐づくSNS投稿。**指定したら丸ごと置き換える**（`siteIds` と同じ）。
+   *
+   * UUID の形（8-4-4-4-12 の 16 進）で、存在する SNS 投稿の ID を 1000 件まで。
+   * 大文字・小文字は同じ ID として扱い、戻り値は小文字。
+   * 満たさなければ返す `Promise` が reject される（`name` は `'ValidationError'`、`field` は `'socialPostIds'`）。
+   * 何も書き込まれない。
+   */
   readonly socialPostIds?: readonly string[];
 }
 
