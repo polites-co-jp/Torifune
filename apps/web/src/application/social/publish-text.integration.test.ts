@@ -423,3 +423,102 @@ describe('#35 manual() の URL に NUL があれば invalid_url', () => {
     });
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* 検証の指摘（2026-09-25）security L1：配信直前の再検査の理由文                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 配信直前の再検査（`035` 設計 §6.5.2.2）が理由文に埋め込む Plugin 由来の文字列
+ * （`validate()` の `field`・`message`、例外の文言、`limits` 経路の `label`）も、伏せ字の後に U+FFFD へ置き換えて記録する。
+ * 置き換えないと NUL で記録が失敗し（`unrecorded`）、着手印が残って次の回で「中断」として扱われる。
+ *
+ * 投稿は **publisher を登録する前に**作る（作成時の検査を通さず、配信直前の再検査だけを観測する。
+ * `publish-precheck.integration.test.ts` と同じ作り方）。
+ */
+function useCheckingPublisher(
+  overrides: Partial<PublisherRegistration>,
+): ReturnType<typeof vi.fn<PublishFn>> {
+  const mock = vi.fn<PublishFn>(async () => ({ ok: true }));
+  registerPublisher(PLUGIN_ID, {
+    provider: PROVIDER,
+    label: 'テストSNS',
+    credentialFields: [
+      { key: 'identifier', label: '識別子', kind: 'text' },
+      { key: 'appPassword', label: 'アプリパスワード', kind: 'secret' },
+    ],
+    publish: mock,
+    ...overrides,
+  });
+  return mock;
+}
+
+/** 配信直前の再検査に落ちる publisher（4 通り）。 */
+const PRECHECK_CASES: readonly (readonly [string, Partial<PublisherRegistration>])[] = [
+  [
+    "validate() の message に NUL（'m\\u0000'）",
+    { validate: () => [{ field: 'body', message: 'm\u0000' }] },
+  ],
+  [
+    "validate() の field に片割れ（'b\\ud800'）",
+    { validate: () => [{ field: 'b\ud800', message: '扱えません' }] },
+  ],
+  [
+    "validate() が Error('m\\u0000') を投げる",
+    {
+      validate: () => {
+        throw new Error('m\u0000');
+      },
+    },
+  ],
+  [
+    "limits に掛かり、label に NUL（'L\\u0000'）",
+    { label: 'L\u0000', limits: { bodyMaxLength: 1 } },
+  ],
+];
+
+describe('security L1 配信直前の再検査の理由文の NUL・片割れも置き換えて failed として記録する', () => {
+  it.each(PRECHECK_CASES)(
+    'L1 %s → failed として記録（unrecorded: 0）',
+    async (_label, overrides) => {
+      const postId = await makePost(await accountFor());
+      useCheckingPublisher(overrides);
+
+      const summary = await run();
+
+      expect(summary.unrecorded).toBe(0);
+      expect(summary.failed).toBe(1);
+      expect((await postRow(postId)).status).toBe('failed');
+    },
+  );
+
+  it.each(PRECHECK_CASES)(
+    'L1 %s → failure_reason が U+FFFD を含み、NUL・片割れを含まない',
+    async (_label, overrides) => {
+      const postId = await makePost(await accountFor());
+      useCheckingPublisher(overrides);
+
+      await run();
+
+      const reason = (await postRow(postId)).failure_reason ?? '';
+      expect(reason).toContain(REPLACEMENT);
+      expect(reason).not.toContain('\u0000');
+      expect(reason).not.toMatch(
+        /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/,
+      );
+    },
+  );
+
+  it.each(PRECHECK_CASES)(
+    'L1 %s → 着手印が残らず、publish() は呼ばれない（未送信）',
+    async (_label, overrides) => {
+      const postId = await makePost(await accountFor());
+      const publish = useCheckingPublisher(overrides);
+
+      await run();
+
+      expect((await postRow(postId)).publish_started_at).toBeNull();
+      expect(publish).not.toHaveBeenCalled();
+    },
+  );
+});

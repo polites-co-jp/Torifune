@@ -590,6 +590,18 @@ async function callValidate(
 }
 
 /**
+ * 配信直前の再検査の理由文に埋め込む Plugin 由来の文字列（`field`・`message`・例外の文言。
+ * `limits` 経路の `label` は `checkPublisherLimits` が `message` に埋め込む）を記録できる形にする。
+ *
+ * **伏せてから NUL・片割れを U+FFFD に置き換える**（`safeText` と同じ順。046 設計 §9.4・§13 の 4）。
+ * 置き換えないと NUL で記録が失敗して `unrecorded` になり、着手印が残って次の回で「中断」扱いになる
+ * （046 検証の指摘 security L1）。
+ */
+function precheckText(text: string): string {
+  return toStorableText(redactSecrets(text));
+}
+
+/**
  * 配信直前の再検査（設計 §6.5.2.2、検証レポート S-2）。
  *
  * **publisher が無い間に登録された投稿は `limits` も `validate()` も一度も通っていない。**
@@ -600,7 +612,7 @@ async function callValidate(
  * （宣言に合わない投稿は、時間が経っても合うようにはならない）。
  * 理由は「未送信」と読める文言にし、「結果不明」と混ぜない。
  *
- * この時点では資格情報をまだ復号していないので、伏せるのは `redactSecrets` だけ。
+ * この時点では資格情報をまだ復号していないので、伏せるのは `redactSecrets` だけ（`precheckText`）。
  */
 async function precheck(input: PublishOneInput): Promise<PublishVerdict | null> {
   const { registration } = input.publisher;
@@ -621,8 +633,8 @@ async function precheck(input: PublishOneInput): Promise<PublishVerdict | null> 
       kind: 'failed',
       reason: publisherRejectedReason(
         limitProblems.map((problem) => ({
-          field: redactSecrets(problem.field),
-          message: redactSecrets(problem.message),
+          field: precheckText(problem.field),
+          message: precheckText(problem.message),
         })),
       ),
     };
@@ -646,7 +658,7 @@ async function precheck(input: PublishOneInput): Promise<PublishVerdict | null> 
       provider: input.account.provider,
       pluginId: input.publisher.pluginId,
     });
-    return { kind: 'failed', reason: validateErrorReason(redactSecrets(outcome.message)) };
+    return { kind: 'failed', reason: validateErrorReason(precheckText(outcome.message)) };
   }
   if (outcome.problems.length === 0) {
     return null;
@@ -656,8 +668,8 @@ async function precheck(input: PublishOneInput): Promise<PublishVerdict | null> 
     kind: 'failed',
     reason: publisherRejectedReason(
       outcome.problems.map((problem) => ({
-        field: redactSecrets(problem.field),
-        message: redactSecrets(problem.message),
+        field: precheckText(problem.field),
+        message: precheckText(problem.message),
       })),
     ),
   };
