@@ -1,4 +1,5 @@
 import {
+  PluginDataInputError,
   PluginPermissionError,
   type PluginDataApi,
   type CampaignView,
@@ -6,7 +7,10 @@ import {
   type SocialPostView,
   type UserView,
 } from '@torifune/plugin-api';
-import type { AuthorizationContext } from '@/application/authorization/authorize';
+import {
+  requirePermission,
+  type AuthorizationContext,
+} from '@/application/authorization/authorize';
 import {
   createCampaign,
   deleteCampaign,
@@ -30,7 +34,8 @@ import {
   updateSocialPost,
 } from '@/application/social/social-use-cases';
 import { getUser, listUsers } from '@/application/user/user-use-cases';
-import { NotFoundError } from '@/domain/repository';
+import { isUuidShape } from '@/domain/id';
+import { normalizePagination, NotFoundError } from '@/domain/repository';
 import type { Campaign } from '@/domain/campaign/campaign';
 import type { Site } from '@/domain/site/site';
 import type { SocialPost } from '@/domain/social/social';
@@ -125,8 +130,6 @@ function toSocialPostView(post: SocialPost): SocialPostView {
   };
 }
 
-const DEFAULT_PER_PAGE = 20;
-
 export function createPluginDataApi(deps: PluginDataApiDeps): PluginDataApi {
   const { pluginId, declaredPermissions, context } = deps;
 
@@ -137,12 +140,30 @@ export function createPluginDataApi(deps: PluginDataApiDeps): PluginDataApi {
     }
   }
 
+  /**
+   * 一覧を絞る ID の形を確かめる（043-api-input-fixes-rest 設計 §9.2）。
+   *
+   * `undefined` / `null` は絞り込みなし。それ以外で UUID の形でなければ `PluginDataInputError`。
+   * 形の誤りを Repository へ渡すと絞り込みが外れて全件が返り、Plugin が別のものを受け取る。
+   *
+   * **Manifest の宣言と利用者の Permission を確かめてから呼ぶ。** 権限の無い呼び出しに入力の誤りを教えない。
+   * 例外に渡された値は載せない（ログにそのまま残るため）。
+   */
+  function filterId(value: unknown, field: string): string | null {
+    if (value === undefined || value === null) {
+      return null;
+    }
+    if (!isUuidShape(value)) {
+      throw new PluginDataInputError(pluginId, field);
+    }
+    return value as string;
+  }
+
   return {
     sites: {
       async list(options) {
         requireDeclared('site.read');
-        const page = options?.page ?? 1;
-        const perPage = options?.perPage ?? DEFAULT_PER_PAGE;
+        const { page, perPage } = normalizePagination(options);
 
         const result = await listSites(context, {
           page,
@@ -199,9 +220,11 @@ export function createPluginDataApi(deps: PluginDataApiDeps): PluginDataApi {
 
     campaigns: {
       async list(options) {
+        // 宣言 → 利用者の Permission → 形 → 丸めの順（設計 §8）。UseCase も中で同じ Permission を確かめる。
         requireDeclared('campaign.read');
-        const page = options?.page ?? 1;
-        const perPage = options?.perPage ?? DEFAULT_PER_PAGE;
+        requirePermission(context, 'campaign.read');
+        const siteId = filterId(options?.siteId, 'siteId');
+        const { page, perPage } = normalizePagination(options);
 
         const result = await listCampaigns(context, {
           page,
@@ -209,7 +232,7 @@ export function createPluginDataApi(deps: PluginDataApiDeps): PluginDataApi {
           status: null,
           keyword: null,
           activeOn: null,
-          siteId: options?.siteId ?? null,
+          siteId,
           sort: [{ field: 'starts_on', direction: 'desc' }],
         });
 
@@ -296,8 +319,7 @@ export function createPluginDataApi(deps: PluginDataApiDeps): PluginDataApi {
     socialAccounts: {
       async list(options) {
         requireDeclared('social.read');
-        const page = options?.page ?? 1;
-        const perPage = options?.perPage ?? DEFAULT_PER_PAGE;
+        const { page, perPage } = normalizePagination(options);
 
         const result = await listSocialAccounts(context, { page, perPage, provider: null });
 
@@ -340,14 +362,16 @@ export function createPluginDataApi(deps: PluginDataApiDeps): PluginDataApi {
 
     socialPosts: {
       async list(options) {
+        // 宣言 → 利用者の Permission → 形 → 丸めの順（設計 §8）。UseCase も中で同じ Permission を確かめる。
         requireDeclared('social.read');
-        const page = options?.page ?? 1;
-        const perPage = options?.perPage ?? DEFAULT_PER_PAGE;
+        requirePermission(context, 'social.read');
+        const socialAccountId = filterId(options?.accountId, 'accountId');
+        const { page, perPage } = normalizePagination(options);
 
         const result = await listSocialPosts(context, {
           page,
           perPage,
-          socialAccountId: options?.accountId ?? null,
+          socialAccountId,
           status: null,
         });
 
@@ -403,8 +427,7 @@ export function createPluginDataApi(deps: PluginDataApiDeps): PluginDataApi {
     users: {
       async list(options) {
         requireDeclared('user.manage');
-        const page = options?.page ?? 1;
-        const perPage = options?.perPage ?? DEFAULT_PER_PAGE;
+        const { page, perPage } = normalizePagination(options);
 
         const result = await listUsers(context, {
           page,
