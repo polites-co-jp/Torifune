@@ -8,6 +8,8 @@
  * 決め打つと合わない人が使えなくなる。必要なら Plugin が持つ。
  */
 
+import { isUuidShape } from '../id';
+
 export const CAMPAIGN_STATUSES = ['draft', 'running', 'finished', 'cancelled'] as const;
 export type CampaignStatus = (typeof CAMPAIGN_STATUSES)[number];
 
@@ -83,3 +85,41 @@ export const DEFAULT_LISTED_CAMPAIGN_STATUSES: readonly CampaignStatus[] = [
   'running',
   'finished',
 ];
+
+/**
+ * キャンペーンの紐づけ先（`siteIds` / `socialPostIds`）の件数の上限
+ * （045-campaign-input-500 設計 §6.3）。
+ *
+ * 存在の確かめも書き込みも要素ごとにパラメータ・行を作るので、上限が無いと 1 回の要求で
+ * 何万ものパラメータ・行を作れる。画面が選ばせるのはそれぞれ 100 件までで、1000 はそれより十分に大きい。
+ */
+export const CAMPAIGN_LINK_MAX_ITEMS = 1000;
+
+/** `normalizeCampaignLinkIds` の結果。失敗の理由は「形」か「件数」。 */
+export type CampaignLinkIdsResult =
+  | { readonly ok: true; readonly ids: readonly string[] }
+  | { readonly ok: false; readonly reason: 'shape' | 'tooMany' };
+
+/**
+ * 紐づけ先の ID の並びを検査し、そろえる（045-campaign-input-500 設計 §6.3 の規則 1〜3）。
+ *
+ * 1. 配列であること。要素は UUID の形（`isUuidShape`）
+ * 2. 件数は `CAMPAIGN_LINK_MAX_ITEMS` まで（重複を除く前の要素数）。**件数を形より先に見る**
+ * 3. 小文字にそろえ、重複を除き、昇順に並べる
+ *
+ * **小文字にそろえてから重複を除く。** Postgres は大文字の UUID も同じ値として読むので、
+ * 文字列のまま重複を除くと主キーの重複になる。存在の確かめ（DB）はここでは行わない。
+ */
+export function normalizeCampaignLinkIds(value: unknown): CampaignLinkIdsResult {
+  if (!Array.isArray(value)) {
+    return { ok: false, reason: 'shape' };
+  }
+  if (value.length > CAMPAIGN_LINK_MAX_ITEMS) {
+    return { ok: false, reason: 'tooMany' };
+  }
+  if (!value.every((element) => isUuidShape(element))) {
+    return { ok: false, reason: 'shape' };
+  }
+  const ids = [...new Set((value as readonly string[]).map((id) => id.toLowerCase()))].sort();
+  return { ok: true, ids };
+}
