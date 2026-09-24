@@ -7,5 +7,12 @@
   "author": "Torifune",
   "license": "MIT",
   "permissions": [],
-  "extensions": ["social"]
+  "extensions": ["social"],
+  "help": [
+    {
+      "id": "credentials",
+      "title": "Threads の長期アクセストークンとユーザー ID の用意のしかた",
+      "path": "help/credentials.md"
+    }
+  ]
 }
