@@ -235,7 +235,7 @@ const campaigns = await data.campaigns.list({ siteId: site.id });
 ```
 
 `socialPosts.list` の `accountId` と `campaigns.list` の `siteId` は**UUID の形（8-4-4-4-12 の 16 進）で渡す。**
-形が違えば（空文字を含む）、返す `Promise` が `PluginDataInputError` で reject される。誤っていた引数の名前は `field` で分かる
+形が違えば（空文字を含む）、返す `Promise` が `PluginDataInputError` で reject される。誤っていた引数の名前は `field` で分かる。判定は `error.name === 'PluginDataInputError'`（`name` は固定）か `instanceof PluginDataInputError` で行う（`instanceof` は `@torifune/plugin-api` の実体が Core と同じ 1 つであることを前提とするので、`name` での判定のほうが将来も確実）
 （渡した値は例外に載らない）。**絞らないときは空文字ではなく省略する。** UUID の形で存在しない ID なら空の一覧が返る。
 
 検査は `PluginPermissionError`（宣言）→ 利用者の Permission → `PluginDataInputError` の順で、権限の無い呼び出しには入力の誤りを返さない。
@@ -472,9 +472,6 @@ context.database.registerProvider({
 });
 ```
 
-本文を URL に埋め込む `manual()` は、URL が 2048 文字を超えうる（日本語 1 文字は URL の中で 9 文字）。
-**`validate()` で手動投稿のときに URL の長さを確かめ、登録時に断る**（`/` で始まる Torifune 内のパスも 2048 文字以内に収める）。
-
 **宣言していなければ使えない**（`PluginExtensionNotDeclaredError`）。
 差し替えると本体のすべてのデータアクセスがこの Provider を通る。
 実物の例は `plugins/example-plugin/database.ts`（ログを出すだけのダミー）。
@@ -631,6 +628,9 @@ context.social.registerPublisher({
   },
 });
 ```
+
+本文を URL に埋め込む `manual()` は、URL が 2048 文字を超えうる（日本語 1 文字は URL の中で 9 文字）。
+**`validate()` で手動投稿のときに URL の長さを確かめ、登録時に断る**（`/` で始まる Torifune 内のパスも 2048 文字以内に収める）。
 
 **宣言していなければ使えない**（`PluginExtensionNotDeclaredError`）。
 登録した provider の資格情報が `publish()` の引数として渡るため、
