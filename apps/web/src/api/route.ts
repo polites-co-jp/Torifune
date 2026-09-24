@@ -11,6 +11,7 @@ import { bearerTokenOf } from '@/domain/api-token';
 import { JobBusyError } from '@/domain/jobs/job';
 import type { PermissionName } from '@/domain/permission';
 import { ConflictError, NotFoundError, ValidationError } from '@/domain/repository';
+import { unusableTextDetailsOf } from '@/domain/text';
 import { log } from '@/infrastructure/logging';
 import { redactSecrets } from '@/infrastructure/secret-text';
 import { authorizationErrorResponse } from './authorize';
@@ -141,6 +142,23 @@ export class RouteDefinitionError extends Error {
     super(message);
     this.name = 'RouteDefinitionError';
   }
+}
+
+/**
+ * 本文とクエリの保存できない文字（NUL・対になっていないサロゲート）の誤りをまとめる
+ * （046-input-500-nul-and-ranges 設計 §6.2）。本文 → クエリの順。同じキーは文言を重ねない。
+ */
+function mergeUnusableTextDetails(
+  ...parts: readonly Record<string, string[]>[]
+): Record<string, string[]> {
+  const merged: Record<string, string[]> = {};
+  for (const part of parts) {
+    for (const [key, messages] of Object.entries(part)) {
+      const current = merged[key] ?? [];
+      merged[key] = [...current, ...messages.filter((message) => !current.includes(message))];
+    }
+  }
+  return merged;
 }
 
 /** Rate Limit のキー。IP を使う。 */
@@ -315,6 +333,29 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
         requirePermission(context, definition.permission);
       }
 
+      // クエリは宣言したルートだけ集める。宣言していないルート（`/auth/callback`）の値は入力として扱わない。
+      let rawQuery: Record<string, string> | undefined;
+      if (definition.query !== undefined) {
+        rawQuery = {};
+        for (const [key, value] of new URL(request.url).searchParams) {
+          rawQuery[key] = value;
+        }
+      }
+
+      // **保存できない文字は認可の後、Zod の前で断る**（046-input-500-nul-and-ranges 設計 §6.2）。
+      // NUL は PostgreSQL が保存できず、片割れは黙って U+FFFD に化けるか jsonb で断られる。
+      // 認証の要らない口（ログイン・再設定・セットアップ・計測）も UseCase を通らないのでここで断る。
+      // 本文は置き換えずにそのまま Zod へ渡す。送った値は応答にもログにも載せない。
+      const unusableText = mergeUnusableTextDetails(
+        definition.body !== undefined && (definition.bodyKind ?? 'json') === 'json'
+          ? unusableTextDetailsOf(rawBody ?? {})
+          : {},
+        rawQuery !== undefined ? unusableTextDetailsOf(rawQuery) : {},
+      );
+      if (Object.keys(unusableText).length > 0) {
+        return errorResponse('VALIDATION_ERROR', unusableText, cors);
+      }
+
       let body: unknown;
       if (definition.body !== undefined) {
         const result = validate(definition.body, rawBody ?? {});
@@ -326,11 +367,7 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
 
       let query: unknown;
       if (definition.query !== undefined) {
-        const raw: Record<string, string> = {};
-        for (const [key, value] of new URL(request.url).searchParams) {
-          raw[key] = value;
-        }
-        const result = validate(definition.query, raw);
+        const result = validate(definition.query, rawQuery ?? {});
         if (!result.ok) {
           return errorResponse('VALIDATION_ERROR', result.details, cors);
         }
