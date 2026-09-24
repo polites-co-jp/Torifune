@@ -223,6 +223,35 @@ describe('#26 campaigns.create の siteIds の誤りは ValidationError で reje
     expect((error as ErrorShape).field).toBe('socialPostIds');
   });
 
+  // 検証の指摘（spec 軽微-2）：配列でない値は ValidationError（設計 §9.2）。`null` も配列でない。
+  // 省略（`undefined`）だけが「紐づけない」。update は以前から `null` を断っており、create もそろえる。
+  it.each(['siteIds', 'socialPostIds'] as const)(
+    '#26 create の %s: null → name === "ValidationError"、field がその項目',
+    async (field) => {
+      const error = await rejectionOf(apiFor().campaigns.create(campaignInput({ [field]: null })));
+
+      expect((error as ErrorShape).name).toBe('ValidationError');
+      expect((error as ErrorShape).field).toBe(field);
+    },
+  );
+
+  it.each(['siteIds', 'socialPostIds'] as const)(
+    '#26 create の %s: null → キャンペーンが作られていない',
+    async (field) => {
+      const api = apiFor();
+      await rejectionOf(api.campaigns.create(campaignInput({ [field]: null })));
+
+      await expect(api.campaigns.list()).resolves.toMatchObject({ total: 0 });
+    },
+  );
+
+  it('#26 create の siteIds / socialPostIds を省略（undefined）→ 成功し、どちらも []', async () => {
+    const campaign = await apiFor().campaigns.create(campaignInput());
+
+    expect(campaign.siteIds).toEqual([]);
+    expect(campaign.socialPostIds).toEqual([]);
+  });
+
   it('#26 失敗した create の後、キャンペーンが作られていない', async () => {
     const api = apiFor();
     await rejectionOf(api.campaigns.create(campaignInput({ siteIds: [uuidv7()] })));
@@ -242,6 +271,21 @@ describe('#26 campaigns.update の siteIds の誤りも ValidationError で reje
     expect((error as ErrorShape).name).toBe('ValidationError');
     expect((error as ErrorShape).field).toBe('siteIds');
   });
+
+  it.each(['siteIds', 'socialPostIds'] as const)(
+    '#26 update の %s: null → name === "ValidationError"、field がその項目（create と同じ）',
+    async (field) => {
+      const api = apiFor();
+      const campaign = await api.campaigns.create(campaignInput());
+
+      const error = await rejectionOf(
+        api.campaigns.update(campaign.id, { [field]: null } as unknown as CampaignInput),
+      );
+
+      expect((error as ErrorShape).name).toBe('ValidationError');
+      expect((error as ErrorShape).field).toBe(field);
+    },
+  );
 
   it('#26 失敗した update の後、siteIds が [S1] のまま', async () => {
     const api = apiFor();

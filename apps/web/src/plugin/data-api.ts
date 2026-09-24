@@ -259,8 +259,10 @@ export function createPluginDataApi(deps: PluginDataApiDeps): PluginDataApi {
           status: (input.status ?? 'draft') as Campaign['status'],
           startsOn: input.startsOn,
           endsOn: input.endsOn ?? null,
-          siteIds: input.siteIds ?? [],
-          socialPostIds: input.socialPostIds ?? [],
+          // 省略（undefined）だけを「紐づけない」にする。null などの配列でない値は UseCase が
+          // ValidationError で断る（update と同じ。045-campaign-input-500 設計 §9.2）。
+          siteIds: input.siteIds === undefined ? [] : input.siteIds,
+          socialPostIds: input.socialPostIds === undefined ? [] : input.socialPostIds,
         });
         return toCampaignView(campaign);
       },

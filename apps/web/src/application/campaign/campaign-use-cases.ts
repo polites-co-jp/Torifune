@@ -120,7 +120,8 @@ export const createCampaign = defineUseCase<CreateCampaignInput, Campaign>({
     assertValid(input.name, input.startsOn, input.endsOn);
     const links = normalizeLinks({
       siteIds: input.siteIds,
-      socialPostIds: input.socialPostIds ?? [],
+      // 省略（undefined）だけが「紐づけない」。null は配列でない値として断る（設計 §9.2）。
+      socialPostIds: input.socialPostIds === undefined ? [] : input.socialPostIds,
     });
 
     const identity = requireAuthenticated(context);
