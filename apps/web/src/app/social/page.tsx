@@ -7,6 +7,7 @@ import {
   listSocialPosts,
   resolveManualHandoff,
 } from '@/application/social/social-use-cases';
+import { normalizePage } from '@/domain/repository';
 import { MANUAL_HANDOFF_BUDGET_MS } from '@/domain/social/publishing';
 import { isManualPending, providerLabel } from '@/domain/social/social';
 import { Button } from '@/ui/components';
@@ -74,7 +75,7 @@ export default async function SocialPage({
     );
   }
 
-  const postPage = Math.max(1, Number(params['postPage'] ?? 1) || 1);
+  const postPage = normalizePage(params['postPage']);
   const postPerPage = 20;
 
   const accounts = await listSocialAccounts(context, { page: 1, perPage: 100, provider: null });

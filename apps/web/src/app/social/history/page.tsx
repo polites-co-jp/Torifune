@@ -1,4 +1,5 @@
 import { listSocialAccounts, listSocialPostHistory } from '@/application/social/social-use-cases';
+import { normalizePage } from '@/domain/repository';
 import { providerLabel } from '@/domain/social/social';
 import { AppShell } from '@/ui/layout/app-shell';
 import { requirePageSession } from '@/ui/server/page-session';
@@ -29,7 +30,7 @@ export default async function SocialHistoryPage({
     );
   }
 
-  const page = Math.max(1, Number(params['page'] ?? 1) || 1);
+  const page = normalizePage(params['page']);
   const perPage = 20;
 
   // 知らない値は「すべて」に倒す。URL を書き換えられても壊れない。

@@ -16,6 +16,7 @@ import { listRoleGrants, listRoles } from '@/application/authorization/role-use-
 import { formatDateTimeInTimeZone } from '@/domain/analytics/day';
 import { normalizeClientIp } from '@/domain/analytics/ip-exclusion';
 import { timeZoneOptions } from '@/domain/analytics/time-zone';
+import { normalizePage } from '@/domain/repository';
 import { Tabs } from '@/ui/components';
 import { JOB_LABEL, REBUILD_RETRY_NOTE, rebuildProgressText } from '@/ui/analytics/labels';
 import { AppShell } from '@/ui/layout/app-shell';
@@ -91,7 +92,7 @@ export default async function SettingsPage({
   }
 
   const tab = requested;
-  const page = Math.max(1, Number(params['page'] ?? 1) || 1);
+  const page = normalizePage(params['page']);
   const perPage = 20;
 
   const roles = canManageUsers ? await listRoles(context, {}) : [];
