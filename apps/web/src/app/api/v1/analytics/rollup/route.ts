@@ -5,7 +5,12 @@ import { pruneAccessLogs } from '@/application/analytics/rollup';
 import { ROLLUP_JOB } from '@/application/jobs/definitions';
 import { runJob } from '@/application/jobs/run-job';
 import { requirePermission } from '@/application/authorization/authorize';
-import { isValidRange, MAX_RANGE_DAYS, rangeDays } from '@/domain/analytics/analytics';
+import {
+  ACCESS_LOG_PRUNE_MAX_DAYS,
+  isValidRange,
+  MAX_RANGE_DAYS,
+  rangeDays,
+} from '@/domain/analytics/analytics';
 import { JobBusyError } from '@/domain/jobs/job';
 import { ValidationError } from '@/domain/repository';
 import { dataResponse } from '@/api/response';
@@ -65,7 +70,16 @@ export const POST = defineRoute({
       from: dateOnly.optional(),
       to: dateOnly.optional(),
       /** 指定すると、この日数より古い生ログを消す。集計値は消さない。 */
-      pruneOlderThanDays: z.coerce.number().int().min(1).optional(),
+      pruneOlderThanDays: z.coerce
+        .number()
+        .int()
+        .min(1)
+        // 上限が無いと、今日のユリウス通日以上で集計の後に 500 になる（046-input-500-nul-and-ranges 設計 §6.6）。
+        .max(ACCESS_LOG_PRUNE_MAX_DAYS, '36500以下で指定してください。')
+        .optional()
+        .describe(
+          'この日数より古い生ログを消す（1〜36500）。集計値は消さない。消すには system.manage が要る。',
+        ),
       csrfToken: z.string().optional(),
     })
     .optional(),

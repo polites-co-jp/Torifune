@@ -1,6 +1,7 @@
 import { sql, type Expression, type ExpressionBuilder, type SqlBool } from 'kysely';
 import type { Connection } from '../database/provider';
 import type { Schema } from '../database/schema';
+import { dateOnly } from '../domain/analytics/day';
 import type { Campaign, CampaignStatus } from '../domain/campaign/campaign';
 import type {
   CampaignLinks,
@@ -34,22 +35,10 @@ interface CampaignRow {
  * `date` 型を `YYYY-MM-DD` に正規化する。
  *
  * ドライバの設定によって `Date` で返ることも文字列で返ることもある。
- *
- * **`toISOString()` を使わない。** node-postgres は `date` を
- * **ローカルタイムゾーンの0時**として `Date` にする。`toISOString()` は
- * それを UTC へ直すので、UTC より東のタイムゾーンでは**1日前になる**
- * （JST で `2026-04-01` を保存して `2026-03-31` が返る）。
- * ローカルの年月日をそのまま取り出す。
+ * **`toISOString()` を使わない**（node-postgres は `date` をローカルの 0 時として `Date` にする）。
+ * 同じ実装を 2 つ持たず、年を 4 桁にそろえる `dateOnly` を使う（046-input-500-nul-and-ranges 設計 §6.4 の N4）。
  */
-function toDateOnly(value: Date | string): string {
-  if (typeof value === 'string') {
-    return value.slice(0, 10);
-  }
-  const year = value.getFullYear();
-  const month = String(value.getMonth() + 1).padStart(2, '0');
-  const day = String(value.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
+const toDateOnly = dateOnly;
 
 function toCampaign(
   row: CampaignRow,
