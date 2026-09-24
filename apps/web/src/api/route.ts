@@ -153,9 +153,12 @@ function rateLimitKey(request: Request, operationId: string): string {
  * `additionalResponses` の定義の誤りを起動時に見つける（042-social-api-input-fixes 設計 §6.4）。
  *
  * 書いたつもりの宣言が成功の応答を上書きしたり、本文の形の無い 200 を出したりしないようにする。
+ * 認可のある操作の 401 は生成器が出すので、書くと description が上書きされてどちらが正か分からなくなる
+ * （043-api-input-fixes-rest 設計 §6.4）。
  */
 function assertValidAdditionalResponses(definition: {
   readonly operationId: string;
+  readonly permission: PermissionName | null;
   readonly successStatus?: 200 | 201 | 204;
   readonly response?: z.ZodType;
   readonly additionalResponses?: readonly AdditionalResponse[];
@@ -172,6 +175,11 @@ function assertValidAdditionalResponses(definition: {
     if (seen.has(additional.status)) {
       throw new RouteDefinitionError(
         `${definition.operationId}: additionalResponses の ${additional.status} が重複している`,
+      );
+    }
+    if (additional.status === 401 && definition.permission !== null) {
+      throw new RouteDefinitionError(
+        `${definition.operationId}: 認可のある操作の 401 は生成器が出すので additionalResponses に書けない`,
       );
     }
     if (additional.status === 200 && definition.response === undefined) {

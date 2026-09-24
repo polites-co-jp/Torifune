@@ -14,9 +14,12 @@ import type { DeprecationNotice } from './deprecation';
  * 成功・共通のエラー以外に、操作が返しうる応答（05_API設計.md §40。042-social-api-input-fixes 設計 §6.4）。
  *
  * 生成器はパスや method から推し量らない。**ルートの定義で明示したものだけ**を OpenAPI に出す。
+ *
+ * 401 は認可の無い操作（`permission: null`）だけに書ける（043-api-input-fixes-rest 設計 §6.4）。
+ * 認可のある操作には生成器が既に 401 を出すので、`defineRoute` が書いた定義を断る。
  */
 export interface AdditionalResponse {
-  readonly status: 200 | 404 | 409;
+  readonly status: 200 | 401 | 404 | 409;
   /** OpenAPI の description にそのまま出す。 */
   readonly description: string;
 }
