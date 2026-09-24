@@ -2,12 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { campaignListQuerySchema } from '@/api/schemas/campaign';
 import { siteListQuerySchema } from '@/api/schemas/site';
 import { userListQuerySchema } from '@/api/schemas/user';
+import { validate } from '@/api/validation';
 
 /**
  * SNS 以外の一覧のクエリ（043-api-input-fixes-rest 設計 §6.2・§6.3）。
  *
  * - `page` / `perPage`（受け入れ条件 #1・#2）：042 で SNS の一覧に使った規則に揃える。
  *   `page` は 1 以上、`perPage` は 1〜100 に**丸める**（422 にしない）。整数でなければ失敗（422）
+ * - `siteId`（受け入れ条件 #13・#14）：`campaignListQuerySchema` だけ。UUID の形（8-4-4-4-12 の 16 進、
+ *   大小文字を問わない、版と variant を見ない）。それ以外は空文字も含めて失敗し、文言は `UUID の形で指定してください。`
  *
  * 対象は `siteListQuerySchema`・`userListQuerySchema`・`campaignListQuerySchema` の 3 つ。
  */
@@ -91,4 +94,65 @@ describe.each(SCHEMAS)('#2 $name は整数でない page / perPage を断る', (
     expect(result.success).toBe(false);
     expect(issueKeysOf(result)).toEqual(['page']);
   });
+});
+
+/* -------------------------------------------------------------------------- */
+/* #13 siteId：UUID の形なら通る                                                 */
+/* -------------------------------------------------------------------------- */
+
+describe('#13 campaignListQuerySchema の siteId は UUID の形なら通り、値はそのまま', () => {
+  it.each([
+    '0192b7a0-5c1e-7a3b-9f10-2d7c4e8a1b23',
+    '0192B7A0-5C1E-7A3B-9F10-2D7C4E8A1B23',
+    // 版・variant を問わない（Repository の UUID_PATTERN と同じ判定。設計 §6.3）。
+    '00000000-0000-0000-0000-000000000000',
+    // 版 0・variant 0。z.uuid() は断るが z.guid() は通す（版と variant を見ないことの判別）
+    '0192b7a0-5c1e-0a3b-0f10-2d7c4e8a1b23',
+  ])('#13 %s → 成功し、値はそのまま', (value) => {
+    const result = campaignListQuerySchema.safeParse({ siteId: value });
+
+    expect(result.success, JSON.stringify(result.error?.issues)).toBe(true);
+    expect((result.data as Record<string, unknown> | undefined)?.['siteId']).toBe(value);
+  });
+
+  it('#13 省略すれば従来どおり成功する（絞り込みなし）', () => {
+    const result = campaignListQuerySchema.safeParse({});
+
+    expect(result.success).toBe(true);
+    expect((result.data as Record<string, unknown> | undefined)?.['siteId']).toBeUndefined();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* #14 siteId：UUID の形でなければ失敗する                                        */
+/* -------------------------------------------------------------------------- */
+
+describe('#14 campaignListQuerySchema の siteId は UUID の形でなければ失敗する', () => {
+  const UUID_MESSAGE = 'UUID の形で指定してください。';
+
+  const INVALID: readonly { readonly label: string; readonly value: string }[] = [
+    { label: 'abc', value: 'abc' },
+    { label: '空文字', value: '' },
+    { label: '末尾が 16 進でない', value: '0192b7a0-5c1e-7a3b-9f10-2d7c4e8a1b2g' },
+    { label: 'ハイフンなし', value: '0192b7a05c1e7a3b9f102d7c4e8a1b23' },
+    { label: '1000 文字', value: 'a'.repeat(1000) },
+  ];
+
+  it.each(INVALID)('#14 $label → 失敗し、問題のキーが siteId', ({ value }) => {
+    const result = campaignListQuerySchema.safeParse({ siteId: value });
+
+    expect(result.success).toBe(false);
+    expect(issueKeysOf(result)).toEqual(['siteId']);
+  });
+
+  it.each(INVALID)(
+    '#14 $label → 422 の details.siteId がちょうど 1 件で「UUID の形で指定してください。」',
+    ({ value }) => {
+      // 422 の本文の `details` は `validate()` が組み立てる（`api/route.ts` と同じ関数を通す）。
+      const result = validate(campaignListQuerySchema, { siteId: value });
+
+      expect(result.ok).toBe(false);
+      expect(result.ok ? undefined : result.details['siteId']).toEqual([UUID_MESSAGE]);
+    },
+  );
 });

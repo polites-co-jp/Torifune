@@ -18,6 +18,8 @@ import { useScratchDatabase, type ScratchDatabase } from '@/test-support/databas
  * `GET /api/v1/sites`・`/users`・`/campaigns` のクエリ（043-api-input-fixes-rest 設計 §6.2・§6.3・§8）。
  *
  * - `page` / `perPage`（受け入れ条件 #3〜#10）：範囲外は 422 にせず丸め、`meta` に丸めた値が返る
+ * - `GET /campaigns?siteId=`（受け入れ条件 #15〜#18）：UUID の形でなければ（空文字も）422 `siteId`。
+ *   UUID の形で存在しなければ 200 で空。**認可は検査より先**（401・403 が 422 より先に返る）
  *
  * **ルートを直接叩く結合テスト**（`social-list-query.integration.test.ts` の形を写した）。
  * 認証は Bearer の API Token（`site.read`・`user.manage`・`campaign.read`）。
@@ -283,5 +285,105 @@ describe.each(RESOURCES)('$name の page / perPage を丸める', (resource) => 
 
     expect(result.status).toBe(422);
     expect(errorOf(result).details?.['perPage']).toBeDefined();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* #15〜#18 GET /campaigns?siteId=                                              */
+/* -------------------------------------------------------------------------- */
+
+function listCampaigns(query: string, token: string | null = readToken): Promise<JsonResult> {
+  return call(listCampaignsRoute, `${CAMPAIGNS_URL}${query}`, token);
+}
+
+/** サイト S1・S2 と、S1 を対象にするキャンペーン A・S2 を対象にするキャンペーン B（設計 #15）。 */
+async function twoSitesTwoCampaigns(): Promise<{
+  readonly s1: string;
+  readonly campaignA: string;
+}> {
+  const s1 = await makeSite('s1');
+  const s2 = await makeSite('s2');
+  const campaignA = await makeCampaign('A', [s1]);
+  await makeCampaign('B', [s2]);
+  return { s1, campaignA };
+}
+
+describe('#15 siteId を指定すればそのサイトを対象に含むキャンペーンだけが返る', () => {
+  it('#15 siteId=<S1> → 200、meta.total === 1、A だけ', async () => {
+    const { s1, campaignA } = await twoSitesTwoCampaigns();
+
+    const result = await listCampaigns(`?siteId=${s1}`);
+
+    expect(result.status, JSON.stringify(result.body)).toBe(200);
+    expect(metaOf(result).total).toBe(1);
+    expect(dataOf(result).map((campaign) => campaign['id'])).toEqual([campaignA]);
+  });
+});
+
+describe('#16 UUID の形でない siteId は 422 siteId（絞り込みを黙って外さない）', () => {
+  it('#16 siteId=abc → 422、details.siteId がある', async () => {
+    await twoSitesTwoCampaigns();
+
+    const result = await listCampaigns('?siteId=abc');
+
+    expect(result.status).toBe(422);
+    expect(errorOf(result).details?.['siteId']).toBeDefined();
+  });
+
+  it('#16 siteId=（空文字）→ 422、details.siteId がある', async () => {
+    await twoSitesTwoCampaigns();
+
+    const result = await listCampaigns('?siteId=');
+
+    expect(result.status).toBe(422);
+    expect(errorOf(result).details?.['siteId']).toBeDefined();
+  });
+
+  it('#16 422 の応答にキャンペーンが 1 件も載らない（全件を返さない）', async () => {
+    await twoSitesTwoCampaigns();
+
+    const result = await listCampaigns('?siteId=abc');
+
+    expect(result.body['data']).toBeUndefined();
+  });
+});
+
+describe('#17 UUID の形で存在しない siteId は 200 で空', () => {
+  it('#17 200、data が空、meta.total === 0', async () => {
+    await twoSitesTwoCampaigns();
+
+    const result = await listCampaigns(`?siteId=${uuidv7()}`);
+
+    expect(result.status, JSON.stringify(result.body)).toBe(200);
+    expect(dataOf(result)).toEqual([]);
+    expect(metaOf(result).total).toBe(0);
+  });
+});
+
+describe('#18 認可は siteId の検査より先', () => {
+  it('#18 campaign.read を持たない Token で siteId=abc → 403 FORBIDDEN', async () => {
+    const other = await createApiToken(admin, {
+      name: 'site read only',
+      scopes: ['site.read'],
+      expiresAt: null,
+    });
+
+    const result = await listCampaigns('?siteId=abc', other.plaintext);
+
+    expect(result.status).toBe(403);
+    expect(errorOf(result).code).toBe('FORBIDDEN');
+  });
+
+  it('#18 認証なしで siteId=abc → 401 UNAUTHENTICATED', async () => {
+    const result = await listCampaigns('?siteId=abc', null);
+
+    expect(result.status).toBe(401);
+    expect(errorOf(result).code).toBe('UNAUTHENTICATED');
+  });
+
+  it('#18 campaign.read を持つ Token なら同じ要求は 422（403・401 が値のせいでないことの対照）', async () => {
+    const result = await listCampaigns('?siteId=abc');
+
+    expect(result.status).toBe(422);
   });
 });
