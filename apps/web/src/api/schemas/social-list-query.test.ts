@@ -107,6 +107,8 @@ describe('#26 postListQuerySchema の accountId は UUID の形なら通り、�
     '0192B7A0-5C1E-7A3B-9F10-2D7C4E8A1B23',
     // 版・variant を問わない（Repository の UUID_PATTERN と同じ判定。設計 §6.3）。
     '00000000-0000-0000-0000-000000000000',
+    // 版 0・variant 0。z.uuid() は断るが z.guid() は通す（版と variant を見ないことの判別。042 検証 軽微 1）
+    '0192b7a0-5c1e-0a3b-0f10-2d7c4e8a1b23',
   ])('#26 %s → 成功し、値はそのまま', (value) => {
     const result = postListQuerySchema.safeParse({ accountId: value });
 
