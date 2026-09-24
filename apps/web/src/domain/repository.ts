@@ -48,9 +48,25 @@ export const MAX_PER_PAGE = 100;
 export function normalizePagination(
   input: { readonly page?: unknown; readonly perPage?: unknown } | undefined,
 ): Pagination {
-  const page = Math.min(Number.MAX_SAFE_INTEGER, Math.max(1, integerOr(input?.page, 1)));
+  const page = normalizePage(input?.page);
   const perPage = Math.min(MAX_PER_PAGE, Math.max(1, integerOr(input?.perPage, DEFAULT_PER_PAGE)));
   return { page, perPage };
+}
+
+/**
+ * ページ番号を安全な範囲へ丸める。`normalizePagination` の `page` と同じ規則で、画面の `?page=` と
+ * Data API の両方がこの関数を通す（規則を 1 か所に置くため。044-screen-page-param 設計 §4）。
+ *
+ * 1. `undefined` / `null` は 1
+ * 2. それ以外は `Number(値)` で数にする。**有限の数にならない値**（`NaN`・`Infinity`・`'abc'`・
+ *    `'1e400'`・2 つ以上の要素の配列など）は 1
+ * 3. 小数は切り捨てる
+ * 4. 1〜`Number.MAX_SAFE_INTEGER` に丸める
+ *
+ * 最大の値でも `(page − 1) × perPage` が `OFFSET`（`bigint`）に収まり、文字列にしても指数表記にならない。
+ */
+export function normalizePage(value: unknown): number {
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.max(1, integerOr(value, 1)));
 }
 
 /** 有限の数に変換できれば小数を切り捨てた値、できなければ `fallback`。 */
