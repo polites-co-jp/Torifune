@@ -13,6 +13,7 @@ export type { PluginApiVersion } from './version';
 
 export {
   PLUGIN_EXTENSION_KINDS,
+  PLUGIN_HELP_LIMITS,
   RESERVED_PLUGIN_IDS,
   isValidPluginId,
   isValidPluginVersion,
@@ -22,6 +23,7 @@ export type {
   ManifestProblem,
   ManifestValidation,
   PluginExtensionKind,
+  PluginHelpDoc,
   PluginManifest,
 } from './manifest';
 

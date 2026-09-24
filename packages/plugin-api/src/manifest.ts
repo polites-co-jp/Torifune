@@ -23,7 +23,43 @@ export interface PluginManifest {
   readonly dependencies?: Readonly<Record<string, string>>;
   /** 提供する拡張点の種類。 */
   readonly extensions?: readonly PluginExtensionKind[];
+  /**
+   * 同梱する手順書（041 設計）。**並びが画面の並び。先頭が「最初に読む手順書」**で、
+   * SNS 配信 Plugin では資格情報の手順書を先頭に置く（`/social` のヘルプボタンが先頭を開く）。
+   * 形が誤っていれば本体は `help` を無いものとして扱う（Manifest そのものは拒否しない）。
+   */
+  readonly help?: readonly PluginHelpDoc[];
 }
+
+/** Plugin が同梱する手順書 1 本（041 設計 §6.1）。 */
+export interface PluginHelpDoc {
+  /** URL の一部（`/plugins/<plugin-id>/help/<id>`）。英小文字・数字・ハイフン、1〜64 文字、先頭は英小文字か数字。 */
+  readonly id: string;
+  /** 画面に出す題名。前後の空白を除いて 1〜80 文字。 */
+  readonly title: string;
+  /** Plugin のフォルダからの相対パス（`/` 区切り）。`.md` で終わる。 */
+  readonly path: string;
+}
+
+/** 手順書の上限（041 設計 §6.1）。 */
+export const PLUGIN_HELP_LIMITS = {
+  maxDocs: 10,
+  maxTitleLength: 80,
+  maxPathLength: 200,
+  /** ファイルの大きさの上限（バイト）。本体が読むときに確かめる。 */
+  maxFileBytes: 262_144,
+} as const;
+
+const HELP_DOC_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+/**
+ * 手順書の path の形。`/` 区切りの相対パスで、**各区切りの先頭は `.` にできない**
+ * （`..`・`.`・隠しファイル・隠しフォルダを拒む）。先頭の `/`、`\`、ドライブ名、
+ * 空の区切り、URL はこの形に合わない。拡張子は小文字の `.md` だけ。
+ *
+ * `path.normalize` は使わない（OS で結果が変わる）。
+ */
+const HELP_DOC_PATH_PATTERN = /^[A-Za-z0-9_-][A-Za-z0-9._-]*(\/[A-Za-z0-9_-][A-Za-z0-9._-]*)*\.md$/;
 
 export const PLUGIN_EXTENSION_KINDS = [
   'ui',
@@ -77,8 +113,69 @@ export interface ManifestProblem {
 }
 
 export type ManifestValidation =
-  | { readonly ok: true; readonly manifest: PluginManifest }
+  | {
+      readonly ok: true;
+      readonly manifest: PluginManifest;
+      /** Manifest を拒否しない誤り（041 設計 §9.2。いまは `help` だけ）。無ければキーごと省略。 */
+      readonly warnings?: readonly ManifestProblem[];
+    }
   | { readonly ok: false; readonly problems: readonly ManifestProblem[] };
+
+/**
+ * `help` の形を確かめる。誤りなら「どの規則に反したか」の固定の文を返す（値そのものは入れない）。
+ * 正しい（または宣言なし）なら `null`。
+ */
+function helpProblem(help: unknown): string | null {
+  if (!Array.isArray(help)) {
+    return 'help は手順書の配列で指定する';
+  }
+  if (help.length > PLUGIN_HELP_LIMITS.maxDocs) {
+    return `help は ${PLUGIN_HELP_LIMITS.maxDocs} 件まで`;
+  }
+
+  const ids = new Set<string>();
+  const paths = new Set<string>();
+  for (const [index, entry] of help.entries()) {
+    const at = `help[${index}]`;
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      return `${at} は { id, title, path } のオブジェクトで指定する`;
+    }
+    const item = entry as Record<string, unknown>;
+
+    const id = item['id'];
+    if (typeof id !== 'string' || !HELP_DOC_ID_PATTERN.test(id)) {
+      return `${at}.id は英小文字・数字・ハイフンで 1〜64 文字。先頭は英小文字か数字`;
+    }
+    if (ids.has(id)) {
+      return `${at}.id が他の手順書と重複している`;
+    }
+    ids.add(id);
+
+    const title = item['title'];
+    if (typeof title !== 'string') {
+      return `${at}.title は文字列で指定する`;
+    }
+    const titleLength = Array.from(title.trim()).length;
+    if (titleLength < 1 || titleLength > PLUGIN_HELP_LIMITS.maxTitleLength) {
+      return `${at}.title は前後の空白を除いて 1〜${PLUGIN_HELP_LIMITS.maxTitleLength} 文字`;
+    }
+
+    const path = item['path'];
+    if (
+      typeof path !== 'string' ||
+      path.length < 1 ||
+      path.length > PLUGIN_HELP_LIMITS.maxPathLength ||
+      !HELP_DOC_PATH_PATTERN.test(path)
+    ) {
+      return `${at}.path は help/credentials.md のような / 区切りの相対パス（1〜${PLUGIN_HELP_LIMITS.maxPathLength} 文字）で .md で終わる。各区切りの先頭に . を置けない`;
+    }
+    if (paths.has(path)) {
+      return `${at}.path が他の手順書と重複している`;
+    }
+    paths.add(path);
+  }
+  return null;
+}
 
 /**
  * Manifest を検証する。
@@ -189,7 +286,23 @@ export function validateManifest(
   }
 
   if (problems.length > 0) {
+    // `help` の誤りは混ぜない（041 より前と同じ problems を返す）。
     return { ok: false, problems };
+  }
+
+  // **`help` の誤りは Manifest を拒否しない**（041 設計 §9.2）。041 より前は未知の項目として
+  // どんな値でも通っていたので、拒否すると本体の更新だけで既存の Plugin が読み込めなくなる。
+  // 誤りなら `help` 全体を無いものとして扱い（全部か無しか）、警告を 1 件返す。
+  if (raw['help'] !== undefined) {
+    const message = helpProblem(raw['help']);
+    if (message !== null) {
+      const { help: _dropped, ...rest } = raw;
+      return {
+        ok: true,
+        manifest: rest as unknown as PluginManifest,
+        warnings: [{ field: 'help', message }],
+      };
+    }
   }
 
   return { ok: true, manifest: raw as unknown as PluginManifest };
