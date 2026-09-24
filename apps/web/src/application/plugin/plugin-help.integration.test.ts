@@ -408,7 +408,7 @@ describe('#33 導入済み・無効の Plugin', () => {
 
     expect(result.loaded).toBe(false);
     expect(result.pluginName).toBe('手順書デモ');
-    expect(result.docs).toEqual(DEMO_DOCS);
+    expect(result.docs).toEqual(DEMO_DOCS_WITH_PATH);
     expect(result.content).toEqual({ ok: true, markdown: FIRST_BODY });
   });
 
