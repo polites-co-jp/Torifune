@@ -5,6 +5,7 @@ import {
   type PluginStore,
 } from '@torifune/plugin-api';
 import { Secret } from '@/domain/secret';
+import { containsLoneSurrogate, containsNul, unusableTextDetailsOf } from '@/domain/text';
 import type { Connection } from '@/database/provider';
 import { decryptSecret, encryptSecret } from '@/infrastructure/crypto/cipher';
 
@@ -49,6 +50,16 @@ function serialize(key: string, value: unknown): string {
   if (Buffer.byteLength(json, 'utf8') > MAX_VALUE_BYTES) {
     // 上限を設けないと、Plugin ひとつでデータベースを埋められる。
     throw new PluginStoreError(`値が大きすぎる（上限 ${MAX_VALUE_BYTES} バイト）`, key);
+  }
+
+  // NUL は jsonb に保存できず、片割れは jsonb が断る。DB の例外を Plugin へ上げず、公開の例外にする
+  // （046-input-500-nul-and-ranges 設計 §9.3）。JSON にした結果を読み戻して見るので、`toJSON` を持つ値や
+  // クラスの値も保存される形で見る（循環する値は上で断られている）。
+  if (Object.keys(unusableTextDetailsOf(JSON.parse(json) as unknown)).length > 0) {
+    throw new PluginStoreError(
+      'JSON として保存できない文字（NUL・対になっていないサロゲート）を含む値',
+      key,
+    );
   }
 
   return json;
@@ -126,6 +137,12 @@ export function createPluginStore({ connection, pluginId }: PluginStoreDeps): Pl
         .select('key')
         .where('plugin_id', '=', pluginId)
         .orderBy('key');
+
+      if (prefix !== undefined && (containsNul(prefix) || containsLoneSurrogate(prefix))) {
+        // キーは STORE_KEY_PATTERN の文字だけなので一致するものは無い。NUL は text の比較で
+        // DB が断るので、問い合わせずに返す（046-input-500-nul-and-ranges 設計 §9.3）。
+        return [];
+      }
 
       if (prefix !== undefined && prefix !== '') {
         // 前方一致。`%` と `_` はエスケープする。
