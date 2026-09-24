@@ -33,12 +33,33 @@ export interface Page<T> {
 export const DEFAULT_PER_PAGE = 20;
 export const MAX_PER_PAGE = 100;
 
-/** ページング指定を安全な範囲へ丸める。 */
-export function normalizePagination(input: Partial<Pagination> | undefined): Pagination {
-  const page = Math.max(1, Math.trunc(input?.page ?? 1));
-  const requested = Math.trunc(input?.perPage ?? DEFAULT_PER_PAGE);
-  const perPage = Math.min(MAX_PER_PAGE, Math.max(1, requested));
+/**
+ * ページング指定を安全な範囲へ丸める。
+ *
+ * 1. `undefined` / `null` は省略（`page` は 1、`perPage` は 20）
+ * 2. それ以外は `Number(値)` で数にする。**有限の数にならない値**（`NaN`・`Infinity`・`'abc'` など）は省略と同じ
+ * 3. 小数は切り捨てる
+ * 4. `page` は 1〜`Number.MAX_SAFE_INTEGER`、`perPage` は 1〜100 に丸める
+ *
+ * 引数を `unknown` の値で受けるのは、JavaScript で書いた Plugin が Data API に `'3'` や `NaN` を
+ * 渡しうるため（043-api-input-fixes-rest 設計 §9.2）。どの値でも `LIMIT` / `OFFSET` に負の値・過大な値・
+ * `NaN` が届かない。
+ */
+export function normalizePagination(
+  input: { readonly page?: unknown; readonly perPage?: unknown } | undefined,
+): Pagination {
+  const page = Math.min(Number.MAX_SAFE_INTEGER, Math.max(1, integerOr(input?.page, 1)));
+  const perPage = Math.min(MAX_PER_PAGE, Math.max(1, integerOr(input?.perPage, DEFAULT_PER_PAGE)));
   return { page, perPage };
+}
+
+/** 有限の数に変換できれば小数を切り捨てた値、できなければ `fallback`。 */
+function integerOr(value: unknown, fallback: number): number {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.trunc(number) : fallback;
 }
 
 /** ページング指定から OFFSET を求める。 */
