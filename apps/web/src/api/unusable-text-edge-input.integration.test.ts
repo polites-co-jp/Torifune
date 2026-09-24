@@ -25,6 +25,8 @@ import { useScratchDatabase, type ScratchDatabase } from '@/test-support/databas
  * - **M2**：10,000 段の入れ子（約 10〜50KB）を送っても 500 にならない。底に NUL があれば 422（NUL の文言）、無ければ従来どおりの
  *   Zod の 422（型の誤り）
  * - **security L2**：422 の `details` のキーは**先頭の 50 個まで**（設計 §6.2 の規則 3 の追記）。応答の大きさを送った項目の数で膨らませない
+ * - **N1**（2 回目の検証）：本文の `csrfToken` が文字列でなければ CSRF の失敗（403 `CSRF_FAILED`）。文字列にしようとして
+ *   `TypeError`（`{"toString":1}`）・`RangeError`（1 万段の配列）で 500 にならない。Bearer の無い `/auth/login` と `POST /sites` で確かめる
  *
  * **ソースに壊れた文字を置かない。** 本文の NUL・片割れは JSON のエスケープ（`\u0000`・`\ud800` の 6 文字）で書く。
  */
@@ -90,7 +92,8 @@ function capture(): { records: LogRecord[] } {
 
 type Route = (request: Request) => Promise<Response>;
 
-type Auth = 'csrf' | 'none' | 'bearer';
+/** `csrf-body` は同一オリジンと Cookie だけ付け、トークンを `x-csrf-token` ヘッダで送らない（本文の `csrfToken` で送る経路）。 */
+type Auth = 'csrf' | 'csrf-body' | 'none' | 'bearer';
 
 function headersFor(auth: Auth, hasBody: boolean): Record<string, string> {
   const headers: Record<string, string> = {
@@ -100,11 +103,13 @@ function headersFor(auth: Auth, hasBody: boolean): Record<string, string> {
   if (hasBody) {
     headers['content-type'] = 'application/json';
   }
-  if (auth === 'csrf') {
+  if (auth === 'csrf' || auth === 'csrf-body') {
     headers['x-forwarded-host'] = '127.0.0.1:3000';
     headers['origin'] = ORIGIN;
-    headers['x-csrf-token'] = CSRF_TOKEN;
     headers['cookie'] = `torifune_csrf=${CSRF_TOKEN}`;
+  }
+  if (auth === 'csrf') {
+    headers['x-csrf-token'] = CSRF_TOKEN;
   }
   if (auth === 'bearer') {
     headers['authorization'] = `Bearer ${siteToken}`;
@@ -423,5 +428,95 @@ describe('security L2 422 の details のキーは先頭の 50 個まで', () =>
 
     expect(result.status, result.text).toBe(422);
     expect(detailEntries(result).map(([key]) => key)).toEqual(names.slice(0, MAX_DETAIL_KEYS));
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* N1 本文の csrfToken が文字列でない                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 本文の `csrfToken` の値（JSON の文字列のまま）。どれも文字列ではないので CSRF の失敗になる。
+ * `["<トークン>"]` は文字列にすると Cookie のトークンと同じになるが、文字列ではないので通さない。
+ */
+const NON_STRING_TOKENS: readonly { readonly label: string; readonly raw: string }[] = [
+  { label: 'toString が関数でないオブジェクト', raw: '{"toString":1}' },
+  { label: 'valueOf と toString が関数でないオブジェクト', raw: '{"toString":1,"valueOf":1}' },
+  { label: '空のオブジェクト', raw: '{}' },
+  { label: '1 万段の配列', raw: `${'['.repeat(DEPTH)}${']'.repeat(DEPTH)}` },
+  { label: '1 万段のオブジェクト', raw: `${'{"a":'.repeat(DEPTH)}1${'}'.repeat(DEPTH)}` },
+  { label: 'トークンを 1 つ入れた配列', raw: `["${CSRF_TOKEN}"]` },
+  { label: '数値', raw: '123' },
+  { label: '真偽値', raw: 'true' },
+  { label: 'null', raw: 'null' },
+];
+
+/** Bearer の無い、CSRF を検証する口。 */
+const CSRF_ROUTES: readonly {
+  readonly name: string;
+  readonly route: Route;
+  readonly path: string;
+}[] = [
+  { name: 'POST /auth/login', route: loginRoute, path: '/auth/login' },
+  { name: 'POST /sites', route: createSiteRoute, path: '/sites' },
+];
+
+const CSRF_MATRIX = CSRF_ROUTES.flatMap((route) =>
+  NON_STRING_TOKENS.map((token) => ({ ...route, ...token })),
+);
+
+function bodyWithToken(rawToken: string): string {
+  return `{"loginId":"n1-user","password":"n1-password","name":"N1","url":"https://n1.example.com","csrfToken":${rawToken}}`;
+}
+
+describe('N1 本文の csrfToken が文字列でなければ CSRF の失敗（403）で、500 にならない', () => {
+  it.each(CSRF_MATRIX)('N1 $name の csrfToken が$label → 403 CSRF_FAILED', async (entry) => {
+    const result = await postRaw(entry.route, entry.path, bodyWithToken(entry.raw), 'csrf-body');
+
+    expect(result.status, result.text).toBe(403);
+    expect(errorOf(result).code).toBe('CSRF_FAILED');
+  });
+
+  it.each(CSRF_MATRIX)('N1 $name の csrfToken が$label → エラーのログが出ない', async (entry) => {
+    const { records } = capture();
+
+    await postRaw(entry.route, entry.path, bodyWithToken(entry.raw), 'csrf-body');
+
+    expect(records.map((record) => record.message)).not.toContain('unhandled error in route');
+    expect(records.filter((record) => record.level === 'error')).toEqual([]);
+  });
+
+  it.each(CSRF_MATRIX)(
+    'N1 $name の csrfToken が$label → x-csrf-token ヘッダが正しくても 403 CSRF_FAILED',
+    async (entry) => {
+      const result = await postRaw(entry.route, entry.path, bodyWithToken(entry.raw), 'csrf');
+
+      expect(result.status, result.text).toBe(403);
+      expect(errorOf(result).code).toBe('CSRF_FAILED');
+    },
+  );
+
+  it('N1 対照：本文の csrfToken が Cookie と同じ文字列なら CSRF を通る（403 にならない）', async () => {
+    const result = await postRaw(
+      loginRoute,
+      '/auth/login',
+      bodyWithToken(`"${CSRF_TOKEN}"`),
+      'csrf-body',
+    );
+
+    expect(result.status, result.text).not.toBe(403);
+    expect(result.status, result.text).not.toBe(500);
+  });
+
+  it('N1 対照：本文の csrfToken が Cookie と違う文字列なら 403 CSRF_FAILED（従来どおり）', async () => {
+    const result = await postRaw(
+      loginRoute,
+      '/auth/login',
+      bodyWithToken('"other-token"'),
+      'csrf-body',
+    );
+
+    expect(result.status, result.text).toBe(403);
+    expect(errorOf(result).code).toBe('CSRF_FAILED');
   });
 });

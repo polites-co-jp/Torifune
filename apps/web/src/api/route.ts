@@ -318,12 +318,24 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
 
         // csrfExemptReason が書かれている口は検証しない（理由は定義側に書く）。
         if (bearer === null && definition.csrfExemptReason === undefined) {
-          const bodyToken =
-            typeof rawBody === 'object' && rawBody !== null && 'csrfToken' in rawBody
-              ? String((rawBody as Record<string, unknown>)['csrfToken'])
+          const sentToken =
+            typeof rawBody === 'object' && rawBody !== null && Object.hasOwn(rawBody, 'csrfToken')
+              ? (rawBody as Record<string, unknown>)['csrfToken']
               : undefined;
 
-          if (!verifyCsrf(request, { cookieToken: readCookie(request, CSRF_COOKIE), bodyToken })) {
+          // **本文の `csrfToken` は文字列のときだけ使う。文字列でなければ CSRF の失敗**（046 検証の指摘 N1）。
+          // 文字列にしようとすると、`{"toString":1}` で `TypeError`、1 万段の配列で `RangeError` になって
+          // 認証の要らない口まで 500 を返す。`["<トークン>"]` のような値を文字列にして一致させることもしない。
+          if (sentToken !== undefined && typeof sentToken !== 'string') {
+            return errorResponse('CSRF_FAILED', undefined, cors);
+          }
+
+          if (
+            !verifyCsrf(request, {
+              cookieToken: readCookie(request, CSRF_COOKIE),
+              bodyToken: sentToken,
+            })
+          ) {
             return errorResponse('CSRF_FAILED', undefined, cors);
           }
         }
