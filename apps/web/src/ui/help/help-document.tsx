@@ -174,14 +174,13 @@ function Siblings(props: { readonly docs: readonly HelpDocSummary[]; readonly cu
 }
 
 export interface HelpDocumentViewProps {
+  /** 結果の `docs` は宣言の `path` を持つ。本文の中の相対リンクの解決に使う（設計 §6.3・§7.3.4。D9）。 */
   readonly result: PluginHelpDocResult;
-  /** 同じ Plugin の宣言（id と path）。本文の中の相対リンクの解決に使う（設計 §7.3.4）。 */
-  readonly docPaths: readonly { readonly id: string; readonly path: string }[];
   readonly canManagePlugins: boolean;
 }
 
 /** 手順書の本文（`/plugins/<id>/help/<docId>`）。 */
-export function HelpDocumentView({ result, docPaths, canManagePlugins }: HelpDocumentViewProps) {
+export function HelpDocumentView({ result, canManagePlugins }: HelpDocumentViewProps) {
   return (
     <>
       <Breadcrumb
@@ -205,7 +204,7 @@ export function HelpDocumentView({ result, docPaths, canManagePlugins }: HelpDoc
             linkContext={{
               pluginId: result.pluginId,
               currentPath: result.doc.path,
-              docs: docPaths,
+              docs: result.docs.map((doc) => ({ id: doc.id, path: doc.path })),
             }}
           />
         </article>

@@ -3,7 +3,6 @@ import { notFound } from 'next/navigation';
 import { cache } from 'react';
 import {
   getPluginHelpDoc,
-  helpDocPathsOf,
   type PluginHelpDocResult,
 } from '@/application/plugin/plugin-help-use-cases';
 import { NotFoundError } from '@/domain/repository';
@@ -62,11 +61,7 @@ export default async function PluginHelpDocPage({ params }: { params: Params }) 
 
   return (
     <AppShell displayName={displayName} permissions={permissions}>
-      <HelpDocumentView
-        result={result}
-        docPaths={helpDocPathsOf(pluginId)}
-        canManagePlugins={permissions.has('plugin.manage')}
-      />
+      <HelpDocumentView result={result} canManagePlugins={permissions.has('plugin.manage')} />
     </AppShell>
   );
 }

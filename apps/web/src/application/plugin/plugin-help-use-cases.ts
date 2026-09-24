@@ -41,7 +41,12 @@ export interface PluginHelpIndex {
   readonly loaded: boolean;
 }
 
-export type PluginHelpDocResult = PluginHelpIndex & {
+export type PluginHelpDocResult = Omit<PluginHelpIndex, 'docs'> & {
+  /**
+   * 同じ Plugin の手順書の宣言（宣言の順）。**本文の中の相対リンクの解決に使うため `path` を含める**
+   * （設計 §6.3。D9：宣言の `path` を画面へ渡す口は、認可を通ったこの結果だけにする）。
+   */
+  readonly docs: readonly (HelpDocSummary & { readonly path: string })[];
   readonly doc: HelpDocSummary & { readonly path: string };
   /** 読めたときは本文、読めなければ理由のコード。 */
   readonly content:
@@ -145,6 +150,12 @@ export const getPluginHelpDoc = defineUseCase<
 
     return {
       ...index,
+      docs: help.map((declared) => ({
+        id: declared.id,
+        title: declared.title,
+        href: helpDocHref(input.pluginId, declared.id),
+        path: declared.path,
+      })),
       doc: {
         id: doc.id,
         title: doc.title,
@@ -169,18 +180,4 @@ export function helpLinkOfPlugin(pluginId: string): HelpDocSummary | null {
     return null;
   }
   return { id: first.id, title: first.title, href: helpDocHref(pluginId, first.id) };
-}
-
-/**
- * 同じ Plugin の手順書の宣言（`id` と `path`）。手順書の本文の中の相対リンクを解決するのに使う
- * （設計 §7.3.4 の `HelpLinkContext.docs`）。
- *
- * **`getPluginHelpDoc` が通った後にだけ呼ぶ**（認可はそちらで済んでいる）。返すのは配布物の宣言で、
- * ファイルには触れない。読み込まれていればその Manifest、そうでなければ登録簿の検証済みの Manifest から引く。
- */
-export function helpDocPathsOf(pluginId: string): readonly { id: string; path: string }[] {
-  const manifest =
-    loadedPlugin(pluginId)?.manifest ??
-    discoverPlugins().plugins.find((entry) => entry.manifest.id === pluginId)?.manifest;
-  return (manifest?.help ?? []).map((doc) => ({ id: doc.id, path: doc.path }));
 }
