@@ -1,4 +1,5 @@
 import { listCampaigns } from '@/application/campaign/campaign-use-cases';
+import { normalizePage } from '@/domain/repository';
 import { CampaignList } from '@/ui/campaign/campaign-list';
 import { AppShell } from '@/ui/layout/app-shell';
 import { ExtensionPoint, PluginActions } from '@/ui/plugin/plugin-slot';
@@ -29,7 +30,7 @@ export default async function CampaignsPage({
     );
   }
 
-  const page = Math.max(1, Number(params['page'] ?? 1) || 1);
+  const page = normalizePage(params['page']);
   const perPage = 20;
 
   const result = await listCampaigns(context, {

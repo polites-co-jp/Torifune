@@ -63,7 +63,8 @@ async function contextFor(roleNames: readonly string[]): Promise<AuthorizationCo
 }
 
 async function makePost(body: string): Promise<string> {
-  const post = await createSocialPost(admin, {
+  // 035-social-publishing 設計 §6.1.3：出力は `{ post, created }`。
+  const { post } = await createSocialPost(admin, {
     socialAccountId: accountId,
     body,
     scheduledAt: null,
@@ -161,7 +162,12 @@ describe('履歴', () => {
     const failed = await makePost('失敗');
     await makePost('下書きのまま');
     const scheduled = await makePost('予約しただけ');
-    await updateSocialPost(admin, { id: scheduled, status: 'scheduled' });
+    // 035-social-publishing 設計 §11 #13：`scheduled` には予約日時が要る。
+    await updateSocialPost(admin, {
+      id: scheduled,
+      status: 'scheduled',
+      scheduledAt: new Date(Date.now() + 60_000),
+    });
 
     await updateSocialPost(admin, { id: done, status: 'published' });
     await updateSocialPost(admin, { id: failed, status: 'failed', failureReason: 'timeout' });

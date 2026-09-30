@@ -20,6 +20,7 @@ export const CORE_EVENTS = [
   'social.account.disconnected',
   'social.post.created',
   'social.post.published',
+  'social.post.failed',
   'campaign.created',
   'campaign.updated',
   'campaign.deleted',
@@ -115,6 +116,13 @@ export interface SocialAccountEventPayload {
   readonly displayName: string;
 }
 
+/**
+ * SNS 投稿（`social.post.created` / `social.post.published` / `social.post.failed`）。
+ *
+ * **失敗の理由は載せない**（035-social-publishing 設計 §9.6）。Plugin が返した自由文で、
+ * 資格情報が混じる可能性を Core が完全には否定できない。要るなら Data API
+ * （`socialPosts.get`）で引く。
+ */
 export interface SocialPostEventPayload {
   readonly postId: string;
   readonly accountId: string;
@@ -135,6 +143,7 @@ export interface CoreEventPayloads {
   readonly 'social.account.disconnected': SocialAccountEventPayload;
   readonly 'social.post.created': SocialPostEventPayload;
   readonly 'social.post.published': SocialPostEventPayload;
+  readonly 'social.post.failed': SocialPostEventPayload;
   readonly 'campaign.created': CampaignEventPayload;
   readonly 'campaign.updated': CampaignEventPayload;
   readonly 'campaign.deleted': CampaignEventPayload;

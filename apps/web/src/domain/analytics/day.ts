@@ -212,7 +212,8 @@ export function dateOnly(value: Date | string): string {
   if (typeof value === 'string') {
     return value.slice(0, 10);
   }
-  const year = value.getFullYear();
+  // 年を 4 桁にそろえる。1000 年未満を "1-01-01" にしない（046-input-500-nul-and-ranges 設計 §6.4 の N4）。
+  const year = String(value.getFullYear()).padStart(4, '0');
   const month = String(value.getMonth() + 1).padStart(2, '0');
   const day = String(value.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;

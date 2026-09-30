@@ -10,6 +10,12 @@ export const POST = defineRoute({
   summary: 'Plugin を有効化する',
   permission: 'plugin.manage',
   body: togglePluginSchema,
+  additionalResponses: [
+    {
+      status: 404,
+      description: 'Plugin が配置されていない、または導入されていない',
+    },
+  ],
   handler: async ({ context, params }) => {
     // 有効化では再ビルドしない。レジストリはすでにビルドに含まれている。
     const result = await enablePluginUseCase(context, { pluginId: params['id'] ?? '' });

@@ -86,10 +86,16 @@ export async function markOperation(
     .execute();
 }
 
+/** UUID の形をしているか。不正な値で 500 にせず、見つからない扱いにする。 */
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function findOperation(
   connection: Connection,
   id: string,
 ): Promise<PluginOperation | null> {
+  if (!UUID_PATTERN.test(id)) {
+    return null;
+  }
   const row = await connection.db
     .selectFrom('plugin_operations')
     .selectAll()

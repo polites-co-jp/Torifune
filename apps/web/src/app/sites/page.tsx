@@ -1,4 +1,5 @@
 import { listSites } from '@/application/site/site-use-cases';
+import { normalizePage } from '@/domain/repository';
 import { AppShell } from '@/ui/layout/app-shell';
 import { ExtensionPoint, PluginActions } from '@/ui/plugin/plugin-slot';
 import { requirePageSession } from '@/ui/server/page-session';
@@ -21,7 +22,7 @@ export default async function SitesPage({
   const params = await searchParams;
   const { context, displayName, permissions } = await requirePageSession();
 
-  const page = Math.max(1, Number(params['page'] ?? 1) || 1);
+  const page = normalizePage(params['page']);
   const perPage = 20;
 
   if (!permissions.has('site.read')) {

@@ -150,6 +150,12 @@ function isCalendarDate(value: string): boolean {
   const month = Number(match[2]);
   const day = Number(match[3]);
 
+  if (year < 1) {
+    // PostgreSQL の date は西暦 0 年を持たない（紀元前 1 年の次が西暦 1 年）。
+    // 通すと 22008 で 500 になる（046-input-500-nul-and-ranges 設計 §6.4 の B2）。
+    return false;
+  }
+
   if (month < 1 || month > 12) {
     return false;
   }
@@ -170,6 +176,14 @@ function isCalendarDate(value: string): boolean {
 export function isValidRange(from: string, to: string): boolean {
   return isCalendarDate(from) && isCalendarDate(to) && from <= to;
 }
+
+/**
+ * 生ログ（`access_logs`）を消すときの `pruneOlderThanDays` の上限（約 100 年。046-input-500-nul-and-ranges 設計 §6.6）。
+ *
+ * それより長く残す運用は無く、大きい値は「何も消さない」と同じ。PostgreSQL の日時の限界
+ * （日ごとに動くユリウス通日・`interval` の 2^31）より十分内側で、日付が進んでも変わらない。
+ */
+export const ACCESS_LOG_PRUNE_MAX_DAYS = 36500;
 
 /** 一度に取れる日数の上限。広すぎる期間で画面と DB を止めない。 */
 export const MAX_RANGE_DAYS = 400;

@@ -10,7 +10,8 @@
 plugins/
 └── my-plugin/          ← ディレクトリ名 = Plugin ID
     ├── plugin.json
-    └── index.ts        （index.tsx でもよい）
+    ├── index.ts        （index.tsx でもよい）
+    └── help/           （任意）利用者向けの手順書（Markdown）。plugin.json の help で宣言する
 ```
 
 作り方は `docs/Plugin開発ガイド.md`。

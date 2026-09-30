@@ -14,6 +14,12 @@ export const DELETE = defineRoute({
   // 失効も Token 経由では許さない。自分自身を延命・整理できると、
   // 盗まれた Token で「別の Token を消して痕跡を減らす」ことができてしまう。
   sessionOnly: true,
+  additionalResponses: [
+    {
+      status: 404,
+      description: 'Token が存在しない、または自分の Token でない（UUID の形でない ID を含む）',
+    },
+  ],
   handler: async ({ context, params }) => {
     await revokeApiToken(context, { id: params['id'] as string });
     return noContentResponse();

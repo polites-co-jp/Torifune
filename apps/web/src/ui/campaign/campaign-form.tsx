@@ -170,7 +170,11 @@ export function CampaignForm({
             )}
           </FormField>
 
-          <FormField label="対象サイト" description="複数選べます。">
+          <FormField
+            label="対象サイト"
+            description="複数選べます。"
+            {...(fieldErrors['siteIds'] === undefined ? {} : { errors: fieldErrors['siteIds'] })}
+          >
             {() =>
               sites.length === 0 ? (
                 <p style={{ color: 'var(--tf-color-text-muted)', margin: 0 }}>
@@ -202,6 +206,9 @@ export function CampaignForm({
           <FormField
             label="関連するSNS投稿"
             description="このキャンペーンのために出す投稿を選びます。複数選べます。"
+            {...(fieldErrors['socialPostIds'] === undefined
+              ? {}
+              : { errors: fieldErrors['socialPostIds'] })}
           >
             {() =>
               socialPosts.length === 0 ? (

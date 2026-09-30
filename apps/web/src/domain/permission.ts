@@ -1,3 +1,5 @@
+import { ownValue } from './own-value';
+
 /**
  * Permission 名（04_認証設計.md §14、03_プラグイン設計.md §20.2）。
  *
@@ -116,5 +118,7 @@ export const PERMISSION_DESCRIPTIONS: Readonly<Record<CorePermission, string>> =
 };
 
 export function describePermission(permission: string): string | null {
-  return (PERMISSION_DESCRIPTIONS as Record<string, string>)[permission] ?? null;
+  // permission は Registry の配信内容から来る。`toString` などで継承した関数を拾わないよう、
+  // 自分のプロパティだけを見る（047-prototype-key-sweep 設計 §4.1）。
+  return ownValue(PERMISSION_DESCRIPTIONS, permission) ?? null;
 }

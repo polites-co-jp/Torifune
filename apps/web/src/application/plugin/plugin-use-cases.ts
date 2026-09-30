@@ -39,7 +39,7 @@ import {
   type InstalledPluginState,
   type RegistryCompatibility,
 } from '@/plugin/registry-compatibility';
-import { isLoaded, loadedPlugin } from '@/plugin/registry';
+import { isLoaded, loadedPlugin, publishersOf, settingsOf } from '@/plugin/registry';
 
 /**
  * Plugin 管理の UseCase（012-plugin-manager）。
@@ -68,6 +68,29 @@ export interface PluginSummary {
    * **誰が作ったものかを画面に出す。** 出さないと、導入の判断材料が1つ減る。
    */
   readonly author: string | null;
+  /**
+   * Manifest が宣言した拡張点の種類（035-social-publishing 設計 §7.9、裁定 #11）。
+   *
+   * **導入前に見えるところまでが責任である。** 資格情報を Plugin へ渡すことの正当化は
+   * 「入れる側が『どの Plugin が資格情報を受け取るか』を導入時に見られる」という
+   * 宣言にあり、宣言が画面に出ていなければその説明は空文になる。
+   * **未知の値も落とさずそのまま渡す**（表示側が黙って落とすと「宣言が見える」が成り立たない）。
+   */
+  readonly extensions: readonly string[];
+  /**
+   * 実際に登録した publisher の provider（設計 §9.4 の `Registrations.publishers`）。
+   *
+   * **有効化した後だけ値が入る。** 宣言（`extensions`）と実際の登録は別で、
+   * 同じ provider を複数の Plugin が宣言していても勝つのは 1 つだけである。
+   */
+  readonly publishers: readonly string[];
+  /**
+   * 設定（registerSettings）を持つか（041-plugin-help-docs 設計 §7.6）。
+   * 読み込まれているときだけ true になりうる。**画面用で、API の応答には出さない。**
+   */
+  readonly hasSettings: boolean;
+  /** Manifest の手順書の宣言（id と title だけ。path を持たない）。無ければ []。画面用。 */
+  readonly help: readonly { readonly id: string; readonly title: string }[];
 }
 
 export interface PluginListOutput {
@@ -94,6 +117,10 @@ function summarize(manifest: PluginManifest, status: PluginStatus | null): Plugi
     // 任意項目。壊れた値が画面へ流れないよう、文字列でなければ無いものとして扱う。
     author:
       typeof manifest.author === 'string' && manifest.author.trim() !== '' ? manifest.author : null,
+    extensions: manifest.extensions ?? [],
+    publishers: publishersOf(manifest.id),
+    hasSettings: isLoaded(manifest.id) && settingsOf(manifest.id) !== null,
+    help: (manifest.help ?? []).map(({ id, title }) => ({ id, title })),
   };
 }
 
@@ -132,6 +159,10 @@ export const listPlugins = defineUseCase<void, PluginListOutput>({
         dependencies: {},
         description: 'ファイルが見つからない',
         author: null,
+        extensions: [],
+        publishers: publishersOf(record.id),
+        hasSettings: false,
+        help: [],
       });
     }
 

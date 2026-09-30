@@ -12,6 +12,12 @@ export const GET = defineRoute({
   permission: null,
   reason: '認証状態そのものを返す処理。未認証なら 401 を返す',
   response: currentUserEnvelopeSchema,
+  additionalResponses: [
+    {
+      status: 401,
+      description: 'ログインしていない',
+    },
+  ],
   handler: async ({ context }) => {
     const identity = requireAuthenticated(context);
 

@@ -8,6 +8,7 @@ import {
   createAccountSchema,
   toAccountResponse,
 } from '@/api/schemas/social';
+import { ensurePluginsStartedAnonymously } from '@/plugin/runtime';
 
 export const GET = defineRoute({
   operationId: 'listSocialAccounts',
@@ -41,11 +42,15 @@ export const POST = defineRoute({
   response: accountEnvelopeSchema,
   successStatus: 201,
   handler: async ({ context, body }) => {
+    // `credentials` の突き合わせが publisher の登録簿を引く（設計 §6.7）。
+    await ensurePluginsStartedAnonymously();
+
     const account = await createSocialAccount(context, {
       provider: body.provider,
       displayName: body.displayName,
       handle: body.handle,
       credential: body.credential ?? null,
+      ...(body.credentials === undefined ? {} : { credentials: body.credentials }),
       status: body.status,
     });
     return createdResponse(toAccountResponse(account));

@@ -1,0 +1,18 @@
+{
+  "id": "sns-instagram",
+  "name": "Instagram配信",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "description": "予約したSNS投稿を Instagram（Graph API）へ配信する。プロアカウントと長期アクセストークンで動く。画像のみ。",
+  "author": "Torifune",
+  "license": "MIT",
+  "permissions": [],
+  "extensions": ["social"],
+  "help": [
+    {
+      "id": "credentials",
+      "title": "Instagram の長期アクセストークンとユーザー ID の用意のしかた",
+      "path": "help/credentials.md"
+    }
+  ]
+}

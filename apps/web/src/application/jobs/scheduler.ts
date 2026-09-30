@@ -1,5 +1,5 @@
 import { schedulerConfig } from '@/application/jobs/config';
-import { ROLLUP_JOB, WEBHOOK_JOB } from '@/application/jobs/definitions';
+import { ROLLUP_JOB, SOCIAL_PUBLISH_JOB, WEBHOOK_JOB } from '@/application/jobs/definitions';
 import { runJob } from '@/application/jobs/run-job';
 import { withConnection } from '@/application/transaction';
 import type { Connection } from '@/database/provider';
@@ -263,6 +263,7 @@ export function bootScheduler(options: { prepare: () => Promise<unknown> }): voi
     jobs: [
       { ...ROLLUP_JOB, intervalMs: config.rollupIntervalMinutes * MINUTE_MS },
       { ...WEBHOOK_JOB, intervalMs: config.webhookIntervalMinutes * MINUTE_MS },
+      { ...SOCIAL_PUBLISH_JOB, intervalMs: config.socialPublishIntervalMinutes * MINUTE_MS },
     ],
     prepare: options.prepare,
     enabled: config.enabled,
@@ -283,6 +284,7 @@ export function bootScheduler(options: { prepare: () => Promise<unknown> }): voi
     enabled: config.enabled,
     rollupIntervalMinutes: config.rollupIntervalMinutes,
     webhookIntervalMinutes: config.webhookIntervalMinutes,
+    socialPublishIntervalMinutes: config.socialPublishIntervalMinutes,
   });
 }
 

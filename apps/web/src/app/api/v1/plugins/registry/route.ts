@@ -35,6 +35,12 @@ export const POST = defineRoute({
   }),
   // 導入は再ビルドを伴う重い操作。連打させない。
   rateLimit: { windowMs: 60_000, max: 5 },
+  additionalResponses: [
+    {
+      status: 404,
+      description: 'Registry に指定した Plugin が無い',
+    },
+  ],
   handler: async ({ context, body }) =>
     dataResponse(await installFromRegistry(context, { pluginId: body.pluginId })),
 });

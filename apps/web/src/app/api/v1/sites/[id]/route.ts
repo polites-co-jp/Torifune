@@ -4,6 +4,12 @@ import { defineRoute } from '@/api/route';
 import { siteEnvelopeSchema, toSiteResponse, updateSiteSchema } from '@/api/schemas/site';
 import { z } from 'zod';
 
+/** `{id}` のサイトが無いときの応答（043-api-input-fixes-rest 設計 §6.4）。 */
+const SITE_NOT_FOUND = {
+  status: 404,
+  description: 'サイトが存在しない（UUID の形でない ID を含む）',
+} as const;
+
 export const GET = defineRoute({
   operationId: 'getSite',
   method: 'GET',
@@ -11,6 +17,7 @@ export const GET = defineRoute({
   summary: 'Webサイトを取得する',
   permission: 'site.read',
   response: siteEnvelopeSchema,
+  additionalResponses: [SITE_NOT_FOUND],
   handler: async ({ context, params }) => {
     const site = await getSite(context, { id: params['id'] ?? '' });
     return dataResponse(toSiteResponse(site));
@@ -25,6 +32,7 @@ export const PATCH = defineRoute({
   permission: 'site.write',
   body: updateSiteSchema,
   response: siteEnvelopeSchema,
+  additionalResponses: [SITE_NOT_FOUND],
   handler: async ({ context, params, body }) => {
     const site = await updateSite(context, {
       id: params['id'] ?? '',
@@ -45,6 +53,7 @@ export const DELETE = defineRoute({
   permission: 'site.delete',
   body: z.object({ csrfToken: z.string().optional() }),
   successStatus: 204,
+  additionalResponses: [SITE_NOT_FOUND],
   handler: async ({ context, params }) => {
     await deleteSite(context, { id: params['id'] ?? '' });
     return noContentResponse();

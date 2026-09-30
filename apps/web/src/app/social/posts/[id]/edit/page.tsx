@@ -1,4 +1,5 @@
 import { notFound } from 'next/navigation';
+import { findPublisher, publisherLabels } from '@/application/social/publisher-registry';
 import { getSocialPost, listSocialAccounts } from '@/application/social/social-use-cases';
 import { NotFoundError } from '@/domain/repository';
 import { providerLabel } from '@/domain/social/social';
@@ -28,6 +29,7 @@ export default async function EditSocialPostPage({ params }: { params: Promise<{
   }
 
   const accounts = await listSocialAccounts(context, { page: 1, perPage: 100, provider: null });
+  const labels = publisherLabels();
 
   return (
     <AppShell displayName={displayName} permissions={permissions}>
@@ -36,13 +38,16 @@ export default async function EditSocialPostPage({ params }: { params: Promise<{
         postId={post.id}
         accounts={accounts.items.map((account) => ({
           id: account.id,
-          label: `${account.displayName}（${providerLabel(account.provider)}）`,
+          label: `${account.displayName}（${providerLabel(account.provider, labels)}）`,
+          // 押しても 422 になる選択肢を出さない（035-social-publishing 設計 §7.4）。
+          manualSupported: findPublisher(account.provider)?.registration.manual !== undefined,
         }))}
         initial={{
           socialAccountId: post.socialAccountId,
           body: post.body,
           scheduledAtIso: post.scheduledAt?.toISOString() ?? null,
           status: post.status,
+          deliveryMode: post.deliveryMode,
         }}
         // Plugin は編集画面の**脇**に自分の欄を足せる（06_画面設計.md §26）。
         // `site.edit.sidebar` と対になる、SNSドメイン側の拡張点。

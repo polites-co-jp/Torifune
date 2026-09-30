@@ -10,6 +10,20 @@ import type { DeprecationNotice } from './deprecation';
  * 「仕様に出ないと困る」のは公開 API だけなので、これで足りる。
  */
 
+/**
+ * 成功・共通のエラー以外に、操作が返しうる応答（05_API設計.md §40。042-social-api-input-fixes 設計 §6.4）。
+ *
+ * 生成器はパスや method から推し量らない。**ルートの定義で明示したものだけ**を OpenAPI に出す。
+ *
+ * 401 は認可の無い操作（`permission: null`）だけに書ける（043-api-input-fixes-rest 設計 §6.4）。
+ * 認可のある操作には生成器が既に 401 を出すので、`defineRoute` が書いた定義を断る。
+ */
+export interface AdditionalResponse {
+  readonly status: 200 | 401 | 404 | 409;
+  /** OpenAPI の description にそのまま出す。 */
+  readonly description: string;
+}
+
 export interface EndpointSpec {
   readonly operationId: string;
   readonly method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -39,6 +53,8 @@ export interface EndpointSpec {
   readonly successStatus?: 200 | 201 | 204 | undefined;
   /** 非推奨の告知（05_API設計.md §41）。 */
   readonly deprecated?: DeprecationNotice | undefined;
+  /** 成功・共通のエラー以外に、この操作が返しうる応答（05_API設計.md §40）。 */
+  readonly additionalResponses?: readonly AdditionalResponse[] | undefined;
 }
 
 const endpoints = new Map<string, EndpointSpec>();

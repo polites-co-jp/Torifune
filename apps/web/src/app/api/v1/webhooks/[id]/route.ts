@@ -11,6 +11,12 @@ export const DELETE = defineRoute({
   permission: 'system.manage',
   body: z.object({ csrfToken: z.string().optional() }).optional(),
   successStatus: 204,
+  additionalResponses: [
+    {
+      status: 404,
+      description: 'Webhook が存在しない（UUID の形でない ID を含む）',
+    },
+  ],
   handler: async ({ context, params }) => {
     await deleteWebhook(context, { id: params['id'] as string });
     return noContentResponse();

@@ -26,8 +26,14 @@ describe('JOB_NAMES / isJobName', () => {
    * `JOB_NAMES` の順がそのまま画面（設定 → 一般の「定期実行」）の行順になるので、
    * 既存の 2 行の間に割り込ませない。
    */
-  it('Core の 3 ジョブが定義の順に並ぶ', () => {
-    expect(JOB_NAMES).toEqual(['analytics.rollup', 'webhook.deliver', 'analytics.timezoneRebuild']);
+  it('Core の 4 ジョブが定義の順に並ぶ', () => {
+    // 035-social-publishing 設計 §6.5.1：SNS 投稿の配信も**末尾**に足す（#59）。
+    expect(JOB_NAMES).toEqual([
+      'analytics.rollup',
+      'webhook.deliver',
+      'analytics.timezoneRebuild',
+      'social.publish',
+    ]);
   });
 
   it('isJobName は登録済みの名前だけを真にする', () => {

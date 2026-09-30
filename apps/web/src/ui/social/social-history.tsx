@@ -25,6 +25,8 @@ export interface HistoryRow {
   /** 配信済みなら配信時刻、失敗なら失敗時刻。 */
   readonly resultAt: string | null;
   readonly failureReason: string | null;
+  /** 配信後の投稿の URL（035-social-publishing 設計 §7.3）。 */
+  readonly externalUrl: string | null;
 }
 
 const EXCERPT_LENGTH = 60;
@@ -75,7 +77,30 @@ export function SocialHistory(props: SocialHistoryProps) {
       width: '12rem',
       render: (row) => props.accountNames[row.socialAccountId] ?? row.socialAccountId,
     },
-    { key: 'body', header: '投稿', render: (row) => excerpt(row.body) },
+    {
+      key: 'body',
+      header: '投稿',
+      render: (row) => (
+        <span>
+          {excerpt(row.body)}
+          {/* 配信済みの投稿は外部の本物へ辿れるようにする（035-social-publishing 設計 §7.3）。 */}
+          {row.externalUrl !== null && (
+            <a
+              href={row.externalUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                marginLeft: 'var(--tf-space-2)',
+                color: 'var(--tf-color-primary)',
+                fontSize: 'var(--tf-text-caption)',
+              }}
+            >
+              投稿を見る ↗
+            </a>
+          )}
+        </span>
+      ),
+    },
     {
       key: 'status',
       header: '結果',

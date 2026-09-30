@@ -1,4 +1,5 @@
 import { notFound } from 'next/navigation';
+import { findPublisher, publisherLabels } from '@/application/social/publisher-registry';
 import { listSocialAccounts } from '@/application/social/social-use-cases';
 import { providerLabel } from '@/domain/social/social';
 import { AppShell } from '@/ui/layout/app-shell';
@@ -41,6 +42,7 @@ export default async function NewSocialPostPage() {
   }
 
   const first = accounts.items[0];
+  const labels = publisherLabels();
 
   return (
     <AppShell displayName={displayName} permissions={permissions}>
@@ -48,13 +50,16 @@ export default async function NewSocialPostPage() {
         title="投稿を作成"
         accounts={accounts.items.map((account) => ({
           id: account.id,
-          label: `${account.displayName}（${providerLabel(account.provider)}）`,
+          label: `${account.displayName}（${providerLabel(account.provider, labels)}）`,
+          // 押しても 422 になる選択肢を出さない（035-social-publishing 設計 §7.4）。
+          manualSupported: findPublisher(account.provider)?.registration.manual !== undefined,
         }))}
         initial={{
           socialAccountId: first?.id ?? '',
           body: '',
           scheduledAtIso: null,
           status: 'draft',
+          deliveryMode: 'auto',
         }}
       />
     </AppShell>

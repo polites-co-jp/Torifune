@@ -21,6 +21,14 @@ export const AUDIT_ACTIONS = [
   'disabled',
   'installed',
   'uninstalled',
+  /**
+   * 資格情報の読み出し（035-social-publishing 設計 §6.5.8）。
+   *
+   * **`'read'` にしない。** 参照系を記録しない原則（`authorization/use-case.ts`）の
+   * 例外であることが名前で分かるようにする。読めれば外部サービスで何でもできるので、
+   * 「誰が・どの目的で読んだか」を残す。
+   */
+  'credential_read',
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];

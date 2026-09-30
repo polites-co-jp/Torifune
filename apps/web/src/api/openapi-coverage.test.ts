@@ -124,6 +124,39 @@ describe('認証の宣言と実態', () => {
   });
 });
 
+/**
+ * #64（035-social-publishing 設計 §6.5.9）。
+ *
+ * `POST /api/v1/social/publish` は監視・外部スケジューラから叩く口なので、
+ * **応答の形を宣言する**（`listJobStatuses` と同じ理由）。
+ * 項目そのものは `api/schemas/social.test.ts` が Zod スキーマを直接見る（実装プラン §8 の 7）。
+ */
+describe('#64 配信の手動実行（publishSocialPosts）', () => {
+  it('#64 publishSocialPosts が登録されている', () => {
+    const operationIds = listDocumentedEndpoints().map((endpoint) => endpoint.operationId);
+
+    expect(operationIds).toContain('publishSocialPosts');
+  });
+
+  it('#64 publishSocialPosts が「未宣言の一覧」に入らない（応答スキーマがある）', () => {
+    const pending = listDocumentedEndpoints()
+      .filter((endpoint) => endpoint.responseSchema === undefined && endpoint.successStatus !== 204)
+      .map((endpoint) => endpoint.operationId);
+
+    expect(pending).not.toContain('publishSocialPosts');
+  });
+
+  it('#64 publishSocialPosts は POST /social/publish で system.manage', () => {
+    const endpoint = listDocumentedEndpoints().find(
+      (candidate) => candidate.operationId === 'publishSocialPosts',
+    );
+
+    expect(endpoint?.path).toBe('/social/publish');
+    expect(endpoint?.method).toBe('POST');
+    expect(endpoint?.permission).toBe('system.manage');
+  });
+});
+
 describe('非推奨', () => {
   /**
    * 現時点で非推奨のエンドポイントは無い。

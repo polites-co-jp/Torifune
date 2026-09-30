@@ -424,17 +424,22 @@ describe('bootScheduler', () => {
     bootScheduler({ prepare: async () => undefined });
     const after2 = vi.getTimerCount();
 
-    // Core の 2 ジョブ（analytics.rollup / webhook.deliver）。
-    expect(after1).toBe(2);
-    expect(after2).toBe(2);
+    // Core の 3 ジョブ（analytics.rollup / webhook.deliver / social.publish）。
+    // 035-social-publishing で 1 本増えた（#66）。
+    expect(after1).toBe(3);
+    expect(after2).toBe(3);
     const snapshot = schedulerSnapshot();
     expect(snapshot.booted).toBe(true);
     expect(snapshot.enabled).toBe(true);
-    expect(snapshot.jobs.map((job) => job.name)).toEqual(['analytics.rollup', 'webhook.deliver']);
+    expect(snapshot.jobs.map((job) => job.name)).toEqual([
+      'analytics.rollup',
+      'webhook.deliver',
+      'social.publish',
+    ]);
   });
 
-  /** #30 の前提。既定の間隔は 15 分 / 1 分。 */
-  it('既定の間隔は analytics.rollup が 15 分、webhook.deliver が 1 分', () => {
+  /** #30 の前提。既定の間隔は 15 分 / 1 分 / 1 分。 */
+  it('既定の間隔は analytics.rollup が 15 分、webhook.deliver と social.publish が 1 分', () => {
     vi.stubEnv('NODE_ENV', 'production');
     resetSchedulerConfig();
 
@@ -443,6 +448,7 @@ describe('bootScheduler', () => {
     expect(schedulerSnapshot().jobs.map((job) => [job.name, job.intervalMinutes])).toEqual([
       ['analytics.rollup', 15],
       ['webhook.deliver', 1],
+      ['social.publish', 1],
     ]);
   });
 });
@@ -495,7 +501,8 @@ describe('環境変数', () => {
     const snapshot = schedulerSnapshot();
     expect(snapshot.booted).toBe(true);
     expect(snapshot.enabled).toBe(false);
-    expect(snapshot.jobs.map((job) => job.nextRunAt)).toEqual([null, null]);
+    // 035-social-publishing で `bootScheduler` のジョブが 3 本になった（#66）。
+    expect(snapshot.jobs.map((job) => job.nextRunAt)).toEqual([null, null, null]);
   });
 
   /** #31 */
@@ -521,6 +528,64 @@ describe('環境変数', () => {
     schedulerConfig();
 
     expect(records.filter((record) => record.level === 'warn')).toHaveLength(1);
+  });
+
+  /**
+   * #66（035-social-publishing 設計 §6.5.1）。
+   *
+   * 既定は **1 分**。`publishRetryDelayMs` の最短が 1 分なので、周期が 1 分なら
+   * 予約どおりの時刻に送れる（Webhook と同じ根拠）。
+   */
+  it("TORIFUNE_SOCIAL_PUBLISH_INTERVAL_MINUTES = '5' で socialPublishIntervalMinutes が 5", () => {
+    vi.stubEnv('TORIFUNE_SOCIAL_PUBLISH_INTERVAL_MINUTES', '5');
+    resetSchedulerConfig();
+
+    expect(schedulerConfig().socialPublishIntervalMinutes).toBe(5);
+  });
+
+  /** #66 */
+  it('TORIFUNE_SOCIAL_PUBLISH_INTERVAL_MINUTES が未設定なら既定の 1 分', () => {
+    vi.stubEnv('TORIFUNE_SOCIAL_PUBLISH_INTERVAL_MINUTES', '');
+    resetSchedulerConfig();
+
+    expect(schedulerConfig().socialPublishIntervalMinutes).toBe(1);
+  });
+
+  /** #66 */
+  it("TORIFUNE_SOCIAL_PUBLISH_INTERVAL_MINUTES = 'abc' は既定の 1 分に落ち、warn のログが出る", () => {
+    const { records } = capture();
+    vi.stubEnv('TORIFUNE_SOCIAL_PUBLISH_INTERVAL_MINUTES', 'abc');
+    resetSchedulerConfig();
+
+    expect(schedulerConfig().socialPublishIntervalMinutes).toBe(1);
+    const warned = records.filter((record) => record.level === 'warn');
+    expect(warned).toHaveLength(1);
+    expect(JSON.stringify(warned[0])).toContain('TORIFUNE_SOCIAL_PUBLISH_INTERVAL_MINUTES');
+  });
+
+  /** #66。`bootScheduler` の `jobs` に載っている（周期を持つジョブ）。 */
+  it('bootScheduler の snapshot に social.publish があり、既定の間隔が 1 分', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    resetSchedulerConfig();
+
+    bootScheduler({ prepare: async () => undefined });
+
+    const job = schedulerSnapshot().jobs.find((candidate) => candidate.name === 'social.publish');
+    expect(job, 'social.publish が bootScheduler に載っていない').toBeDefined();
+    expect(job?.intervalMinutes).toBe(1);
+  });
+
+  /** #66。環境変数で上書きした値が `bootScheduler` まで届く。 */
+  it('TORIFUNE_SOCIAL_PUBLISH_INTERVAL_MINUTES = 5 が snapshot の intervalMinutes に反映される', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('TORIFUNE_SOCIAL_PUBLISH_INTERVAL_MINUTES', '5');
+    resetSchedulerConfig();
+
+    bootScheduler({ prepare: async () => undefined });
+
+    expect(
+      schedulerSnapshot().jobs.find((job) => job.name === 'social.publish')?.intervalMinutes,
+    ).toBe(5);
   });
 
   /** #31 の対。未設定は警告しない。 */

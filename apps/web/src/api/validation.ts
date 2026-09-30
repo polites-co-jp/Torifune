@@ -13,17 +13,28 @@ export type ValidationResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly details: ValidationDetails };
 
-/** Zod のエラーを、フィールド単位の説明へ落とす。 */
+/**
+ * Zod のエラーを、フィールド単位の説明へ落とす。
+ *
+ * キーは送った側が決められる（最上位が `z.record` の本文など）。`constructor` のような
+ * `Object.prototype` の名前で継承した値を拾わないよう、`Map` に積んで `Object.fromEntries` で
+ * **自分のプロパティ**として返す（046 検証の指摘 I1。`domain/text.ts` と同じ作り）。
+ */
 export function toValidationDetails(error: z.ZodError): ValidationDetails {
-  const details: Record<string, string[]> = {};
+  const details = new Map<string, string[]>();
 
   for (const issue of error.issues) {
     // ルート（パスが空）のエラーは `_` にまとめる。
     const key = issue.path.length === 0 ? '_' : issue.path.map(String).join('.');
-    (details[key] ??= []).push(issue.message);
+    const messages = details.get(key);
+    if (messages === undefined) {
+      details.set(key, [issue.message]);
+    } else {
+      messages.push(issue.message);
+    }
   }
 
-  return details;
+  return Object.fromEntries(details);
 }
 
 /**

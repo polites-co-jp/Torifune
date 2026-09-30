@@ -25,6 +25,12 @@ export const POST = defineRoute({
   // 総当たり対策は authentication/rate-limit.ts が担うが、
   // そこへ到達する前の物量も止める（05_API設計.md §36）。
   rateLimit: { windowMs: 60_000, max: 30 },
+  additionalResponses: [
+    {
+      status: 401,
+      description: 'ログイン ID またはパスワードが正しくない',
+    },
+  ],
   handler: async ({ request, body }) => {
     // **認証を通す前に Plugin を起動する。**
     // 認証方式を差し替える Plugin は、ここより前に起動していなければ

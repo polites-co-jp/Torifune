@@ -44,6 +44,41 @@ export const paginationSchema = z.object({
     .default(DEFAULT_PER_PAGE),
 });
 
+/**
+ * 一覧のクエリの `page` / `perPage` の部品（042-social-api-input-fixes 設計 §6.2、043-api-input-fixes-rest 設計 §6.2）。
+ *
+ * **規則は上の `paginationSchema` と同じ**（`page` は 1 未満を 1、`perPage` は 1〜100 に丸める。
+ * 整数でなければ 422。既定は 1 / 20）。範囲外の整数は意図が明らかなので断らずに丸め、打ち間違い（`abc`）は断る。
+ *
+ * `paginationSchema` の形（`transform` の後ろに `.default()`）のまま使うと OpenAPI から `default` が消えるので、
+ * `.default()` を `transform` の前に置く（042 実装プラン §8 の 1）。
+ * `.int()` が出す `minimum` / `maximum`（安全な整数の範囲）はキーごと消す。書くと「範囲外は断られる」と読めて、
+ * 実際の振る舞い（丸める）と食い違う（042 設計 §6.2 末尾）。
+ *
+ * SNS の一覧（`api/schemas/social.ts`）と `/sites`・`/users`・`/campaigns` の一覧が同じ部品を使う。
+ */
+export const pageQuerySchema = z.coerce
+  .number()
+  .int('整数を指定してください。')
+  .default(1)
+  .transform((value) => Math.max(1, value))
+  .meta({
+    description: '1 以上。範囲外は 1 に丸める。',
+    minimum: undefined,
+    maximum: undefined,
+  });
+
+export const perPageQuerySchema = z.coerce
+  .number()
+  .int('整数を指定してください。')
+  .default(DEFAULT_PER_PAGE)
+  .transform((value) => Math.min(MAX_PER_PAGE, Math.max(1, value)))
+  .meta({
+    description: `1〜${MAX_PER_PAGE}。範囲外は 1〜${MAX_PER_PAGE} に丸める。`,
+    minimum: undefined,
+    maximum: undefined,
+  });
+
 export function offsetOf(pagination: Pagination): number {
   return (pagination.page - 1) * pagination.perPage;
 }

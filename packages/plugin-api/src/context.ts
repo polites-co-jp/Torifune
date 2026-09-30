@@ -2,6 +2,7 @@ import type { PluginAuthenticationApi } from './authentication';
 import type { PluginDataApi } from './data';
 import type { PluginDatabaseApi } from './database';
 import type { PluginEventApi } from './events';
+import type { PluginSocialApi } from './social';
 import type { PluginStore } from './store';
 import type { PluginUiApi } from './ui';
 
@@ -49,6 +50,15 @@ export interface PluginContext {
    * **セッションの発行は Core に残る。** Provider が決めるのは「誰か」まで。
    */
   readonly authentication: PluginAuthenticationApi;
+
+  /**
+   * SNS 配信（035-social-publishing）。
+   *
+   * **高権限の拡張点。** Manifest で `extensions: ['social']` を
+   * 宣言していなければ使えない。
+   * 登録した provider の資格情報が `publish()` の引数として渡る。
+   */
+  readonly social: PluginSocialApi;
 
   /** ログ。**Secret を渡しても平文は出ない。** */
   readonly logger: PluginLogger;

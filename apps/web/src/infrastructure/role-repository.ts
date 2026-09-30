@@ -57,11 +57,19 @@ export const roleRepository: RoleRepository = {
       .orderBy('role_permissions.permission_name')
       .execute();
 
-    const grants: Record<string, PermissionName[]> = {};
+    // ロール名は運用者が DB に直接書ける。素のオブジェクトへ積むと、`constructor` のとき
+    // 継承した `Object` 関数を拾って push が TypeError になるので、`Map` に積む
+    // （047-prototype-key-sweep 設計 §4.1）。挿入順は ORDER BY roles.name の順。
+    const byRole = new Map<string, PermissionName[]>();
     for (const row of rows) {
-      (grants[row.role_name] ??= []).push(row.permission_name);
+      const permissions = byRole.get(row.role_name);
+      if (permissions === undefined) {
+        byRole.set(row.role_name, [row.permission_name]);
+      } else {
+        permissions.push(row.permission_name);
+      }
     }
-    return grants;
+    return Object.fromEntries(byRole);
   },
 
   async effectivePermissionsOf(

@@ -1,5 +1,7 @@
 import { emit } from '@/application/events';
 import type { Connection } from '@/database/provider';
+import { ACCESS_LOG_PRUNE_MAX_DAYS } from '@/domain/analytics/analytics';
+import { ValidationError } from '@/domain/repository';
 import { analyticsRepository, type DailyBreakdownRow } from '@/infrastructure/analytics-repository';
 import { resolveAnalyticsTimeZone } from './timezone';
 import { log } from '@/infrastructure/logging';
@@ -121,6 +123,14 @@ export async function pruneAccessLogs(
   connection: Connection,
   olderThanDays: number,
 ): Promise<number> {
+  // HTTP 以外の呼び出しの守り（046-input-500-nul-and-ranges 設計 §6.6）。範囲外は `now() - N days` が
+  // PostgreSQL の日時の範囲を外れて失敗する。HTTP は Zod が同じ上限で先に断る。
+  if (!Number.isInteger(olderThanDays) || olderThanDays < 1) {
+    throw new ValidationError('Analytics', 'pruneOlderThanDays', '1以上の整数で指定してください。');
+  }
+  if (olderThanDays > ACCESS_LOG_PRUNE_MAX_DAYS) {
+    throw new ValidationError('Analytics', 'pruneOlderThanDays', '36500以下で指定してください。');
+  }
   const deleted = await analyticsRepository.deleteAccessLogsOlderThan(connection, olderThanDays);
 
   log.info('access logs pruned', { olderThanDays, deleted });

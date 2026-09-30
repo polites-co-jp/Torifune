@@ -3,6 +3,7 @@ import { runnerName } from '@/application/jobs/config';
 import type { JobTask } from '@/application/jobs/scheduler';
 import { withConnection } from '@/application/transaction';
 import type { Connection } from '@/database/provider';
+import { toStorableText } from '@/domain/text';
 import {
   JOB_RUN_RETENTION,
   truncateError,
@@ -50,9 +51,13 @@ export interface RunJobOptions<TInput> {
  * `job_runs.error` とログの `reason` に載せる文字列（設計 §6.1.7）。
  *
  * **伏せてから切る。** 逆にすると、途中で切れた接続文字列が完全一致の秘匿に掛からず残る。
+ * 伏せた後・切る前に NUL・片割れを U+FFFD に置き換える（046-input-500-nul-and-ranges 設計 §9.4）。
+ * NUL を含む文言は `text` 列に書けず、失敗の記録そのものが失敗する。
  */
 function jobErrorText(error: unknown): string {
-  return truncateError(redactSecrets(error instanceof Error ? error.message : String(error)));
+  return truncateError(
+    toStorableText(redactSecrets(error instanceof Error ? error.message : String(error))),
+  );
 }
 
 /** 記録できなかったときに返す、DB に無い実行記録。結果を呼ぶ側へ伝えるためだけに使う。 */

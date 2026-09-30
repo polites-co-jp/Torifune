@@ -111,6 +111,8 @@ export async function buildApiTokenContext(
       permissions: effectiveTokenPermissions(ownerPermissions, token.scopes),
       connection,
       request,
+      // **Token 行から積む。** リクエストの値ではない（04_認証設計.md §28）。
+      apiToken: { id: token.id, name: token.name },
     };
   });
 }

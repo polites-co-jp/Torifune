@@ -216,11 +216,13 @@ test.describe('GET /api/v1/jobs', () => {
 
     const body = (await response.json()) as { data: JobStatusBody[] };
     expect(Object.keys(body)).toEqual(['data']);
-    // 032-timezone-setting 設計 §6.2 で洗い替えが増えた。順序は JOB_NAMES の定義順。
+    // 032-timezone-setting 設計 §6.2 で洗い替えが、035-social-publishing 設計 §6.5.1 で
+    // SNS 投稿の配信が増えた。順序は JOB_NAMES の定義順。
     expect(body.data.map((job) => job.name)).toEqual([
       'analytics.rollup',
       'webhook.deliver',
       'analytics.timezoneRebuild',
+      'social.publish',
     ]);
     for (const job of body.data) {
       expect(Object.keys(job).sort()).toEqual(
@@ -715,5 +717,33 @@ test.describe('rollup の期間の検査', () => {
     const body = (await response.json()) as { data: { from: string; to: string } };
     expect(body.data.from).toBe(shiftDate(today(), -399));
     expect(body.data.to).toBe(today());
+  });
+});
+
+/**
+ * #63（035-social-publishing 設計 §6.5.1）。
+ *
+ * ジョブが 3 件から **4 件**になり、末尾が `social.publish`。
+ * `JOB_NAMES` の定義順がそのまま設定画面「定期実行」の行順になる。
+ */
+test.describe('#63 GET /api/v1/jobs に social.publish が並ぶ', () => {
+  test('#63 4 件返り、末尾が social.publish', async ({ request }) => {
+    const body = (await (await request.get('/api/v1/jobs')).json()) as { data: JobStatusBody[] };
+
+    expect(body.data).toHaveLength(4);
+    expect(body.data.map((job) => job.name)).toEqual([
+      'analytics.rollup',
+      'webhook.deliver',
+      'analytics.timezoneRebuild',
+      'social.publish',
+    ]);
+  });
+
+  test('#63 social.publish の intervalMinutes が既定の 1', async ({ request }) => {
+    const body = (await (await request.get('/api/v1/jobs')).json()) as { data: JobStatusBody[] };
+    const job = body.data.find((candidate) => candidate.name === 'social.publish');
+
+    expect(job?.intervalMinutes).toBe(1);
+    expect(job?.scheduled).toBe(true);
   });
 });

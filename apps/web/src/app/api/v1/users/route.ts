@@ -50,6 +50,12 @@ export const POST = defineRoute({
   body: createUserSchema,
   response: userEnvelopeSchema,
   successStatus: 201,
+  additionalResponses: [
+    {
+      status: 409,
+      description: 'ログイン ID またはメールアドレスが既に使われている',
+    },
+  ],
   handler: async ({ context, body, request }) => {
     const created = await createUser(context, {
       loginId: body.loginId,

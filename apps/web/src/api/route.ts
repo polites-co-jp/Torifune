@@ -11,6 +11,7 @@ import { bearerTokenOf } from '@/domain/api-token';
 import { JobBusyError } from '@/domain/jobs/job';
 import type { PermissionName } from '@/domain/permission';
 import { ConflictError, NotFoundError, ValidationError } from '@/domain/repository';
+import { unusableTextDetailsOf } from '@/domain/text';
 import { log } from '@/infrastructure/logging';
 import { redactSecrets } from '@/infrastructure/secret-text';
 import { authorizationErrorResponse } from './authorize';
@@ -20,7 +21,7 @@ import { verifyCsrf } from './csrf';
 import { assertValidDeprecation, deprecationHeaders, type DeprecationNotice } from './deprecation';
 import { errorResponse } from './errors';
 import { UnknownSortFieldError } from './query';
-import { registerEndpoint, type EndpointSpec } from './registry';
+import { registerEndpoint, type AdditionalResponse, type EndpointSpec } from './registry';
 import { createRateLimiter, DEFAULT_RATE_LIMIT, type RateLimitPolicy } from './rate-limit';
 import { validate } from './validation';
 
@@ -32,6 +33,9 @@ import { validate } from './validation';
  */
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/** 使えない文字の 422 の `details` に入れるキーの上限（046-input-500-nul-and-ranges 設計 §6.2 の規則 3）。 */
+const UNUSABLE_TEXT_DETAIL_KEYS_MAX = 50;
 
 /**
  * 想定外の例外をログへ載せるときの理由（029-scheduled-jobs 設計 §6.1.7）。
@@ -92,6 +96,13 @@ export interface RouteDefinition<TBodySchema extends z.ZodType, TQuerySchema ext
    * 応答に `Deprecation` / `Sunset` ヘッダが付く（`api/deprecation.ts`）。
    */
   readonly deprecated?: DeprecationNotice;
+  /**
+   * 成功・共通のエラー以外に、この操作が返しうる応答（05_API設計.md §40）。
+   *
+   * OpenAPI の `responses` に足される。200 の本文は `response` と同じ形、404 / 409 はエラーの形。
+   * 書かなければ `responses` は変わらない（042-social-api-input-fixes 設計 §6.4）。
+   */
+  readonly additionalResponses?: readonly AdditionalResponse[];
   /** 公開 API 仕様に載せるか。内部エンドポイントは false。 */
   readonly documented?: boolean;
   /**
@@ -136,10 +147,80 @@ export class RouteDefinitionError extends Error {
   }
 }
 
+/**
+ * 本文とクエリの保存できない文字（NUL・対になっていないサロゲート）の誤りをまとめる
+ * （046-input-500-nul-and-ranges 設計 §6.2）。本文 → クエリの順。同じキーは文言を重ねない。
+ *
+ * **キーは送った側が決める**（`constructor`・`__proto__` も来る）ので、オブジェクトではなく `Map` に積み、
+ * `Object.fromEntries` で自分のプロパティとして返す（046 検証の指摘 M1）。
+ *
+ * 返すキーは**先頭の `UNUSABLE_TEXT_DETAIL_KEYS_MAX` 個まで**（設計 §6.2 の規則 3 の追記。046 検証の指摘 security L2）。
+ * 項目の数だけ文言を返すと、認証の要らない口へ小さな項目を並べるだけで応答を何倍にも膨らませられる。
+ * 直せば残りは次の要求で返る（Zod を走らせないのと同じ扱い）。
+ */
+function mergeUnusableTextDetails(
+  ...parts: readonly Record<string, string[]>[]
+): Record<string, string[]> {
+  const merged = new Map<string, string[]>();
+  for (const part of parts) {
+    for (const [key, messages] of Object.entries(part)) {
+      const current = merged.get(key);
+      if (current === undefined && merged.size >= UNUSABLE_TEXT_DETAIL_KEYS_MAX) {
+        continue;
+      }
+      const known = current ?? [];
+      merged.set(key, [...known, ...messages.filter((message) => !known.includes(message))]);
+    }
+  }
+  return Object.fromEntries(merged);
+}
+
 /** Rate Limit のキー。IP を使う。 */
 function rateLimitKey(request: Request, operationId: string): string {
   const info = requestInfoOf(request);
   return `${operationId}:${info.ipAddress ?? 'unknown'}`;
+}
+
+/**
+ * `additionalResponses` の定義の誤りを起動時に見つける（042-social-api-input-fixes 設計 §6.4）。
+ *
+ * 書いたつもりの宣言が成功の応答を上書きしたり、本文の形の無い 200 を出したりしないようにする。
+ * 認可のある操作の 401 は生成器が出すので、書くと description が上書きされてどちらが正か分からなくなる
+ * （043-api-input-fixes-rest 設計 §6.4）。
+ */
+function assertValidAdditionalResponses(definition: {
+  readonly operationId: string;
+  readonly permission: PermissionName | null;
+  readonly successStatus?: 200 | 201 | 204;
+  readonly response?: z.ZodType;
+  readonly additionalResponses?: readonly AdditionalResponse[];
+}): void {
+  const successStatus = definition.successStatus ?? 200;
+  const seen = new Set<number>();
+
+  for (const additional of definition.additionalResponses ?? []) {
+    if (additional.status === successStatus) {
+      throw new RouteDefinitionError(
+        `${definition.operationId}: additionalResponses に成功と同じ ${additional.status} は書けない`,
+      );
+    }
+    if (seen.has(additional.status)) {
+      throw new RouteDefinitionError(
+        `${definition.operationId}: additionalResponses の ${additional.status} が重複している`,
+      );
+    }
+    if (additional.status === 401 && definition.permission !== null) {
+      throw new RouteDefinitionError(
+        `${definition.operationId}: 認可のある操作の 401 は生成器が出すので additionalResponses に書けない`,
+      );
+    }
+    if (additional.status === 200 && definition.response === undefined) {
+      throw new RouteDefinitionError(
+        `${definition.operationId}: additionalResponses の 200 には response が要る`,
+      );
+    }
+    seen.add(additional.status);
+  }
 }
 
 export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends z.ZodType>(
@@ -168,6 +249,8 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
     );
   }
 
+  assertValidAdditionalResponses(definition);
+
   const spec: EndpointSpec = {
     operationId: definition.operationId,
     method: definition.method,
@@ -181,6 +264,7 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
     responseSchema: definition.response,
     successStatus: definition.successStatus,
     deprecated: definition.deprecated,
+    additionalResponses: definition.additionalResponses,
   };
   registerEndpoint(spec);
 
@@ -234,12 +318,24 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
 
         // csrfExemptReason が書かれている口は検証しない（理由は定義側に書く）。
         if (bearer === null && definition.csrfExemptReason === undefined) {
-          const bodyToken =
-            typeof rawBody === 'object' && rawBody !== null && 'csrfToken' in rawBody
-              ? String((rawBody as Record<string, unknown>)['csrfToken'])
+          const sentToken =
+            typeof rawBody === 'object' && rawBody !== null && Object.hasOwn(rawBody, 'csrfToken')
+              ? (rawBody as Record<string, unknown>)['csrfToken']
               : undefined;
 
-          if (!verifyCsrf(request, { cookieToken: readCookie(request, CSRF_COOKIE), bodyToken })) {
+          // **本文の `csrfToken` は文字列のときだけ使う。文字列でなければ CSRF の失敗**（046 検証の指摘 N1）。
+          // 文字列にしようとすると、`{"toString":1}` で `TypeError`、1 万段の配列で `RangeError` になって
+          // 認証の要らない口まで 500 を返す。`["<トークン>"]` のような値を文字列にして一致させることもしない。
+          if (sentToken !== undefined && typeof sentToken !== 'string') {
+            return errorResponse('CSRF_FAILED', undefined, cors);
+          }
+
+          if (
+            !verifyCsrf(request, {
+              cookieToken: readCookie(request, CSRF_COOKIE),
+              bodyToken: sentToken,
+            })
+          ) {
             return errorResponse('CSRF_FAILED', undefined, cors);
           }
         }
@@ -263,6 +359,28 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
         requirePermission(context, definition.permission);
       }
 
+      // クエリは宣言したルートだけ集める。宣言していないルート（`/auth/callback`）の値は入力として扱わない。
+      // 同じ名前が並べば後のものを使う。`Object.fromEntries` で作るのは、`?__proto__=` のような名前も
+      // 代入で原型を差し替えずに自分のプロパティとして残し、検査から漏らさないため（046 検証の指摘 M1）。
+      const rawQuery: Record<string, string> | undefined =
+        definition.query !== undefined
+          ? Object.fromEntries(new URL(request.url).searchParams)
+          : undefined;
+
+      // **保存できない文字は認可の後、Zod の前で断る**（046-input-500-nul-and-ranges 設計 §6.2）。
+      // NUL は PostgreSQL が保存できず、片割れは黙って U+FFFD に化けるか jsonb で断られる。
+      // 認証の要らない口（ログイン・再設定・セットアップ・計測）も UseCase を通らないのでここで断る。
+      // 本文は置き換えずにそのまま Zod へ渡す。送った値は応答にもログにも載せない。
+      const unusableText = mergeUnusableTextDetails(
+        definition.body !== undefined && (definition.bodyKind ?? 'json') === 'json'
+          ? unusableTextDetailsOf(rawBody ?? {})
+          : {},
+        rawQuery !== undefined ? unusableTextDetailsOf(rawQuery) : {},
+      );
+      if (Object.keys(unusableText).length > 0) {
+        return errorResponse('VALIDATION_ERROR', unusableText, cors);
+      }
+
       let body: unknown;
       if (definition.body !== undefined) {
         const result = validate(definition.body, rawBody ?? {});
@@ -274,11 +392,7 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
 
       let query: unknown;
       if (definition.query !== undefined) {
-        const raw: Record<string, string> = {};
-        for (const [key, value] of new URL(request.url).searchParams) {
-          raw[key] = value;
-        }
-        const result = validate(definition.query, raw);
+        const result = validate(definition.query, rawQuery ?? {});
         if (!result.ok) {
           return errorResponse('VALIDATION_ERROR', result.details, cors);
         }
@@ -308,7 +422,11 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
         return errorResponse('VALIDATION_ERROR', { sort: ['並び替えに使えません。'] }, cors);
       }
       if (error instanceof ValidationError) {
-        return errorResponse('VALIDATION_ERROR', { [error.field]: [error.detail] }, cors);
+        return errorResponse(
+          'VALIDATION_ERROR',
+          error.details ?? { [error.field]: [error.detail] },
+          cors,
+        );
       }
       if (error instanceof NotFoundError) {
         return errorResponse('NOT_FOUND', undefined, cors);

@@ -1,8 +1,10 @@
 import { sql, type Expression, type ExpressionBuilder, type SqlBool } from 'kysely';
 import type { Connection } from '../database/provider';
 import type { Schema } from '../database/schema';
+import { dateOnly } from '../domain/analytics/day';
 import type { Campaign, CampaignStatus } from '../domain/campaign/campaign';
 import type {
+  CampaignLinks,
   CampaignListQuery,
   CampaignPage,
   CampaignRepository,
@@ -33,22 +35,10 @@ interface CampaignRow {
  * `date` 型を `YYYY-MM-DD` に正規化する。
  *
  * ドライバの設定によって `Date` で返ることも文字列で返ることもある。
- *
- * **`toISOString()` を使わない。** node-postgres は `date` を
- * **ローカルタイムゾーンの0時**として `Date` にする。`toISOString()` は
- * それを UTC へ直すので、UTC より東のタイムゾーンでは**1日前になる**
- * （JST で `2026-04-01` を保存して `2026-03-31` が返る）。
- * ローカルの年月日をそのまま取り出す。
+ * **`toISOString()` を使わない**（node-postgres は `date` をローカルの 0 時として `Date` にする）。
+ * 同じ実装を 2 つ持たず、年を 4 桁にそろえる `dateOnly` を使う（046-input-500-nul-and-ranges 設計 §6.4 の N4）。
  */
-function toDateOnly(value: Date | string): string {
-  if (typeof value === 'string') {
-    return value.slice(0, 10);
-  }
-  const year = value.getFullYear();
-  const month = String(value.getMonth() + 1).padStart(2, '0');
-  const day = String(value.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
+const toDateOnly = dateOnly;
 
 function toCampaign(
   row: CampaignRow,
@@ -345,5 +335,54 @@ export const campaignRepository: CampaignRepository = {
       .where('id', '=', id)
       .executeTakeFirst();
     return Number(result.numDeletedRows) > 0;
+  },
+
+  async lockExistingLinks(connection: Connection, links: CampaignLinks): Promise<CampaignLinks> {
+    // FOR KEY SHARE：その行の DELETE（と主キーの更新）だけを、このトランザクションが終わるまで待たせる。
+    // 外部キーの検査が内部で取るロックと同じ強さで、名前などの通常の更新は妨げない（045 設計 §6.4）。
+    // 先に始まっていた削除があれば、その終わりを待ち、確定していれば行は見つからない（READ COMMITTED）。
+    const siteIds =
+      links.siteIds.length === 0
+        ? []
+        : (
+            await connection.db
+              .selectFrom('sites')
+              .select('id')
+              .where('id', 'in', [...links.siteIds])
+              .orderBy('id')
+              .forKeyShare()
+              .execute()
+          ).map((row) => row.id);
+
+    const socialPostIds =
+      links.socialPostIds.length === 0
+        ? []
+        : (
+            await connection.db
+              .selectFrom('social_posts')
+              .select('id')
+              .where('id', 'in', [...links.socialPostIds])
+              .orderBy('id')
+              .forKeyShare()
+              .execute()
+          ).map((row) => row.id);
+
+    return { siteIds, socialPostIds };
+  },
+
+  async lockForUpdate(connection: Connection, id: string): Promise<boolean> {
+    if (!UUID_PATTERN.test(id)) {
+      return false;
+    }
+    // FOR NO KEY UPDATE：UPDATE campaigns（主キーを変えない）が取るのと同じロック。
+    // 紐づけ先を押さえる前に取ることで、同じキャンペーンへの後の更新は紐づけ先を押さえずに
+    // ここで待つ（045 設計 §6.4）。campaign_sites などの外部キーの検査（KEY SHARE）とは衝突しない。
+    const row = await connection.db
+      .selectFrom('campaigns')
+      .select('id')
+      .where('id', '=', id)
+      .forNoKeyUpdate()
+      .executeTakeFirst();
+    return row !== undefined;
   },
 };

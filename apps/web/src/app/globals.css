@@ -1,5 +1,6 @@
 @import 'tailwindcss';
 @import '../ui/tokens.css';
+@import '../ui/help/help.css';
 
 body {
   background: var(--tf-color-bg);

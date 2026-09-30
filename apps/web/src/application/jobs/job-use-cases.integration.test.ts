@@ -97,12 +97,12 @@ afterEach(async () => {
 });
 
 describe('listJobStatuses', () => {
-  /** #38。032-timezone-setting 受け入れ条件 #50（2 件 → 3 件）。 */
-  it('JOB_NAMES の順に 3 件返し、実行が無ければ lastRun / lastSuccess は null、recentErrors は空', async () => {
+  /** #38。032-timezone-setting 受け入れ条件 #50（2 件 → 3 件）、035-social-publishing #63（→ 4 件）。 */
+  it('JOB_NAMES の順に 4 件返し、実行が無ければ lastRun / lastSuccess は null、recentErrors は空', async () => {
     const statuses = await listJobStatuses(admin, {});
 
     expect(statuses.map((status) => status.name)).toEqual([...JOB_NAMES]);
-    expect(statuses).toHaveLength(3);
+    expect(statuses).toHaveLength(4);
     for (const status of statuses) {
       expect(status.lastRun).toBeNull();
       expect(status.lastSuccess).toBeNull();
@@ -114,7 +114,8 @@ describe('listJobStatuses', () => {
     }
     // 未起動でも間隔は env の解釈後の値（実装プラン §8 #1）。
     // 032 受け入れ条件 #51：洗い替えは**周期を持たない**ので `null`。
-    expect(statuses.map((status) => status.intervalMinutes)).toEqual([15, 1, null]);
+    // 035 受け入れ条件 #63：SNS 投稿の配信は既定 1 分。
+    expect(statuses.map((status) => status.intervalMinutes)).toEqual([15, 1, null, 1]);
   });
 
   /**
@@ -159,7 +160,7 @@ describe('listJobStatuses', () => {
 
   /** #38 の対。管理者は読める。 */
   it('system.manage を持てば読める', async () => {
-    await expect(listJobStatuses(admin, {})).resolves.toHaveLength(3);
+    await expect(listJobStatuses(admin, {})).resolves.toHaveLength(4);
   });
 
   /** #39 */

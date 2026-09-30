@@ -13,6 +13,7 @@ export type { PluginApiVersion } from './version';
 
 export {
   PLUGIN_EXTENSION_KINDS,
+  PLUGIN_HELP_LIMITS,
   RESERVED_PLUGIN_IDS,
   isValidPluginId,
   isValidPluginVersion,
@@ -22,6 +23,7 @@ export type {
   ManifestProblem,
   ManifestValidation,
   PluginExtensionKind,
+  PluginHelpDoc,
   PluginManifest,
 } from './manifest';
 
@@ -56,6 +58,7 @@ export type {
 } from './events';
 
 export { PluginPermissionError } from './data';
+export { PluginDataInputError } from './data';
 export type {
   AnalyticsInput,
   AnalyticsPointView,
@@ -68,6 +71,7 @@ export type {
   SiteInput,
   SiteView,
   SocialAccountView,
+  SocialMediaView,
   SocialPostView,
   UserView,
 } from './data';
@@ -91,6 +95,19 @@ export type {
   PluginDatabaseConnection,
   PluginDatabaseProvider,
 } from './database';
+
+export { PluginPublisherConflictError } from './social';
+export type {
+  ManualHandoff,
+  ManualInput,
+  PluginSocialApi,
+  PublishInput,
+  PublishResult,
+  PublisherLimits,
+  PublisherRegistration,
+  PublisherValidationProblem,
+  SocialPostDraftView,
+} from './social';
 
 export type { Plugin, PluginContext, PluginCurrentUser, PluginLogger } from './context';
 

@@ -16,6 +16,8 @@ export const JOB_NAMES = [
   // **周期を持たない**（`bootScheduler` に載せない。要求されたときだけ走る）。
   // **末尾に足す。** この順がそのまま設定画面「定期実行」の行順になる。
   'analytics.timezoneRebuild',
+  // 035-social-publishing：期限の来た SNS 投稿の配信。**末尾に足す**（上と同じ理由）。
+  'social.publish',
 ] as const;
 
 export type JobName = (typeof JOB_NAMES)[number];

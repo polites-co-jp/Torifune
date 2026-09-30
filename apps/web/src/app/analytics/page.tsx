@@ -40,7 +40,7 @@ import {
   type Summary,
 } from '@/domain/analytics/summary';
 import { diagnoseReception } from '@/domain/analytics/reception';
-import { NotFoundError } from '@/domain/repository';
+import { NotFoundError, normalizePage } from '@/domain/repository';
 import {
   analyticsHref,
   pageSlice,
@@ -87,12 +87,6 @@ function asString(value: string | string[] | undefined): string | null {
 
 function parseTab(value: string | null): AnalyticsTab {
   return value !== null && isAnalyticsTab(value) ? value : 'overview';
-}
-
-/** 1 以上の整数。それ以外は 1。 */
-function parsePage(value: string | null): number {
-  const page = value === null ? Number.NaN : Number(value);
-  return Number.isInteger(page) && page >= 1 ? page : 1;
 }
 
 /** `from` 〜 `to` の日付列（両端を含む）。 */
@@ -258,7 +252,7 @@ export default async function AnalyticsPage({
     from: period.from,
     to: period.to,
     includeBots,
-    page: parsePage(asString(params['page'])),
+    page: normalizePage(params['page']),
   };
   // 設定タブは公開キーが要るので、サイト一覧から引けなければ出さない。URL で指されても概要にする。
   const trackedSite = trackedSites.find((candidate) => candidate.id === siteId);

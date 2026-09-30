@@ -188,6 +188,79 @@ describe('検証', () => {
   });
 });
 
+/**
+ * 046 の 2 回目の検証の指摘 I1。1 段だけのパスのキーが `Object.prototype` の名前（`constructor` など）でも、
+ * 継承した値を拾って `TypeError` にならず、その名前を**自分のプロパティ**のキーにした `details` を返す。
+ * 最上位が `z.record` の本文なら、送った側が項目名を決められる。
+ *
+ * `z.record` は `__proto__` のキーを読み飛ばす（Zod 4）ので、`__proto__` はスキーマの `superRefine` が
+ * そのパスで返す誤りで確かめる（Plugin の設定のスキーマなど、項目名をパスに載せる検査は他にもある）。
+ */
+describe('検証（046 検証の指摘 I1：項目名が原型の名前）', () => {
+  const recordSchema = z.record(z.string(), z.string());
+  const NAMES = ['constructor', 'toString', 'valueOf', 'hasOwnProperty'];
+
+  /** 与えた名前 1 段のパスで誤りを返すスキーマ。 */
+  function failingAt(name: string): z.ZodType {
+    return z.unknown().superRefine((_, ctx) => {
+      ctx.addIssue({ code: 'custom', path: [name], message: `${name} の誤り` });
+    });
+  }
+
+  /** 本文と同じく `JSON.parse` で作る。 */
+  function inputWith(name: string): unknown {
+    return JSON.parse(`{"${name}":1}`);
+  }
+
+  it.each(NAMES)('I1 最上位の z.record に {"%s":1} → 例外を投げず ok: false', (name) => {
+    const result = validate(recordSchema, inputWith(name));
+
+    expect(result.ok).toBe(false);
+  });
+
+  it.each(NAMES)('I1 最上位の z.record に {"%s":1} → details がその名前 1 つだけ', (name) => {
+    const parsed = recordSchema.safeParse(inputWith(name));
+    expect(parsed.success).toBe(false);
+    const messages = parsed.success ? [] : parsed.error.issues.map((issue) => issue.message);
+
+    const result = validate(recordSchema, inputWith(name));
+
+    expect(result.ok ? [] : Object.entries(result.details)).toEqual([[name, messages]]);
+  });
+
+  it.each([...NAMES, '__proto__'])(
+    'I1 1 段のパス %s の誤り → 例外を投げず、details がその名前 1 つだけ',
+    (name) => {
+      const result = validate(failingAt(name), {});
+
+      expect(result.ok ? [] : Object.entries(result.details)).toEqual([[name, [`${name} の誤り`]]]);
+    },
+  );
+
+  it('I1 details は通常のオブジェクト（原型が差し替わらない）', () => {
+    const result = validate(failingAt('__proto__'), {});
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(Object.getPrototypeOf(result.details)).toBe(Object.prototype);
+    }
+  });
+
+  it('I1 同じ原型の名前への複数のエラーが 1 つのキーにまとまる', () => {
+    const strict = z.record(
+      z.string(),
+      z.string().min(5, '短すぎます。').startsWith('x', 'x で始めてください。'),
+    );
+    const parsed = strict.safeParse(JSON.parse('{"constructor":"ab"}'));
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(Object.entries(toValidationDetails(parsed.error))).toEqual([
+        ['constructor', ['短すぎます。', 'x で始めてください。']],
+      ]);
+    }
+  });
+});
+
 describe('Rate Limit', () => {
   it('上限まで通す', () => {
     const limiter = createRateLimiter({ windowMs: 1000, max: 3 });

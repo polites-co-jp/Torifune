@@ -33,12 +33,49 @@ export interface Page<T> {
 export const DEFAULT_PER_PAGE = 20;
 export const MAX_PER_PAGE = 100;
 
-/** ページング指定を安全な範囲へ丸める。 */
-export function normalizePagination(input: Partial<Pagination> | undefined): Pagination {
-  const page = Math.max(1, Math.trunc(input?.page ?? 1));
-  const requested = Math.trunc(input?.perPage ?? DEFAULT_PER_PAGE);
-  const perPage = Math.min(MAX_PER_PAGE, Math.max(1, requested));
+/**
+ * ページング指定を安全な範囲へ丸める。
+ *
+ * 1. `undefined` / `null` は省略（`page` は 1、`perPage` は 20）
+ * 2. それ以外は `Number(値)` で数にする。**有限の数にならない値**（`NaN`・`Infinity`・`'abc'` など）は省略と同じ
+ * 3. 小数は切り捨てる
+ * 4. `page` は 1〜`Number.MAX_SAFE_INTEGER`、`perPage` は 1〜100 に丸める
+ *
+ * 引数を `unknown` の値で受けるのは、JavaScript で書いた Plugin が Data API に `'3'` や `NaN` を
+ * 渡しうるため（043-api-input-fixes-rest 設計 §9.2）。どの値でも `LIMIT` / `OFFSET` に負の値・過大な値・
+ * `NaN` が届かない。
+ */
+export function normalizePagination(
+  input: { readonly page?: unknown; readonly perPage?: unknown } | undefined,
+): Pagination {
+  const page = normalizePage(input?.page);
+  const perPage = Math.min(MAX_PER_PAGE, Math.max(1, integerOr(input?.perPage, DEFAULT_PER_PAGE)));
   return { page, perPage };
+}
+
+/**
+ * ページ番号を安全な範囲へ丸める。`normalizePagination` の `page` と同じ規則で、画面の `?page=` と
+ * Data API の両方がこの関数を通す（規則を 1 か所に置くため。044-screen-page-param 設計 §4）。
+ *
+ * 1. `undefined` / `null` は 1
+ * 2. それ以外は `Number(値)` で数にする。**有限の数にならない値**（`NaN`・`Infinity`・`'abc'`・
+ *    `'1e400'`・2 つ以上の要素の配列など）は 1
+ * 3. 小数は切り捨てる
+ * 4. 1〜`Number.MAX_SAFE_INTEGER` に丸める
+ *
+ * 最大の値でも `(page − 1) × perPage` が `OFFSET`（`bigint`）に収まり、文字列にしても指数表記にならない。
+ */
+export function normalizePage(value: unknown): number {
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.max(1, integerOr(value, 1)));
+}
+
+/** 有限の数に変換できれば小数を切り捨てた値、できなければ `fallback`。 */
+function integerOr(value: unknown, fallback: number): number {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.trunc(number) : fallback;
 }
 
 /** ページング指定から OFFSET を求める。 */
@@ -68,6 +105,15 @@ export class ValidationError extends Error {
     readonly resource: string,
     readonly field: string,
     readonly detail: string,
+    /**
+     * 複数のフィールドにまたがる問題。
+     *
+     * 省略すると `{ [field]: [detail] }` と同じ意味。
+     * 1 回の検証で複数の指摘が出る場面（Plugin の `validate()` など）のためにある。
+     * `field` / `detail` には先頭の 1 件を入れ、UseCase を直接呼ぶ経路でも
+     * 「少なくとも 1 件の理由」を読めるようにしておく。
+     */
+    readonly details?: Readonly<Record<string, readonly string[]>>,
   ) {
     super(`${resource} の ${field} が不正`);
     this.name = 'ValidationError';

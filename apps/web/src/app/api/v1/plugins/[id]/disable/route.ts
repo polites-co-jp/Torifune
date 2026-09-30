@@ -10,6 +10,12 @@ export const POST = defineRoute({
   summary: 'Plugin を無効化する',
   permission: 'plugin.manage',
   body: togglePluginSchema,
+  additionalResponses: [
+    {
+      status: 404,
+      description: 'Plugin が配置されていない、または導入されていない',
+    },
+  ],
   handler: async ({ context, params }) => {
     // 依存元も一緒に無効化される。何が止まったかを返す。
     const result = await disablePluginUseCase(context, { pluginId: params['id'] ?? '' });

@@ -10,13 +10,27 @@
 
 export interface Page<T> {
   readonly items: readonly T[];
+  /** 条件に合う全件数。全件が要るときは、ここまでページを送る。 */
   readonly total: number;
+  /** 採ったページ番号。**丸めた後の値**（要求した値とは限らない）。 */
   readonly page: number;
+  /** 採った 1 ページの件数。**丸めた後の値**（要求した値とは限らない。上限は 100）。 */
   readonly perPage: number;
 }
 
+/**
+ * 一覧のページング。
+ *
+ * **範囲外の値は例外にせず丸める。** `page` は 1 以上、`perPage` は 1〜100。
+ * 小数は切り捨て、数にならない値（`NaN`・`Infinity` など）は省略と同じに扱う。
+ * 採った値は `Page.page` / `Page.perPage` に返る。
+ *
+ * 1 回で返るのは 100 件まで。全件が要るときは `Page.total` までページを送る。
+ */
 export interface ListOptions {
+  /** 1 始まり。省略すると 1。1 未満は 1 に丸める。 */
   readonly page?: number;
+  /** 省略すると 20。1〜100 に丸める。 */
   readonly perPage?: number;
 }
 
@@ -39,11 +53,22 @@ export interface SocialAccountView {
   /**
    * 資格情報が設定されているか。
    *
-   * **平文は渡さない。** Plugin は自分の資格情報を
-   * `store.setSecret()` / `store.getSecret()` で管理する
+   * **平文は Data API からは渡らない。** 配信 Plugin には `publish()` の引数として、
+   * その呼び出しの間だけ渡る（`PluginSocialApi`）。
+   * 自分だけで使う資格情報は `store.setSecret()` / `store.getSecret()` で管理する
    * （`docs/設計/010-plugin-api/設計.md` §5）。
    */
   readonly credentialConfigured: boolean;
+}
+
+/**
+ * 投稿に添える媒体（035-social-publishing 設計 §9.5）。
+ *
+ * **ファイルは預からない。** URL だけを持ち、取りに行くのは Plugin の仕事。
+ */
+export interface SocialMediaView {
+  readonly url: string;
+  readonly alt: string | null;
 }
 
 export interface SocialPostView {
@@ -60,6 +85,26 @@ export interface SocialPostView {
    * **以前はここが無く、渡した理由を読み返せなかった。**
    */
   readonly failureReason: string | null;
+  /** `'auto'`（ジョブが Plugin を通して送る）か `'manual'`（人が SNS 側で投稿する）。 */
+  readonly deliveryMode: string;
+  readonly media: readonly SocialMediaView[];
+  /** 本文に添える URL。 */
+  readonly link: string | null;
+  /** provider 固有の追加項目。**中身を決めるのは publisher を登録した Plugin。** */
+  readonly providerOptions: Readonly<Record<string, unknown>>;
+  /** 登録元が付けた冪等キー。 */
+  readonly externalRef: string | null;
+  /** 配信後の SNS 側の投稿 ID。 */
+  readonly externalId: string | null;
+  /** 配信後の投稿の URL。 */
+  readonly externalUrl: string | null;
+  /**
+   * 配信に失敗した時刻。
+   *
+   * **`updatedAt` で代用しない。** あれは「最後に触った時刻」であって
+   * 「失敗した時刻」ではない。
+   */
+  readonly failedAt: string | null;
 }
 
 export interface SiteInput {
@@ -90,8 +135,25 @@ export interface CampaignInput {
   readonly status?: string;
   readonly startsOn: string;
   readonly endsOn?: string | null;
+  /**
+   * 対象の Webサイト。**指定したら丸ごと置き換える。**
+   *
+   * UUID の形（8-4-4-4-12 の 16 進）で、存在するサイトの ID を 1000 件まで。
+   * 大文字・小文字は同じ ID として扱い、戻り値は小文字・重複なし・昇順。
+   * 省略（`undefined`）は、作成では「紐づけない」、更新では「変えない」。`null` は配列でない値として扱う。
+   * 満たさなければ返す `Promise` が reject される（`name` は `'ValidationError'`、`field` は `'siteIds'`）。
+   * 何も書き込まれない。
+   */
   readonly siteIds?: readonly string[];
-  /** 紐づくSNS投稿。**指定したら丸ごと置き換える**（`siteIds` と同じ）。 */
+  /**
+   * 紐づくSNS投稿。**指定したら丸ごと置き換える**（`siteIds` と同じ）。
+   *
+   * UUID の形（8-4-4-4-12 の 16 進）で、存在する SNS 投稿の ID を 1000 件まで。
+   * 大文字・小文字は同じ ID として扱い、戻り値は小文字・重複なし・昇順。
+   * 省略（`undefined`）は、作成では「紐づけない」、更新では「変えない」。`null` は配列でない値として扱う。
+   * 満たさなければ返す `Promise` が reject される（`name` は `'ValidationError'`、`field` は `'socialPostIds'`）。
+   * 何も書き込まれない。
+   */
   readonly socialPostIds?: readonly string[];
 }
 
@@ -138,8 +200,18 @@ export interface AnalyticsInput {
   readonly value: number;
 }
 
+/**
+ * Core のデータへの口（05_API設計.md §22）。
+ *
+ * 作成・更新・検索の文字列の引数に NUL（U+0000）か対になっていないサロゲートを含むと、返す `Promise` が
+ * `name === 'ValidationError'` の例外で reject され、何も書き込まれない。誤っていた項目は `field` で分かる。
+ * 例外の `message` に渡した値は含まれない。絵文字（対になったサロゲート）はそのまま使える。
+ * ID の引数はこの規則の外で、これまでどおり ID の形の検査が扱う（`get(id)` は `null` を返し、
+ * `socialPosts.list` の `accountId`・`campaigns.list` の `siteId` は `PluginDataInputError` で reject される）。
+ */
 export interface PluginDataApi {
   readonly sites: {
+    /** `page` / `perPage` は丸める（`ListOptions`）。 */
     list(options?: ListOptions): Promise<Page<SiteView>>;
     get(id: string): Promise<SiteView | null>;
     create(input: SiteInput): Promise<SiteView>;
@@ -149,6 +221,13 @@ export interface PluginDataApi {
 
   /** キャンペーン（05_API設計.md §22、017-campaigns）。 */
   readonly campaigns: {
+    /**
+     * `page` / `perPage` は丸める（`ListOptions`）。
+     *
+     * `siteId` はそのサイトを対象に含むものに絞る。**UUID の形（8-4-4-4-12 の 16 進）で渡す。**
+     * 形が違えば（空文字を含む）返す `Promise` が `PluginDataInputError`（`field` は `'siteId'`）で reject される。
+     * 絞らないときは省略する。UUID の形で存在しない ID なら空の `Page` が返る。
+     */
     list(options?: ListOptions & { siteId?: string }): Promise<Page<CampaignView>>;
     get(id: string): Promise<CampaignView | null>;
     create(input: CampaignInput): Promise<CampaignView>;
@@ -169,15 +248,31 @@ export interface PluginDataApi {
   };
 
   readonly socialAccounts: {
+    /** `page` / `perPage` は丸める（`ListOptions`）。 */
     list(options?: ListOptions): Promise<Page<SocialAccountView>>;
     get(id: string): Promise<SocialAccountView | null>;
   };
 
   readonly socialPosts: {
+    /**
+     * `page` / `perPage` は丸める（`ListOptions`）。
+     *
+     * `accountId` はその SNS アカウントの投稿に絞る。**UUID の形（8-4-4-4-12 の 16 進）で渡す。**
+     * 形が違えば（空文字を含む）返す `Promise` が `PluginDataInputError`（`field` は `'accountId'`）で reject される。
+     * 絞らないときは省略する。UUID の形で存在しない ID なら空の `Page` が返る。
+     */
     list(options?: ListOptions & { accountId?: string }): Promise<Page<SocialPostView>>;
     get(id: string): Promise<SocialPostView | null>;
-    /** 配信結果を記録する。**実際の配信は Plugin が行う。** */
-    markPublished(id: string): Promise<SocialPostView>;
+    /**
+     * 配信結果を記録する。
+     *
+     * **`publish()` を実装する Plugin は呼ばなくてよい**（Torifune が戻り値から記録する）。
+     * 自前の経路で投稿した Plugin が、外部側の ID と URL を添えて記録するための口。
+     */
+    markPublished(
+      id: string,
+      result?: { externalId?: string; externalUrl?: string },
+    ): Promise<SocialPostView>;
     markFailed(id: string, reason: string): Promise<SocialPostView>;
   };
 
@@ -189,6 +284,7 @@ export interface PluginDataApi {
    * 「誰がやったか」を表示するために要る、という用途に限る。
    */
   readonly users: {
+    /** `page` / `perPage` は丸める（`ListOptions`）。 */
     list(options?: ListOptions): Promise<Page<UserView>>;
     get(id: string): Promise<UserView | null>;
   };
@@ -216,5 +312,22 @@ export class PluginPermissionError extends Error {
   ) {
     super('Plugin が宣言していない権限の操作');
     this.name = 'PluginPermissionError';
+  }
+}
+
+/**
+ * Data API に渡した引数の形が正しくない（例：`socialPosts.list({ accountId: 'abc' })`）。
+ *
+ * **渡した値は `message` にも項目にも含めない**（ログにそのまま残るため）。
+ * 誤っていた引数の名前は `field` で分かる。
+ */
+export class PluginDataInputError extends Error {
+  constructor(
+    readonly pluginId: string,
+    /** 誤っていた引数の名前（`'accountId'` / `'siteId'`）。 */
+    readonly field: string,
+  ) {
+    super(`Data API の引数 ${field} の形が正しくない`);
+    this.name = 'PluginDataInputError';
   }
 }
