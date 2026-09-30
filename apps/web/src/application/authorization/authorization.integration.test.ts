@@ -58,12 +58,12 @@ afterEach(async () => {
 });
 
 describe('実効 Permission', () => {
-  it('administrator は 14 種すべてを持つ', async () => {
+  it('administrator は 15 種すべてを持つ', async () => {
     const userId = await createUserWithRoles(['administrator']);
 
     const permissions = await withConnection((c) => effectivePermissions(c, userId));
 
-    expect(permissions.size).toBe(14);
+    expect(permissions.size).toBe(15);
   });
 
   it('viewer は read 系だけを持つ', async () => {
@@ -99,6 +99,8 @@ describe('実効 Permission', () => {
       'campaign.write',
       'site.read',
       'site.write',
+      // 048 の 025 が editor にも割り当てる（048-social-post-approval 設計 §5.1・§8.2）。
+      'social.approve',
       'social.read',
       'social.write',
     ]);

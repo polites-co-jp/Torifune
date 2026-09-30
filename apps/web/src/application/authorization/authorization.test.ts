@@ -49,8 +49,8 @@ afterEach(() => {
 });
 
 describe('Permission レジストリ', () => {
-  it('本体の Permission 14 種が最初から登録されている', () => {
-    expect(listPermissions()).toHaveLength(14);
+  it('本体の Permission 15 種が最初から登録されている', () => {
+    expect(listPermissions()).toHaveLength(15);
   });
 
   it('Plugin の Permission を登録できる', () => {
@@ -106,7 +106,7 @@ describe('Permission レジストリ', () => {
     unregisterPermissionsOf('seo');
 
     expect(listPermissions().map((p) => p.name)).not.toContain('seo.a.read');
-    expect(listPermissions()).toHaveLength(14);
+    expect(listPermissions()).toHaveLength(15);
   });
 
   it('一覧が名前順である', () => {
