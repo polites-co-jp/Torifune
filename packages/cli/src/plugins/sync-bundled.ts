@@ -338,34 +338,62 @@ async function replaceWithBundled(
   const target = join(pluginsDir, id);
   const { tmp, old } = workPaths(pluginsDir, id);
 
-  // 1〜3：T へ写し、欠けていないことを確かめ、印を書く
-  await ops.remove(tmp);
-  await ops.copyDir(source.dir, tmp);
-  if ((await hashPluginTree(tmp)) !== source.hash) {
-    throw new SyncFailure('copy mismatch');
+  // どこで失敗しても T を残さない。D は 4 で動かす前か、5 で戻した後の古い中身のまま
+  let moved: string | null = null;
+  try {
+    // 1〜3：T へ写し、欠けていないことを確かめ、印を書く
+    await ops.remove(tmp);
+    await ops.copyDir(source.dir, tmp);
+    if ((await hashPluginTree(tmp)) !== source.hash) {
+      throw new SyncFailure('copy mismatch');
+    }
+    await ops.writeFile(
+      join(tmp, BUNDLED_MARKER),
+      markerContent(source.hash, source.version, ctx.now()),
+    );
+
+    // 4：D をどかす
+    if (mode === 'legacy') {
+      const backup = join(await ensureBackupRoot(pluginsDir), id);
+      await ops.remove(backup); // ID ごとに最新の 1 つだけ残す
+      await ops.rename(target, backup);
+      moved = backup;
+    } else if (mode === 'update') {
+      await ops.remove(old);
+      await ops.rename(target, old);
+      moved = old;
+    }
+
+    // 5：T を D へ
+    await ops.rename(tmp, target);
+  } catch (error) {
+    if (moved !== null) {
+      // 4 で動かしたものを D へ戻す。戻せなければ次の起動で restored として置き直される
+      await ops.rename(moved, target).catch(() => undefined);
+    }
+    await ops.remove(tmp).catch(() => undefined);
+    throw error;
   }
-  await ops.writeFile(
-    join(tmp, BUNDLED_MARKER),
-    markerContent(source.hash, source.version, ctx.now()),
-  );
 
-  // 4：D をどかす
-  if (mode === 'legacy') {
-    const backup = join(await ensureBackupRoot(pluginsDir), id);
-    await ops.remove(backup); // ID ごとに最新の 1 つだけ残す
-    await ops.rename(target, backup);
-  } else if (mode === 'update') {
-    await ops.remove(old);
-    await ops.rename(target, old);
-  }
-
-  // 5：T を D へ
-  await ops.rename(tmp, target);
-
-  // 6：O を片付ける
+  // 6：O を片付ける。D は既に新しい中身なので、消せなくても置き換えは済んでいる
+  // （残った O は次の同期の最初に片付ける。§6.4.2）
   if (mode === 'update') {
-    await ops.remove(old);
+    await ops.remove(old).catch(() => undefined);
   }
+}
+
+/** 前回の同期が途中で落ちたときの作業用ディレクトリ（§6.4.2）。利用者の中身を含まない。 */
+const LEFTOVER = /^\.torifune-sync-.+\.(?:tmp|old)$/;
+
+/**
+ * `FAILED` の行に出す理由（§6.6.2）。OS のエラーコードまでとし、メッセージ・パス・スタックは出さない。
+ */
+function failureReason(error: unknown): string {
+  if (error instanceof SyncFailure) {
+    return error.reason;
+  }
+  const code = errorCode(error);
+  return code !== undefined && /^E[A-Z0-9]+$/.test(code) ? code : 'unknown error';
 }
 
 function describeDecision(id: string, decision: BundledDecision): string {
@@ -379,6 +407,42 @@ function describeDecision(id: string, decision: BundledDecision): string {
     default:
       return decision.result;
   }
+}
+
+/** 同梱の写しにある ID を 1 つ観測し、判定して適用する。失敗は例外で返す。 */
+async function syncOne(ctx: ApplyContext, id: string, sourceDir: string): Promise<BundledDecision> {
+  const target = join(ctx.pluginsDir, id);
+
+  const bundledHash = await hashPluginTree(sourceDir);
+  const bundledVersion = await readManifestVersion(sourceDir);
+  if (bundledVersion === null) {
+    // イメージの誤り。版が分からなければ印も判定も作れないので、Volume に書かない
+    throw new SyncFailure('unreadable bundled manifest');
+  }
+
+  const volume = await observeVolume(target);
+  const decision = decideBundled({ bundledHash, bundledVersion, volume });
+  const source = { dir: sourceDir, hash: bundledHash, version: bundledVersion };
+
+  switch (decision.result) {
+    case 'restored':
+      await replaceWithBundled(ctx, id, source, 'restore');
+      break;
+    case 'updated':
+      await replaceWithBundled(ctx, id, source, decision.backup ? 'legacy' : 'update');
+      break;
+    case 'adopted':
+      // 中身は触らず印だけを書く。一時ファイルを経由しない（残ると木のハッシュに入り、
+      // 以後 skipped: modified になる）。途中で壊れた印は次の起動で adopted として書き直される
+      await ctx.ops.writeFile(
+        join(target, BUNDLED_MARKER),
+        markerContent(bundledHash, bundledVersion, ctx.now()),
+      );
+      break;
+    default:
+      break;
+  }
+  return decision;
 }
 
 /**
@@ -395,7 +459,7 @@ export async function syncBundledPlugins(options: {
   readonly ops?: SyncFileOps;
   readonly now?: () => Date;
 }): Promise<{ readonly exitCode: 0 | 1; readonly summary: SyncSummary }> {
-  const { bundledDir, pluginsDir, stdout } = options;
+  const { bundledDir, pluginsDir, stdout, stderr } = options;
   const ctx: ApplyContext = {
     pluginsDir,
     ops: options.ops ?? nodeFileOps,
@@ -413,49 +477,55 @@ export async function syncBundledPlugins(options: {
   };
   const log = (id: string, text: string): void => stdout(`${LOG_PREFIX}${id} ${text}\n`);
 
-  // 空の Volume・ホストのディレクトリを付けた場合。全部が restored で置かれる
-  await mkdir(pluginsDir, { recursive: true });
+  // ID に結びつかない I/O の失敗（残骸の片付け・写しに無い ID の列挙）。終了コードだけを 1 にする
+  let otherFailure = false;
+  const failOther = (what: string, error: unknown): void => {
+    otherFailure = true;
+    stderr(`${LOG_PREFIX}${what} FAILED: ${failureReason(error)}\n`);
+  };
 
-  const bundledIds = await listPluginDirs(bundledDir);
+  let bundledIds: string[];
+  try {
+    // 空の Volume・ホストのディレクトリを付けた場合。全部が restored で置かれる
+    await mkdir(pluginsDir, { recursive: true });
+    bundledIds = await listPluginDirs(bundledDir);
+  } catch (error) {
+    stderr(`${LOG_PREFIX}FAILED: ${failureReason(error)}\n`);
+    return { exitCode: 1, summary: { ...counts } };
+  }
+
+  // 前回の残骸を片付ける（§6.4.2）。消せなくても、その ID の置き換えの最初にもう一度消す
+  try {
+    for (const name of await readdir(pluginsDir)) {
+      if (LEFTOVER.test(name)) {
+        await ctx.ops.remove(join(pluginsDir, name));
+      }
+    }
+  } catch (error) {
+    failOther('cleanup', error);
+  }
 
   for (const id of bundledIds) {
-    const sourceDir = join(bundledDir, id);
-    const target = join(pluginsDir, id);
-
-    const bundledHash = await hashPluginTree(sourceDir);
-    const bundledVersion = await readManifestVersion(sourceDir);
-    if (bundledVersion === null) {
-      throw new SyncFailure('unreadable bundled manifest');
+    // 失敗した ID があっても残りの ID は処理する
+    try {
+      const decision = await syncOne(ctx, id, join(bundledDir, id));
+      counts[decision.result] += 1;
+      log(id, describeDecision(id, decision));
+    } catch (error) {
+      counts.failed += 1;
+      stderr(`${LOG_PREFIX}${id} FAILED: ${failureReason(error)}\n`);
     }
-
-    const volume = await observeVolume(target);
-    const decision = decideBundled({ bundledHash, bundledVersion, volume });
-    const source = { dir: sourceDir, hash: bundledHash, version: bundledVersion };
-
-    switch (decision.result) {
-      case 'restored':
-        await replaceWithBundled(ctx, id, source, 'restore');
-        break;
-      case 'updated':
-        await replaceWithBundled(ctx, id, source, decision.backup ? 'legacy' : 'update');
-        break;
-      case 'adopted':
-        // 中身は触らず印だけを書く。一時ファイルを経由しない（残ると木のハッシュに入る）
-        await ctx.ops.writeFile(
-          join(target, BUNDLED_MARKER),
-          markerContent(bundledHash, bundledVersion, ctx.now()),
-        );
-        break;
-      default:
-        break;
-    }
-    counts[decision.result] += 1;
-    log(id, describeDecision(id, decision));
   }
 
   // 同梱の写しに無い ID：以前は同梱だったもの（印あり）は残す。利用者の Plugin は数えるだけ
   const bundledSet = new Set(bundledIds);
-  for (const id of await listPluginDirs(pluginsDir)) {
+  let volumeIds: string[] = [];
+  try {
+    volumeIds = await listPluginDirs(pluginsDir);
+  } catch (error) {
+    failOther('listing', error);
+  }
+  for (const id of volumeIds) {
     if (bundledSet.has(id)) {
       continue;
     }
@@ -477,5 +547,5 @@ export async function syncBundledPlugins(options: {
     .join(' ');
   stdout(`${LOG_PREFIX}summary ${summary}\n`);
 
-  return { exitCode: counts.failed === 0 ? 0 : 1, summary: counts };
+  return { exitCode: counts.failed === 0 && !otherFailure ? 0 : 1, summary: { ...counts } };
 }
