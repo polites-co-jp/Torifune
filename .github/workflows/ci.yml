@@ -81,6 +81,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: ./scripts/verify-container-rebuild.sh
+      # 同梱 Plugin の同期と起動時の突き合わせ（050）。イメージを別名でビルドし直すので、
+      # 上の検証と同時には流さない（同じジョブの中で順に走る）。
+      - run: ./scripts/verify-bundled-plugin-sync.sh
 
   e2e:
     name: e2e
