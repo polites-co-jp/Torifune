@@ -778,6 +778,16 @@ describe('#82 PATCH が読んでから書くまでに配信が着手したら書
     expect(await statusOf(id)).toBe('scheduled');
   });
 
+  it('#82 読んだ時点で着手済み（着手印はマイクロ秒）の予約へガード対象外の項目だけの PATCH → 200（着手印の比較が誤って外れない）', async () => {
+    const id = await makeScheduled();
+    await claimByJob(id);
+
+    const result = await callUpdate(id, { externalId: 'sns-post-1' });
+
+    expect(result.status).toBe(200);
+    expect(dataOf(result)['externalId']).toBe('sns-post-1');
+  });
+
   it('#82 着手していない予約への PATCH は従来どおり 200（着手印が無いことを条件にしても通る）', async () => {
     const id = await makeScheduled();
 
