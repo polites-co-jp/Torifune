@@ -28,6 +28,9 @@ function maxFiles(): number {
 const S_IFMT = 0o170000;
 const S_IFLNK = 0o120000;
 
+/** Plugin のフォルダの直下で本体が使う名前の接頭辞（`.torifune-bundled`・`.torifune-quarantine` など）。 */
+const RESERVED_PREFIX = '.torifune-';
+
 export class PluginPackageError extends Error {
   constructor(message: string) {
     super(message);
@@ -179,7 +182,15 @@ export async function inspectPackage(archive: Buffer): Promise<InspectedPackage>
       // 展開後にリンク経由で外を読み書きできる。
       throw new PluginPackageError(`シンボリックリンクが含まれている: ${entry.name}`);
     }
-    const top = entry.name.split('/')[0];
+    const [top, child] = entry.name.split('/');
+    if (child !== undefined && child.startsWith(RESERVED_PREFIX)) {
+      // 本体が置く印（同梱の印・隔離マーク）を Package から持ち込ませない。偽の同梱の印があると、
+      // 利用者が更新した同梱 Plugin の ID のフォルダが、次の起動で同梱の版へ戻される
+      // （050-bundled-plugin-sync 設計 §6.2.2・§6.3 #4）。
+      throw new PluginPackageError(
+        `本体が使う名前（${RESERVED_PREFIX} で始まる）がフォルダの直下に含まれている: ${entry.name}`,
+      );
+    }
     if (top !== undefined && top !== '') {
       topLevels.add(top);
     }

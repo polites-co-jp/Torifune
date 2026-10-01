@@ -839,6 +839,7 @@ my-plugin.zip
 * `..` を含むパス、絶対パス、シンボリックリンク
 * 展開後の合計サイズ・ファイル数が上限を超えるもの
 * トップレベルが1ディレクトリでないもの
+* Plugin のフォルダの直下に、名前が `.torifune-` で始まるファイル・ディレクトリを含むもの（本体が使う名前。下を参照）
 * すでにある Plugin ID
 
 **ビルドに失敗した Plugin は隔離される**（`.torifune-quarantine` が置かれる）。
@@ -852,7 +853,8 @@ my-plugin.zip
 直したいなら自分の ID の Plugin として作るか、イメージを自分でビルドする。
 
 名前が `.torifune-` で始まるファイル・ディレクトリは本体が使う（`.torifune-quarantine`、同梱の印の
-`.torifune-bundled` など）。Plugin はこれらを置かない・読まない。
+`.torifune-bundled` など）。Plugin はこれらを置かない・読まない。**Plugin のフォルダの直下にこの名前を含む
+Plugin Package は導入時に拒否される**（偽の印で、更新した同梱 Plugin が同梱の版へ戻されるのを防ぐ）。
 
 ---
 
