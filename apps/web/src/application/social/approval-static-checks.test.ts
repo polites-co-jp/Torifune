@@ -287,6 +287,20 @@ function methodBody(source: string, name: string): string {
   return end === -1 ? rest : rest.slice(0, end);
 }
 
+/**
+ * モジュールの関数 `function <name>(` から、最初の行頭の `}` まで。
+ *
+ * 配信ジョブの取り出し条件はメソッドの外の述語 `dueForAutoPublish` に出した（049-publish-claim-conditions 設計 §6.1）。
+ * `methodBody` だけでは条件が検査から漏れるので、述語の本文も見る（049 の受け入れ条件 #25。049 実装プラン §8 の 2）。
+ */
+function functionBody(source: string, name: string): string {
+  const start = source.search(new RegExp(`^function ${name}\\(`, 'm'));
+  expect(start, `function ${name} の定義が無い`).toBeGreaterThanOrEqual(0);
+  const rest = source.slice(start);
+  const end = rest.search(/^\}$/m);
+  return end === -1 ? rest : rest.slice(0, end + 1);
+}
+
 describe('#64 配信ジョブの条件に awaiting_approval が現れない', () => {
   const publishPath = join(SRC_DIR, 'application', 'social', 'publish.ts');
   const repositoryPath = join(SRC_DIR, 'infrastructure', 'social-repository.ts');
@@ -319,5 +333,36 @@ describe('#64 配信ジョブの条件に awaiting_approval が現れない', ()
 
     expect(methodBody(tampered, 'listDue')).toContain('awaiting_approval');
     expect(methodBody(tampered, 'deferSkipped')).not.toContain('awaiting_approval');
+  });
+
+  // 049 の受け入れ条件 #25：取り出し条件をメソッドの外（述語）へ出しても検査から漏らさない。
+  it('#25 infrastructure/social-repository.ts の dueForAutoPublish に awaiting_approval が現れない', () => {
+    const body = functionBody(
+      readFileSync(repositoryPath, 'utf8').replaceAll('\r\n', '\n'),
+      'dueForAutoPublish',
+    );
+
+    expect(body.length).toBeGreaterThan(0);
+    expect(body).not.toContain('awaiting_approval');
+  });
+
+  it('#25 判別力：dueForAutoPublish の本文に awaiting_approval を足した写しを見分ける', () => {
+    const tampered = `function dueForAutoPublish(eb) {
+  return eb.and([
+    eb('status', 'in', ['scheduled', 'awaiting_approval']),
+    eb('delivery_mode', '=', 'auto'),
+  ]);
+}
+
+export const socialRepository = {
+  async listDue(connection, limit) {
+    return connection.db.selectFrom('social_posts').where(dueForAutoPublish);
+  },
+};
+`;
+
+    expect(functionBody(tampered, 'dueForAutoPublish')).toContain('awaiting_approval');
+    // 述語を参照するだけのメソッドの本文には現れない（メソッドだけを見ていると素通りする）。
+    expect(methodBody(tampered, 'listDue')).not.toContain('awaiting_approval');
   });
 });
