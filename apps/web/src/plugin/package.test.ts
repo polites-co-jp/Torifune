@@ -151,6 +151,58 @@ describe('検証', () => {
     await expect(inspectPackage(zip)).resolves.toBeDefined();
   });
 
+  it.each([
+    ['空の区間（//）', 'sample-plugin//.torifune-bundled'],
+    ['. の区間（/./）', 'sample-plugin/./.torifune-bundled'],
+  ])(
+    '%s を挟んで本体が使う名前を直下へ持ち込むもの（展開の join で直下に正規化される）を拒否する',
+    async (_label, name) => {
+      const zip = buildZip([
+        { name: 'sample-plugin/plugin.json', content: manifestOf('sample-plugin') },
+        { name: 'sample-plugin/index.ts', content: 'export default {};' },
+        { name, content: '{"schema":1,"hash":"sha256:' + '0'.repeat(64) + '"}' },
+      ]);
+
+      await expect(inspectPackage(zip)).rejects.toBeInstanceOf(PluginPackageError);
+    },
+  );
+
+  it.each([
+    ['空の区間（//）', 'sample-plugin//lib.ts'],
+    ['. の区間（/./）', 'sample-plugin/./lib.ts'],
+    ['先頭の . の区間', './sample-plugin/lib.ts'],
+  ])('%s を含むパスを安全でないパスとして拒否する', async (_label, name) => {
+    const zip = buildZip([
+      { name: 'sample-plugin/plugin.json', content: manifestOf('sample-plugin') },
+      { name: 'sample-plugin/index.ts', content: 'export default {};' },
+      { name, content: 'export const x = 1;' },
+    ]);
+
+    await expect(inspectPackage(zip)).rejects.toThrow('安全でないパス');
+  });
+
+  it('大文字小文字を変えた本体が使う名前（.TORIFUNE-BUNDLED）も拒否する（大文字小文字を区別しないファイルシステムでは同じ名前）', async () => {
+    const zip = buildZip([
+      { name: 'sample-plugin/plugin.json', content: manifestOf('sample-plugin') },
+      { name: 'sample-plugin/index.ts', content: 'export default {};' },
+      { name: 'sample-plugin/.TORIFUNE-BUNDLED', content: 'x' },
+    ]);
+
+    await expect(inspectPackage(zip)).rejects.toThrow('本体が使う名前');
+  });
+
+  it('ディレクトリの項目の末尾の / は拒否しない', async () => {
+    const zip = buildZip([
+      { name: 'sample-plugin/', content: '' },
+      { name: 'sample-plugin/ui/', content: '' },
+      { name: 'sample-plugin/plugin.json', content: manifestOf('sample-plugin') },
+      { name: 'sample-plugin/index.ts', content: 'export default {};' },
+      { name: 'sample-plugin/ui/widget.tsx', content: 'export const W = () => null;' },
+    ]);
+
+    await expect(inspectPackage(zip)).resolves.toBeDefined();
+  });
+
   it('トップレベルが複数あるものを拒否する', async () => {
     // どれが Plugin か決められない。
     const zip = buildZip([

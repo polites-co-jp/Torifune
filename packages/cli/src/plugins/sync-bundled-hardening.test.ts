@@ -224,6 +224,59 @@ describe('ログの行に Plugin ID の形でない名前をそのまま出さ�
     expect(result.err).not.toContain('\u2028');
     expect(result.err).toContain(`${PREFIX}"Bad\\u2028Name" FAILED: unreadable bundled manifest\n`);
   });
+
+  it('Plugin ID の形でない名前は、legacy の行の退避の場所でも JSON の文字列として引用して出す', async () => {
+    await writePlugin(join(bundledDir, 'Bad Name'), 'bad', BUNDLED_FILES);
+    // 印の無い古い写し（版は同じ）→ updated: legacy。
+    await writePlugin(join(pluginsDir, 'Bad Name'), 'bad', OLD_FILES);
+
+    const result = await sync();
+
+    expect(result.out).toContain(
+      `${PREFIX}"Bad Name" updated: legacy (backup: .torifune-bundled-backup/"Bad Name")\n`,
+    );
+  });
+});
+
+describe('ログの行に Volume の plugin.json の版をそのまま出さない', () => {
+  /** 印が無く、Volume の版が同梱（1.0.0）より新しい → skipped: newer version <版> installed。 */
+  async function volumeNewerWithVersion(id: string, version: string): Promise<void> {
+    await bundle(id);
+    await writePlugin(
+      join(pluginsDir, id),
+      id,
+      OLD_FILES,
+      JSON.stringify({ id, name: id, version }),
+    );
+  }
+
+  it('版の形の値（1.1.0）は、そのまま出す', async () => {
+    await volumeNewerWithVersion('alpha', '1.1.0');
+
+    const result = await sync();
+
+    expect(result.out).toContain(`${PREFIX}alpha skipped: newer version 1.1.0 installed\n`);
+  });
+
+  it('改行を含む版で、偽の行を作れない（JSON の文字列として引用して出す）', async () => {
+    await volumeNewerWithVersion('alpha', '99.0\n[torifune] bundled plugins: foo updated');
+
+    const result = await sync();
+
+    const lines = result.out.split('\n');
+    expect(lines.filter((line) => line.startsWith(`${PREFIX}foo `))).toEqual([]);
+    expect(result.out).toContain(
+      `${PREFIX}alpha skipped: newer version "99.0\\n[torifune] bundled plugins: foo updated" installed\n`,
+    );
+  });
+
+  it('空白を含む版は、JSON の文字列として引用して出す', async () => {
+    await volumeNewerWithVersion('alpha', '2.0 beta');
+
+    const result = await sync();
+
+    expect(result.out).toContain(`${PREFIX}alpha skipped: newer version "2.0 beta" installed\n`);
+  });
 });
 
 describe('同梱の写しの plugin.json が読めない（実装プラン §8 の 4）', () => {
