@@ -615,7 +615,8 @@ describe('#23 externalRef の再送', () => {
 
 describe('#24 social.post.created と監査', () => {
   it('#24 social.post.created が status: awaiting_approval で 1 回発火する', async () => {
-    const received: { status: string }[] = [];
+    // ハンドラが受け取る payload は unknown（他の結合テストと同じ受け方）
+    const received: unknown[] = [];
     subscribe('social.post.created', (payload) => {
       received.push(payload);
     });
@@ -623,7 +624,7 @@ describe('#24 social.post.created と監査', () => {
     await callCreate(post({ publishTiming: 'after_approval' }));
 
     expect(received).toHaveLength(1);
-    expect(received[0]?.status).toBe('awaiting_approval');
+    expect(received[0]).toMatchObject({ status: 'awaiting_approval' });
   });
 
   it("#24 監査 created の detail に publishTiming: 'after_approval'・approvalForced: false", async () => {

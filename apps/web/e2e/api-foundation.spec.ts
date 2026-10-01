@@ -129,6 +129,8 @@ test('OpenAPI に登録済みエンドポイントが含まれる', async ({ req
     '/social/accounts/{id}',
     '/social/posts',
     '/social/posts/{id}',
+    // 048-social-post-approval 設計 §6.4。承認待ちの投稿を承認する。
+    '/social/posts/{id}/approve',
     // 035-social-publishing 設計 §6.5.9。
     '/social/publish',
     '/users',
