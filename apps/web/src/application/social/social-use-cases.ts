@@ -33,6 +33,7 @@ import {
   isValidProvider,
   isValidScheduledAt,
   resolveCreateTiming,
+  revokesApproval,
   type AccountStatus,
   type DeliveryMode,
   type PostMedia,
@@ -1014,7 +1015,11 @@ export const updateSocialPost = defineUseCase<UpdatePostInput, SocialPost>({
     action: 'updated',
     resourceType: 'social_post',
     resourceId: (input) => input.id,
-    detail: (input) => ({ changed: Object.keys(input).filter((key) => key !== 'id') }),
+    // 更新後の状態も残す（048-social-post-approval 設計 §6.3.4）。承認が外れた更新が追える。
+    detail: (input, post) => ({
+      changed: Object.keys(input).filter((key) => key !== 'id'),
+      status: post.status,
+    }),
   },
   handler: async (context, input) => {
     assertUsableText('SocialPost', {
@@ -1050,6 +1055,16 @@ export const updateSocialPost = defineUseCase<UpdatePostInput, SocialPost>({
         'SocialPost',
         'status',
         '配信を開始しているため変更できません。結果が記録されるまで待ってください。',
+      );
+    }
+
+    // 承認待ちを予約にするのは承認の操作だけ（048-social-post-approval 設計 §6.3.1）。
+    // `social.write` だけのトークンが自分の依頼を予約へ進められないようにする。
+    if (current.status === 'awaiting_approval' && input.status === 'scheduled') {
+      throw new ValidationError(
+        'SocialPost',
+        'status',
+        '承認待ちの投稿は、承認の操作でだけ予約にできます。',
       );
     }
 
@@ -1109,17 +1124,35 @@ export const updateSocialPost = defineUseCase<UpdatePostInput, SocialPost>({
     };
     await assertPostIsDeliverable(next, account, {
       checkManualSupport: input.deliveryMode === 'manual',
-      checkSchedulable: next.status === 'draft' || next.status === 'scheduled',
+      checkSchedulable:
+        next.status === 'draft' ||
+        next.status === 'awaiting_approval' ||
+        next.status === 'scheduled',
       // **publisher を呼ぶ検査は「予約になる更新」にだけ**（設計 §6.2、R-6）。
-      // `draft`（取りやめ）を壊れた Plugin に塞がせない。
-      checkPublisherRules: next.status === 'scheduled',
+      // `draft`（取りやめ）を壊れた Plugin に塞がせない。承認待ちは承認すれば予約になるので掛ける
+      // （048-social-post-approval 設計 §6.3.2）。
+      checkPublisherRules: next.status === 'scheduled' || next.status === 'awaiting_approval',
     });
+
+    // 承認済みの予約の内容・日時・配信方法を値として変えたら承認待ちへ戻す（048 設計 §6.3.3。裁定 10）。
+    // 事前検査は**要求どおりの変更後**に掛け終えている（予約として不正な変更は取り消しで救わない）。
+    const revoked = revokesApproval(current, { ...next, approvedAt: current.approvedAt });
+    const savedStatus: PostStatus | undefined = revoked ? 'awaiting_approval' : input.status;
+    const effectiveStatus = savedStatus ?? current.status;
+    // 承認待ちへ入るときは支度待ちの待ち時刻を引きずらない（048 設計 §6.3.2）。
+    const entersApproval =
+      effectiveStatus === 'awaiting_approval' && current.status !== 'awaiting_approval';
+    // 承認の記録を持てるのは予約とその結果だけ（DB の CHECK も断る）。下書き・承認待ちへ移すなら消す。
+    const dropsApproval =
+      current.approvedAt !== null &&
+      (effectiveStatus === 'draft' || effectiveStatus === 'awaiting_approval');
 
     const post = await context.connection.transaction((tx) =>
       socialRepository.updatePost(tx, input.id, {
         ...(input.body === undefined ? {} : { body: input.body }),
         ...(input.scheduledAt === undefined ? {} : { scheduledAt: input.scheduledAt }),
-        ...(input.status === undefined ? {} : { status: input.status }),
+        ...(savedStatus === undefined ? {} : { status: savedStatus }),
+        ...(dropsApproval ? { approvedAt: null } : {}),
         // published へ移すときだけ配信時刻を記録する。
         ...(input.status === 'published' ? { publishedAt: new Date() } : {}),
         // failed も同じ扱い。**updated_at で代用しない。**
@@ -1146,7 +1179,7 @@ export const updateSocialPost = defineUseCase<UpdatePostInput, SocialPost>({
         //
         // **`skip_count` / `skip_reason` は触らない**（裁定 #14-a）。飛ばした履歴を
         // 予約し直しで減らさないことが、3 回上限の回避路を閉じている。
-        ...(clearsSkipWait(next) ? { nextAttemptAt: null } : {}),
+        ...(entersApproval || clearsSkipWait(next) ? { nextAttemptAt: null } : {}),
       }),
     );
 
