@@ -249,6 +249,15 @@ const campaigns = await data.campaigns.list({ siteId: site.id });
 
 `sites.create` / `sites.update`・`campaigns.create` / `campaigns.update` の `status` は列挙の値だけを渡す。列挙外の値は `ValidationError`（`field` は `'status'`）になる。
 
+### SNS 投稿の状態（`SocialPostView.status`）
+
+`socialPosts.list` / `get` が返す投稿の `status` は `'draft'`（下書き）/ `'awaiting_approval'`（承認待ち。048-social-post-approval で追加）/
+`'scheduled'`（予約）/ `'published'`（配信済み）/ `'failed'`（失敗）。型は `string` のままで、**値は増えうる**。
+「`draft` / `published` / `failed` でなければ予約」のように網羅的に分岐せず、知らない値は無視する。
+承認待ちの投稿は人が Torifune の画面で承認するまで配信されない（承認の操作は Data API に無い）。
+**承認待ちの投稿に `socialPosts.markPublished` / `markFailed` を呼ぶと**、返す `Promise` が `error.name === 'ValidationError'`（`field` は `'status'`）で reject され、何も書き込まれない。
+承認待ちは 048 で初めて現れる状態なので、それまで成功していた呼び出しが失敗に変わることは無い。
+
 ### 文字列の引数
 
 作成・更新・検索の文字列の引数（`sites` の `name`・`url`・`description`、`campaigns` の `name`・`description`、`analytics.list` の `source`・`key`、
@@ -467,7 +476,9 @@ await context.events.emit('my-plugin.done', { at: '…' });
 * **Core のイベント名は発火できない。** 騙れると他の Plugin を誤作動させられる
 * 自分のイベント名は `<plugin-id>.` で始める
 
-Core が発火するイベントは `CORE_EVENTS` にある。
+Core が発火するイベントは `CORE_EVENTS` にある（一覧と Payload は [`Eventリファレンス.md`](Eventリファレンス.md)）。
+SNS 投稿では `social.post.created` / `social.post.approved`（承認待ちの投稿が承認されて予約になった。048 で追加）/
+`social.post.published` / `social.post.failed` が発火する。**イベント名は増えうる**（追加は `PLUGIN_API_VERSION` を上げない）。
 
 ---
 
@@ -779,6 +790,8 @@ Torifune は配信の前に読んだ資格情報と、書き戻す時点の資�
 
 `publish()` を実装しない publisher を登録してもよい（手動投稿だけを受け持つ形）。
 その場合でも**その provider への自動配信の予約は断られない。**
+ただし**手動投稿だけの publisher の provider では、外部アプリが `publishTiming` を送った登録は値によらず承認待ちになり、
+承認は常に即投稿になる**（人が画面の前にいることが配信の前提になるため。048-social-post-approval。判定は登録の形で、provider 名は見ない）。
 支度が整うまで定期実行が飛ばして待ち、画面には「配信 Plugin なし」の警告が出る。
 逆に `manual()` を実装しなければ、その provider の `deliveryMode: 'manual'` は 422 で断られる。
 

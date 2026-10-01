@@ -19,17 +19,24 @@
 
 ```text
 外部アプリ ──POST /api/v1/social/posts──▶ Torifune に投稿を「登録」する（ここで検査して 422 を返す）
-                                            │ 予約日時（scheduledAt）が来る
-                                            ▼
+              { publishTiming }             │
+                 now / scheduled ──────────┤ 予約日時（scheduledAt）が来る
+                 after_approval ──▶ 承認待ち（awaiting_approval）
+                                     │ 管理画面 /social で人が内容を確かめて「承認する」
+                                     │（即投稿 か 指定の時間に投稿。§4.10）
+                                     ▼
                          Torifune の定期実行（既定 1 分ごと）が配信 Plugin を呼んで SNS へ送る
                                             │
 外部アプリ ◀─GET /api/v1/social/posts/{id}── 結果（status / failureReason / externalUrl）を読む
-          ◀─Webhook（social.post.published / failed）── または通知で受け取る
+          ◀─Webhook（social.post.approved / published / failed）── または通知で受け取る
 ```
 
 * **SNS へ直接投稿する同期 API は無い。** 外部アプリがするのは「投稿の登録」で、実際の送信は
-  Torifune の定期実行が行う。「すぐ出したい」ときは `scheduledAt` に現在時刻（か過去）を入れて
-  `status: "scheduled"` で登録する。次の定期実行（既定の間隔は 1 分）で配信される
+  Torifune の定期実行が行う。「すぐ出したい」ときは **`publishTiming: "now"`** で登録する（§4.4）。
+  次の定期実行（既定の間隔は 1 分）で配信される。`scheduledAt` に現在時刻（か過去）を入れて
+  `status: "scheduled"` で登録する従来の方法も使える
+* **人が内容を確かめてから出したい**ときは **`publishTiming: "after_approval"`** で登録する。投稿は
+  **承認待ち（`awaiting_approval`）**になり、Torifune の管理画面で `social.approve` を持つ人が承認するまで配信されない（§4.10・§6）
 * **SNS の指定は「SNS アカウントの ID」で行う。** 投稿の本文に provider を書く欄は無い。
   投稿先 SNS は `socialAccountId` が指すアカウントの `provider` で決まる（§4.2 で引く）
 * 実際に SNS を叩くのは provider ごとの**配信 Plugin**。登録時の文字数・媒体・リンクの規則も
@@ -119,10 +126,15 @@ Authorization: Bearer tfp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 | `DELETE /social/accounts/{id}` | `social.delete` |
 | `GET /social/posts`・`GET /social/posts/{id}` | `social.read` |
 | `POST /social/posts`・`PATCH /social/posts/{id}` | `social.write` |
+| `POST /social/posts/{id}/approve`（承認。§4.10） | **`social.approve`** |
 | `DELETE /social/posts/{id}` | `social.delete` |
 | `POST /social/publish`（配信の手動実行） | `system.manage` |
 
 投稿を登録して結果を読むだけの外部アプリなら **`social.read` + `social.write`** で足りる。
+
+**外部アプリに渡すトークンの Scope に `social.approve` を含めない。** 含めると、外部アプリが自分で
+承認を依頼した投稿を自分で承認でき、「人が確かめた」という承認の意味が無くなる。`social.approve` は既定で
+管理者と編集者のロールに割り当てられており、人は管理画面で承認する（閲覧者のロールには無い）。
 
 ### 2.3 トークンは名前空間であって、分離境界ではない
 
@@ -173,13 +185,13 @@ CORS ヘッダが付く（`*` は指定できない）。ただし **API トー�
 | --- | --- | --- |
 | `error.code` | string | **プログラムで分岐に使う固定値**（下表） |
 | `error.message` | string | 表示用の固定文（日本語）。分岐に使わない |
-| `error.details` | object（任意） | **422 と、`POST /social/publish` の 409（`details.job`）に付く。** キー＝問題のある項目名、値＝理由の文字列の配列 |
+| `error.details` | object（任意） | **422 と、`POST /social/publish` の 409（`details.job`）・承認の 409（`details.expectedUpdatedAt`。§4.10）に付く。** キー＝問題のある項目名、値＝理由の文字列の配列 |
 
 `details` のキーの規則。
 
 * キーは**送った項目名**（`body`・`scheduledAt`・`media`・`link`・`deliveryMode`・`socialAccountId`・
-  `externalRef`・`providerOptions`・`status`・`externalUrl`・`externalId`・`credentials`・`provider`・
-  `displayName` など）
+  `externalRef`・`providerOptions`・`status`・`publishTiming`・`expectedUpdatedAt`・`externalUrl`・`externalId`・
+  `credentials`・`provider`・`displayName` など）
 * `media` の問題は**2 種類のキーに分かれる**（`apps/web/src/api/schemas/social.ts` の `mediaSchema`）
   * **`media`**：件数（11 件以上）・URL が https でない／2048 文字超／`user:pass@` を含む・`alt` が 1000 文字超。
     どの要素の問題でも `media` 1 つにまとまる。SNS ごとの規則（§5）の違反もこのキー
@@ -205,7 +217,7 @@ CORS ヘッダが付く（`*` は指定できない）。ただし **API トー�
 | 403 | `FORBIDDEN` | 権限（Scope）が足りない（§2.2） |
 | 403 | `CSRF_FAILED` | **更新系（POST / PATCH / DELETE）で `Authorization: Bearer <トークン>` の形のヘッダが無い**（ヘッダの欠落・形の誤り）。セッション（Cookie）認証で CSRF トークンが無いときも。形の合ったトークン認証では起きない（§2.1） |
 | 404 | `NOT_FOUND` | `{id}` の投稿・アカウントが無い（**UUID の形でない ID も 404**） |
-| 409 | `CONFLICT` | `POST /social/publish` で他の配信処理が実行中（`details.job` と `Retry-After: 10` が付く） |
+| 409 | `CONFLICT` | `POST /social/publish` で他の配信処理が実行中（`details.job` と `Retry-After: 10` が付く）。承認（§4.10）で、画面や `GET` で読んだ後に投稿の内容が変わっていた（`details.expectedUpdatedAt`） |
 | 422 | `VALIDATION_ERROR` | 入力の検査に落ちた（§3.2 の `details` を見る） |
 | 429 | `TOO_MANY_ATTEMPTS` | Rate Limit を超えた（§3.4。`Retry-After` が付く） |
 | 500 | `INTERNAL_ERROR` | 想定外のエラー。配信 Plugin の事前検査が例外・5 秒超過になったとき（§4.4）もこれ |
@@ -292,9 +304,9 @@ CORS ヘッダが付く（`*` は指定できない）。ただし **API トー�
 
 `GET /api/v1/openapi.json` が OpenAPI 3.1.0 の文書を返す（**認証不要**。Zod スキーマから自動生成）。
 
-* SNS API の 11 操作（`listSocialAccounts`・`createSocialAccount`・`getSocialAccount`・`updateSocialAccount`・
+* SNS API の 12 操作（`listSocialAccounts`・`createSocialAccount`・`getSocialAccount`・`updateSocialAccount`・
   `deleteSocialAccount`・`listSocialPosts`・`createSocialPost`・`getSocialPost`・`updateSocialPost`・
-  `deleteSocialPost`・`publishSocialPosts`）がすべて載る
+  `deleteSocialPost`・`approveSocialPost`・`publishSocialPosts`）がすべて載る
 * 必要な権限は各操作の拡張項目 **`x-required-permission`** に書かれている
 * 認証方式は `session`（Cookie）と `bearer`（API トークン）の 2 つが宣言されている
 * 応答は、成功・401・403・422・429・500 のほかに次が宣言されている
@@ -302,6 +314,9 @@ CORS ヘッダが付く（`*` は指定できない）。ただし **API トー�
   * `{id}` を取る 6 操作（`getSocialAccount`・`updateSocialAccount`・`deleteSocialAccount`・`getSocialPost`・
     `updateSocialPost`・`deleteSocialPost`）の **404**
   * `publishSocialPosts` の **409**（他の配信処理が実行中）
+  * `approveSocialPost` の **404**（投稿が無い）と **409**（見た後に内容が変わった。§4.10）
+* `createSocialPost` の要求の `status` には `default` が無い（省略時の `draft` はサーバが補う。§4.4）。
+  状態の列挙（`status`）に `awaiting_approval` があり、投稿の応答に `approvedAt` がある
 * `page` / `perPage` の範囲は、parameter の `description` に書かれている
   （「1 以上。範囲外は 1 に丸める。」「1〜100。範囲外は 1〜100 に丸める。」）。範囲外も断られない（§3.6）ので、
   `minimum` / `maximum` は書かれていない。`accountId` には `format: uuid` と UUID の形の `pattern` が付く（§4.5）。OpenAPI からクライアントを生成している場合、`accountId` の引数が UUID 型（Java の `UUID`、C# の `Guid` など）に変わることがある
@@ -326,7 +341,8 @@ CORS ヘッダが付く（`*` は指定できない）。ただし **API トー�
 | GET | `/social/posts` | 投稿一覧 | `social.read` | 200 |
 | GET | `/social/posts/{id}` | 投稿 1 件（結果の確認） | `social.read` | 200 |
 | POST | `/social/posts` | **投稿の登録** | `social.write` | 201（再送は 200） |
-| PATCH | `/social/posts/{id}` | 投稿の更新・取りやめ・手動投稿の結果の記録 | `social.write` | 200 |
+| PATCH | `/social/posts/{id}` | 投稿の更新・取りやめ・承認の依頼と差し戻し・手動投稿の結果の記録 | `social.write` | 200 |
+| POST | `/social/posts/{id}/approve` | **承認待ちの投稿を承認して配信に回す**（§4.10。通常は人が管理画面で行う） | **`social.approve`** | 200 |
 | DELETE | `/social/posts/{id}` | 投稿の削除 | `social.delete` | 204 |
 | POST | `/social/publish` | 期限の来た投稿の配信を今すぐ回す（運用向け） | `system.manage` | 200 |
 
@@ -414,7 +430,7 @@ curl -H "Authorization: Bearer $TORIFUNE_TOKEN" \
 | `socialAccountId` | string（UUID） | 投稿先のアカウント |
 | `body` | string | 本文（**`link` は含まない**。SNS ごとの組み立ては §5） |
 | `scheduledAt` | string \| null | 予約日時（UTC） |
-| `status` | `draft` / `scheduled` / `published` / `failed` | §6 |
+| `status` | `draft` / `awaiting_approval` / `scheduled` / `published` / `failed` | §6。**値は増えうる。** 知らない値は無視するか「その他」として扱う（網羅的に分岐しない） |
 | `deliveryMode` | `auto` / `manual` | 配信の方法 |
 | `media` | `{ url: string, alt: string \| null }[]` | 添える画像 |
 | `link` | string \| null | 添える URL |
@@ -429,7 +445,8 @@ curl -H "Authorization: Bearer $TORIFUNE_TOKEN" \
 | `nextAttemptAt` | string \| null | 次に配信を試みる時刻（再試行待ち・支度待ちのとき） |
 | `skipCount` | number | 支度が整わず飛ばされた回数（§6.3） |
 | `skipReason` | `no_publisher` / `credential_missing` / `account_missing` / null | 飛ばされた理由 |
-| `createdAt` / `updatedAt` | string | |
+| `approvedAt` | string \| null | **人が承認して予約にした時刻**（§4.10）。承認を経ていない投稿は `null`（`status: "scheduled"` で直接予約した投稿も `null`）。承認済みの予約の内容・日時・配信方法を書き換えると `null` に戻る（§4.7） |
+| `createdAt` / `updatedAt` | string | `updatedAt` は承認の `expectedUpdatedAt` に使う（§4.10） |
 
 **応答に出ないもの**：どのトークンが登録したか・配信の進行中の印・資格情報。
 
@@ -441,17 +458,38 @@ curl -H "Authorization: Bearer $TORIFUNE_TOKEN" \
 | --- | --- | --- | --- | --- |
 | `socialAccountId` | string | **必須** | — | 存在するアカウントの `id`。無ければ 422 `socialAccountId`（404 ではない） |
 | `body` | string | **必須** | — | 1〜10000 文字（UTF-16 の長さ）。空白だけは不可。**SNS ごとの上限は §5** |
-| `status` | enum | 任意 | `draft` | `draft`（下書き。配信しない）/ `scheduled`（予約。配信する）。`published` / `failed` も形式上は受け付けるが、配信されず `publishedAt` / `failedAt` も入らない。外部アプリは使わない |
-| `scheduledAt` | string \| null | `scheduled` のとき必須 | `null` | §1.4 の形式。`0001-01-01T00:00:00Z`〜`9999-12-31T23:59:59.999Z`（範囲外は 422 `scheduledAt`）。`status: "scheduled"` で無ければ 422 `scheduledAt`。**過去の時刻も可**（次の定期実行で配信） |
+| `publishTiming` | enum | 任意（**推奨**） | なし | **いつ配信へ回すか**。`now`（即投稿）/ `scheduled`（`scheduledAt` の時刻に投稿）/ `after_approval`（**人の確認を待ってから投稿**＝承認待ち）。下の「`publishTiming` と結果」の表。**省略すると `status` と `scheduledAt` で決まる（従来どおり）**。列挙外は 422 `publishTiming`。`deliveryMode`（誰が SNS へ出すか）とは別の項目で、組み合わせて使う |
+| `status` | enum | 任意 | `draft`（`publishTiming` を送らないとき） | `draft`（下書き。配信しない）/ `scheduled`（予約。配信する）/ `awaiting_approval`（承認待ち。`publishTiming: "after_approval"` と同じ結果）。**`publishTiming` と同時に送ると 422 `status`**（値が `draft` でも）。`published` / `failed` も形式上は受け付けるが、配信されず `publishedAt` / `failedAt` も入らない。外部アプリは使わない |
+| `scheduledAt` | string \| null | `scheduled`（`publishTiming` か `status`）のとき必須 | `null` | §1.4 の形式。`0001-01-01T00:00:00Z`〜`9999-12-31T23:59:59.999Z`（範囲外は 422 `scheduledAt`）。予約で無ければ 422 `scheduledAt`。**過去の時刻も可**（次の定期実行で配信）。**`publishTiming: "now"` と同時に値を送ると 422 `scheduledAt`**（`null` は可）。`after_approval` では**希望日時**として保存され、承認する人が「指定の時間に投稿」を選んだときの既定になる |
 | `deliveryMode` | enum | 任意 | `auto` | `auto`（Torifune が配信）/ `manual`（人が SNS の投稿画面から投稿。§6.5）。provider によって使えない値がある（§5） |
 | `media` | array | 任意 | `[]` | 最大 10 件。各要素 `{ "url": string, "alt"?: string \| null }`。`url` は **https のみ**・2048 文字以内・`user:pass@` を含まない。`alt` は 1000 文字以内。**`manual` では 1 件も付けられない**。SNS ごとの枚数・形式は §5 |
 | `link` | string \| null | 任意 | `null` | 添える URL。**https のみ**・2048 文字以内・`user:pass@` を含まない。空文字は不可（消すなら `null`）。SNS ごとの扱いは §5 |
 | `providerOptions` | object | 任意 | `{}` | JSON にして 4096 バイト以内。**中身は配信 Plugin が検査する**。いまの Plugin で受け付けるキーは Bluesky の `langs` だけ（§5） |
 | `externalRef` | string | 任意（**付けることを強く推奨**） | なし | 1〜200 文字（前後の空白は除く）。§3.5 |
 
+#### `publishTiming` と結果
+
+| `publishTiming` | `status` | `scheduledAt` | 結果の `status` | 結果の `scheduledAt` |
+| --- | --- | --- | --- | --- |
+| 省略 | 省略 | 任意 | `draft` | 送った値（従来どおり） |
+| 省略 | `scheduled` | **必須** | `scheduled` | 送った値（従来どおり） |
+| 省略 | `awaiting_approval` | 任意 | `awaiting_approval` | 送った値（希望日時） |
+| `now` | 送らない | 送らない（`null` は可） | `scheduled` | **サーバのいまの時刻**（応答で読める） |
+| `scheduled` | 送らない | **必須**（`null` も不可） | `scheduled` | 送った値（過去も可） |
+| `after_approval` | 送らない | 任意 | `awaiting_approval` | 送った値（**希望日時**） |
+
+* **承認待ち（`awaiting_approval`）の投稿は配信されない。** Torifune の管理画面 `/social` の「承認待ち」に並び、
+  `social.approve` を持つ人が内容を確かめて「即投稿」か「指定の時間に投稿」を選んで承認すると予約（`scheduled`）になる（§4.10）。
+  差し戻されると下書き（`draft`）に戻る。結果は `GET` のポーリングか Webhook の `social.post.approved`（§6.6）で知る
+* **手動投稿しかできない配信 Plugin の provider（いまは X の無料版 `sns-x-manual`）では、`publishTiming` を送った登録は
+  値によらず常に承認待ちになる**（201 で `status: "awaiting_approval"` が返る。422 にはしない）。`scheduledAt` は `now` なら `null`、
+  それ以外は送った値。承認は常に即投稿になる（§5.1・§5.2）。`publishTiming` を送らない `status: "scheduled"` の登録は従来どおり予約になる
+* 承認待ちの登録にも配信 Plugin の検査（下の表の 6〜8b）が掛かる。**SNS の規則に反する投稿は承認待ちにもならない**
+
 #### 要求例
 
 ```bash
+# 人の確認を待ってから投稿する（承認待ち）。希望日時を添える
 curl -X POST https://torifune.example.com/api/v1/social/posts \
   -H "Authorization: Bearer $TORIFUNE_TOKEN" \
   -H 'Content-Type: application/json' \
@@ -460,11 +498,16 @@ curl -X POST https://torifune.example.com/api/v1/social/posts \
         "body": "新しい記事を公開しました。",
         "link": "https://example.com/articles/1234",
         "media": [{ "url": "https://cdn.example.com/ogp/1234.jpg", "alt": "記事のサムネイル" }],
-        "status": "scheduled",
+        "publishTiming": "after_approval",
         "scheduledAt": "2026-10-01T09:00:00+09:00",
         "deliveryMode": "auto",
         "externalRef": "article-1234:x"
       }'
+
+# すぐ出す（次の定期実行で配信）
+#   … "publishTiming": "now" …（scheduledAt は送らない）
+# 指定の時刻に出す
+#   … "publishTiming": "scheduled", "scheduledAt": "2026-10-01T09:00:00+09:00" …
 ```
 
 #### 応答例（201。再送なら同じ形で 200）
@@ -476,7 +519,7 @@ curl -X POST https://torifune.example.com/api/v1/social/posts \
     "socialAccountId": "0192b7a0-5c1e-7a3b-9f10-2d7c4e8a1b23",
     "body": "新しい記事を公開しました。",
     "scheduledAt": "2026-10-01T00:00:00.000Z",
-    "status": "scheduled",
+    "status": "awaiting_approval",
     "publishedAt": null,
     "failedAt": null,
     "failureReason": null,
@@ -492,7 +535,8 @@ curl -X POST https://torifune.example.com/api/v1/social/posts \
     "attemptCount": 0,
     "nextAttemptAt": null,
     "skipCount": 0,
-    "skipReason": null
+    "skipReason": null,
+    "approvedAt": null
   }
 }
 ```
@@ -504,12 +548,13 @@ curl -X POST https://torifune.example.com/api/v1/social/posts \
 | 順 | 検査 | 422 の `details` のキー |
 | ---: | --- | --- |
 | 0 | NUL・対になっていないサロゲート（§1.3）。**違反はまとめて返り、1 以降は行わない** | 値を含む最上位の項目名 |
-| 1 | 要求全体の形（型・必須・長さ・https・件数・列挙値）。**違反はまとめて返る** | 各項目名 |
+| 1 | 要求全体の形（型・必須・長さ・https・件数・列挙値。`publishTiming` の列挙を含む）。**違反はまとめて返る** | 各項目名 |
+| 1b | **1 が通ったときだけ**：`publishTiming` と `status` の同時指定 → `status`（「publishTiming と status は同時に指定できません。」）。`publishTiming: "now"` と `scheduledAt` の値 → `scheduledAt`（「publishTiming が now のときは scheduledAt を指定できません。」）。**違反はまとめて返る** | `status` / `scheduledAt` |
 | 2 | 本文が空白だけでない。続けて `scheduledAt` の範囲（§1.4） | `body` / `scheduledAt` |
 | 3 | `socialAccountId` のアカウントが存在する | `socialAccountId` |
 | 4 | `externalRef` をトークン認証で付けている | `externalRef` |
-| — | （`externalRef` が既存と一致したら、ここで 200 を返して終わる） | — |
-| 5 | `status: "scheduled"` なら `scheduledAt` がある | `scheduledAt` |
+| — | （`externalRef` が既存と一致したら、ここで 200 を返して終わる。**`publishTiming` が 1 回目と違っても既存のまま**） | — |
+| 5 | 予約（`publishTiming: "scheduled"` か `status: "scheduled"`）なら `scheduledAt` がある。ここで手動投稿しかできない配信 Plugin の読み替え（承認待ち）も決まる | `scheduledAt` |
 | 6 | `deliveryMode: "manual"` なら `media` が空 | `media` |
 | 7 | `deliveryMode: "manual"` なら、その provider の配信 Plugin が手動投稿に対応している（**Plugin が入っていない provider の `manual` も 422**） | `deliveryMode` |
 | 8a | 配信 Plugin が宣言した上限（本文の長さ・媒体の最大数・媒体の必須）。**違反が複数あっても先頭の 1 つだけ**を返す | `body` / `media` |
@@ -518,8 +563,10 @@ curl -X POST https://torifune.example.com/api/v1/social/posts \
 * 0 で落ちると 8b の配信 Plugin の検査（`validate()`）は呼ばれない。本文・`link` の対になっていないサロゲートは、
   どの provider でも 0 の Core の文言（キーは送った項目名 `body` / `link`）で返る
 * 表の 2〜8a は最初の違反で止まる。**8a で落ちると 8b は走らない**ので、直して送り直すと
-  8b の違反が新たに返ることがある。**1 回の 422 に複数の項目のキーが並びうるのは 1 と 8b だけ**
-* **8a・8b は `status: "draft"` でも掛かる**（作成時）
+  8b の違反が新たに返ることがある。**1 回の 422 に複数の項目のキーが並びうるのは 1・1b と 8b だけ**
+* 1b は形の検査なので、`externalRef` の再送でも掛かる
+* 6〜8b は 5 で決まった**結果の値**（`status` / `scheduledAt`）に対して掛ける
+* **8a・8b は `status: "draft"` でも掛かる**（作成時。承認待ちでも）
 * **その provider の配信 Plugin が入っていなければ 8a・8b は行わない。** `auto` の予約は断られずに保存され、
   配信の時刻に「支度待ち」になる（§6.3）
 * 8b の配信 Plugin の検査が例外を投げた・5 秒以内に終わらなかったときは **500 `INTERNAL_ERROR`**
@@ -531,11 +578,12 @@ curl -X POST https://torifune.example.com/api/v1/social/posts \
 | --- | --- | --- |
 | `page` / `perPage` | 整数 | §3.6 |
 | `accountId` | string（UUID） | そのアカウントの投稿だけに絞る。UUID の形（8-4-4-4-12 の 16 進。大文字・小文字を問わない）。**形が違えば（空文字を含む）422 `accountId`**（「UUID の形で指定してください。」）。存在しないアカウントの UUID は 200 で空 |
-| `status` | enum | `draft` / `scheduled` / `published` / `failed` のどれか 1 つ。列挙外は 422 `status` |
+| `status` | enum | `draft` / `awaiting_approval` / `scheduled` / `published` / `failed` のどれか 1 つ。列挙外は 422 `status`。`status=awaiting_approval` で承認待ちだけを引ける |
 
 並びは作成日時の新しい順。応答は §3.1 の一覧の形で、各要素は §4.3。
 
-**他のアプリ（別トークン）が登録した投稿も含めて返る**（§2.3）。自分の投稿だけを見たいときは、
+**他のアプリ（別トークン）が登録した投稿も含めて返る**（§2.3）。自分が承認待ちを使っていなくても、
+他のアプリや人が作った承認待ち（`awaiting_approval`）が含まれうる。自分の投稿だけを見たいときは、
 保存しておいた `id` で `GET /social/posts/{id}` を引くか、`externalRef` で見分ける。
 
 ### 4.6 GET `/social/posts/{id}` — 結果を確かめる
@@ -550,7 +598,7 @@ curl -X POST https://torifune.example.com/api/v1/social/posts \
 | --- | --- | --- |
 | `body` | string | 1〜10000 文字。空白だけは不可 |
 | `scheduledAt` | string \| null | §1.4（`0001-01-01T00:00:00Z`〜`9999-12-31T23:59:59.999Z`。範囲外は 422 `scheduledAt`）。**未来の時刻にすると支度待ちの待ち時刻（`nextAttemptAt`）が消える**（§6.3） |
-| `status` | enum | 遷移の規則（§6.1）に従う。`draft` へ戻す＝**取りやめ** |
+| `status` | enum | 遷移の規則（§6.1）に従う。`draft` へ戻す＝**取りやめ**（承認待ちなら**差し戻し**）。`awaiting_approval` にする＝**承認を依頼する**（下書き・予約から）。**承認待ちから `scheduled` へは変えられない**（422 `status`「承認待ちの投稿は、承認の操作でだけ予約にできます。」。予約にするのは承認 §4.10 だけ）。承認待ちから `published` / `failed` へも変えられない（422 `status`） |
 | `deliveryMode` | enum | `auto` / `manual`。`manual` へ変えるときは provider の対応を検査する |
 | `media` | array | §4.4 と同じ |
 | `link` | string \| null | §4.4 と同じ。`null` で消す |
@@ -560,24 +608,37 @@ curl -X POST https://torifune.example.com/api/v1/social/posts \
 | `failureReason` | string \| null | 失敗の理由。**2000 文字以内**（超えると 422 `failureReason`）。前後の空白は取り除き、空文字は `null` 扱い。（2000 文字で切り詰めて保存するのは配信 Plugin の内部経路だけで、この API は切り詰めない） |
 
 * `socialAccountId` と `externalRef` は**変えられない**（送っても無視される）
+* **`publishTiming` は送れない**（どの値でも 422 `publishTiming`「publishTiming は登録のときだけ指定できます。承認を依頼するときは
+  status に awaiting_approval を指定してください。」）。`PATCH` では `status` と `scheduledAt` で表す
+* **承認済みの予約（`approvedAt` あり）の `body`・`media`（順序込み）・`link`・`providerOptions`・`deliveryMode`・
+  `scheduledAt` を値として変えると、承認待ちへ戻る**（応答の `status` が `awaiting_approval`、`approvedAt` が `null`）。
+  承認した人が見た内容・時刻と違うものを出さないため。**値が同じなら送っても戻らない**（`providerOptions` のキーの順序だけの違いも同じ値）。
+  承認を経ていない予約（`approvedAt: null`）は従来どおり `scheduled` のまま
+* 承認待ちへ移すと支度待ちの待ち時刻（`nextAttemptAt`）は消える（`skipCount` は減らない）。`draft` / `awaiting_approval` へ移すと
+  `approvedAt` は `null` になり、`published` / `failed` の記録では残る
 * **配信の最中（`auto` の予約で Torifune が SNS へ送っている間）は、`body`・`media`・`link`・
   `providerOptions`・`scheduledAt`・`deliveryMode`・`status` を変えられない**（422 `status`
   「配信を開始しているため変更できません。」）。通常は配信の結果が記録された時点（配信 Plugin の制限時間 30 秒以内）で外れる。
   **配信の途中で Torifune のプロセスが落ちた場合は、次の定期実行が中断を判定して `failed`（結果不明）にするまで
   （既定の間隔で 1 分以上）残る**。その間は `GET` で状態を見て待つ
 * 変更後の値に対して §4.4 の 5〜8 と同じ検査を掛ける。ただし
-  * 5・6（予約日時・手動投稿の媒体）は**変更後が `draft` / `scheduled` のときだけ**
+  * 5・6（予約日時・手動投稿の媒体）は**変更後が `draft` / `awaiting_approval` / `scheduled` のときだけ**
   * 7（手動投稿の対応）は **`deliveryMode: "manual"` を送ったときだけ**
-  * 8a・8b（SNS ごとの規則）は**変更後が `scheduled` のときだけ**。`draft` への取りやめ、
-    `published` / `failed` の記録は配信 Plugin の都合で断られない
+  * 8a・8b（SNS ごとの規則）は**変更後が `scheduled` / `awaiting_approval` のときだけ**（承認待ちは承認すれば予約になるため）。
+    `draft` への取りやめ・差し戻し、`published` / `failed` の記録は配信 Plugin の都合で断られない
 * `status` を `published` にすると `publishedAt` が、`failed` にすると `failedAt` が記録され、
   それぞれ `social.post.published` / `social.post.failed` イベントが発火する
 
 ```bash
-# 予約を取りやめる（下書きへ戻す）
+# 予約を取りやめる（下書きへ戻す）。承認待ちの依頼を取り下げるときも同じ
 curl -X PATCH https://torifune.example.com/api/v1/social/posts/$POST_ID \
   -H "Authorization: Bearer $TORIFUNE_TOKEN" -H 'Content-Type: application/json' \
   -d '{ "status": "draft" }'
+
+# 下書きの投稿の承認を依頼する
+curl -X PATCH https://torifune.example.com/api/v1/social/posts/$POST_ID \
+  -H "Authorization: Bearer $TORIFUNE_TOKEN" -H 'Content-Type: application/json' \
+  -d '{ "status": "awaiting_approval" }'
 
 # 手動投稿を人が SNS で出した後、結果を記録する
 curl -X PATCH https://torifune.example.com/api/v1/social/posts/$POST_ID \
@@ -600,6 +661,43 @@ curl -X PATCH https://torifune.example.com/api/v1/social/posts/$POST_ID \
 `failed`・`unrecorded`）。他の実行が 10 秒以上続いていれば **409 `CONFLICT`**（`details.job`、
 `Retry-After: 10`）。各キーの意味は [手順書 §7](SNS投稿の外部連携.md#7-定期実行を止めている場合)。
 
+### 4.10 POST `/social/posts/{id}/approve` — 承認待ちの投稿を承認する
+
+承認待ち（`awaiting_approval`）の投稿を**承認して予約（`scheduled`）にする**。権限は **`social.approve`**（§2.2）。
+**通常は人が管理画面 `/social` の「承認待ち」で行う**操作で、外部アプリのトークンには `social.approve` を付けない。
+承認の操作を API で行うのは、運用者が承認用に作った道具などに限る。
+
+| 項目 | 型 | 必須 | 制約（違反は 422。`details` のキーはその項目名） |
+| --- | --- | --- | --- |
+| `publishTiming` | `now` / `scheduled` | **必須** | `now`＝即投稿、`scheduled`＝指定の時間に投稿。`after_approval` も 422 `publishTiming` |
+| `scheduledAt` | string \| null | 任意 | `scheduled` のときだけ使う（`now` のときは無視する）。省略・`null` なら登録された希望日時を使う。§1.4 の形式と範囲 |
+| `expectedUpdatedAt` | string | **必須** | 承認する前に画面か `GET` で読んだ投稿の **`updatedAt`** をそのまま送る（ISO 8601）。欠落・日時として読めない値は 422 `expectedUpdatedAt` |
+
+**応答**：200 で投稿（§4.3）。`status: "scheduled"`、`approvedAt` に承認の時刻、`scheduledAt` に実際に配信へ回る時刻
+（`now` ならサーバのいまの時刻）。`nextAttemptAt` は `null` になる（`skipCount` は変わらない）。
+
+| HTTP | `code` | いつ |
+| ---: | --- | --- |
+| 404 | `NOT_FOUND` | 投稿が無い（UUID の形でない ID も） |
+| 409 | `CONFLICT` | **読んだ後に投稿の内容が変わっていた**（`expectedUpdatedAt` が投稿の `updatedAt` と合わない）。`details.expectedUpdatedAt`：「投稿の内容が変わっています。内容を確かめてから承認し直してください。」。読み直して内容を確かめてから承認し直す |
+| 422 | `VALIDATION_ERROR` | 承認待ちでない（`status`「承認待ちの投稿ではありません（いまの状態：scheduled）。」。**409 より先に判定する**）・日時の誤り（`scheduledAt`）・要求の形・配信 Plugin の規則（§4.4 の 6〜8b を予約として掛ける） |
+
+* **見た内容だけを承認する。** 判定と更新は 1 回の条件付きの更新で行い、同じ投稿を 2 人が同時に承認しても通るのは 1 人だけ
+  （もう 1 人は 422 `status` か 409）
+* **指定の時間が過ぎていれば 422 `scheduledAt`**（「指定の日時を過ぎています。即投稿を選ぶか、未来の日時を指定してください。」。
+  いまと等しい時刻も過ぎた扱い）。**過ぎた日時を即投稿に読み替えない。** 希望日時も要求の日時も無ければ 422 `scheduledAt`
+  （「承認して予約するときは日時を指定してください。」）。登録（§4.4）の `scheduled` は過去も許すが、承認は人が選ぶ操作なので扱いが違う
+* **手動投稿しかできない配信 Plugin の provider（いまは X の無料版 `sns-x-manual`）では、`publishTiming` が `scheduled` でも即投稿になる**
+  （200。`scheduledAt` がいまの時刻）。承認するとすぐ管理画面の「手動投稿待ち」に並ぶ
+* 承認を外す操作は無い。予約を止めるときは `PATCH { "status": "draft" }`（取りやめ）か `{ "status": "awaiting_approval" }`（承認待ちへ戻す）
+* 承認が成功すると `social.post.approved` イベントが 1 回発火し（§6.6）、監査ログに承認した人・時刻・選んだ時機が残る
+
+```bash
+curl -X POST https://torifune.example.com/api/v1/social/posts/$POST_ID/approve \
+  -H "Authorization: Bearer $APPROVER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{ "publishTiming": "scheduled", "expectedUpdatedAt": "2026-09-30T01:12:00.123Z" }'
+```
+
 ---
 
 ## 5. SNS ごとの仕様
@@ -620,6 +718,10 @@ curl -X PATCH https://torifune.example.com/api/v1/social/posts/$POST_ID \
   3. **201 で作られた確認用の投稿は `DELETE /social/posts/{id}` で消す**（`social.delete` が要る。無ければ運用者に頼む）
 
   **`status: "scheduled"` で試さない。** `sns-x-api` が有効だと、そのまま予約として配信され、X に本当に投稿される
+* **X の無料版（`sns-x-manual`）では、`publishTiming` を送った登録は値（`now` / `scheduled` / `after_approval`）によらず常に
+  承認待ち（`awaiting_approval`）で返り、承認は常に即投稿になる**（§4.4・§4.10）。判定は「その provider の配信 Plugin が手動投稿しかできない
+  （自動配信を実装していない）か」で行うので、同じ形の配信 Plugin を入れた provider でも同じになる。`publishTiming` を送らない
+  `status: "scheduled"` の登録は従来どおり予約になり、予約日時に「手動投稿待ち」に並ぶ。`deliveryMode` は従来どおり `manual` を送る
 * 以下の「上限」は登録時に 422 で断られる条件。「配信時の失敗」は登録を通った後に SNS 側の都合で
   `failed` / 再試行になる条件
 
@@ -630,6 +732,7 @@ curl -X PATCH https://torifune.example.com/api/v1/social/posts/$POST_ID \
 | `provider` | `bluesky` | `x` | `x` | `threads` | `instagram` |
 | `deliveryMode: auto` | ○ | ○ | **×**（422 `deliveryMode`） | ○ | ○ |
 | `deliveryMode: manual` | ○ | ○ | ○ | ○ | **×**（422 `deliveryMode`） |
+| `publishTiming` を送った登録 | 送った値どおり | 送った値どおり | **常に承認待ち**（承認は即投稿。§5.1） | 送った値どおり | 送った値どおり |
 | 本文の上限 | **300 grapheme** かつ **3000 UTF-8 バイト**（別に Core が UTF-16 長 3000 で先に見る） | **重み付き 280**（§5.3） | **重み付き 280**（§5.3） | **500**（§5.4） | **2200**（UTF-16 の長さ） |
 | 本文のその他の上限 | —（対になっていないサロゲートは全 SNS 共通で Core が断る。表の下の注） | 同左 | 同左 | リンクは**異なる URL 5 本まで** | ハッシュタグ 30 個・メンション 20 件まで |
 | `link` の扱い（`auto`） | **リンクカード**（本文には足さない。カードの見出しはホスト名） | **本文の末尾に改行して足す**（長さに含む） | —（`auto` 不可） | **本文の末尾に改行して足す**（長さ・本数に含む） | **指定不可**（422 `link`） |
@@ -740,27 +843,42 @@ Threads の長さ（500）の数え方では URL を特別扱いしない（X �
 ### 6.1 状態（`status`）と遷移
 
 ```text
-draft ──→ scheduled ──→ published
-  │  ◀──────┘  │
-  └────────────┴──→ failed
+            ┌──────── 差し戻し・取りやめ（PATCH draft）────────┐
+            ▼                                                │
+draft ──承認を依頼（PATCH）──▶ awaiting_approval ──承認（approve）──▶ scheduled ──▶ published
+  │  ▲                              ▲                         │  │
+  │  └──────────── 取りやめ（PATCH draft）───────────────────────┘  │
+  │                                 └── 承認待ちへ戻す（PATCH / 承認済みの書き換え）
+  └────────────── 予約（PATCH scheduled。承認を経ない）──────────▶ scheduled
+  draft / scheduled ──────────────────────────────────────────────▶ failed
 ```
+
+`PATCH` で変えられる先（承認は別の操作 §4.10）。
 
 | 現在 | 変えられる先 |
 | --- | --- |
-| `draft` | `draft` / `scheduled` / `published` / `failed` |
-| `scheduled` | `scheduled` / `draft`（取りやめ）/ `published` / `failed` |
+| `draft` | `draft` / `awaiting_approval`（承認を依頼）/ `scheduled` / `published` / `failed` |
+| `awaiting_approval` | `awaiting_approval`（内容の修正）/ `draft`（差し戻し・取りやめ）。**`scheduled` へは承認（§4.10）だけ** |
+| `scheduled` | `scheduled` / `draft`（取りやめ）/ `awaiting_approval`（承認待ちへ戻す）/ `published` / `failed` |
 | `published` | `published` のみ（**終端**） |
 | `failed` | `failed` のみ（**終端**） |
 
 終端から動かそうとすると 422 `status`（「published から draft へは変更できません。」など）。
+承認待ちから `published` / `failed` へも 422 `status`（「awaiting_approval から published へは変更できません。」）。
+別の手段で SNS へ出してしまったときは、差し戻して（`draft`）から記録する。
+
+**承認は強制ではない。** 承認を待つかは外部アプリが登録ごとに選ぶ（`publishTiming`）。`social.write` を持つ者は承認を経ない予約も
+作れる（`status: "scheduled"`）。そうした予約は `approvedAt: null` で、人が承認した予約（`approvedAt` あり）と見分けられる。
 **失敗した投稿を出し直すときは、新しい投稿として（新しい `externalRef` で）登録する。**
 
 ### 6.2 進み具合の読み方
 
-状態は 4 つだけで、配信の進み具合は他の項目との組み合わせで読む。
+状態は 5 つだけで、配信の進み具合は他の項目との組み合わせで読む。
 
 | 見たいこと | 条件 |
 | --- | --- |
+| 承認待ち | `status: "awaiting_approval"`（配信されない。人が管理画面で承認するまで待つ。`scheduledAt` は希望日時） |
+| 承認済みの予約 | `status: "scheduled"`・**`approvedAt` あり**（人が承認した。以下の配信待ち・手動投稿待ちなどと組み合わさる） |
 | 配信待ち | `status: "scheduled"`・`deliveryMode: "auto"`・`attemptCount: 0`・`nextAttemptAt: null` |
 | 再試行待ち | `status: "scheduled"`・`nextAttemptAt` あり・`failureReason` あり（前回の理由） |
 | 支度待ち | `status: "scheduled"`・`nextAttemptAt` あり・**`skipCount` が 1 以上**・`failureReason: null`（§6.3） |
@@ -815,12 +933,14 @@ SNS 側に投稿されている可能性があるので**人が SNS を確かめ
 
 | イベント | いつ |
 | --- | --- |
-| `social.post.created` | 投稿を作った（`externalRef` の再送では発火しない） |
+| `social.post.created` | 投稿を作った（`externalRef` の再送では発火しない）。承認待ちで登録したときは `status: "awaiting_approval"` |
+| `social.post.approved` | **承認待ちの投稿が承認されて予約になった**（1 回の承認で 1 回。`status: "scheduled"`）。差し戻し（`draft` へ）と承認が外れたときは発火しない |
 | `social.post.published` | 定期実行が配信に成功した／`PATCH` で `published` にした |
 | `social.post.failed` | 定期実行が失敗・取りやめ・中断と判定した／`PATCH` で `failed` にした |
 
 Webhook の本文は `{ "event": "<イベント名>", "data": { "postId": "…", "accountId": "…", "status": "…" } }`。
-**理由・本文・URL は載らない**ので、必要なら `GET /social/posts/{postId}` で引く。
+**理由・本文・URL は載らない**ので、必要なら `GET /social/posts/{postId}` で引く（`social.post.approved` の配信の予定時刻と承認の時刻も
+`GET` の `scheduledAt` / `approvedAt` で読む。承認した人は載らない）。
 
 | ヘッダ | 内容 |
 | --- | --- |
@@ -944,7 +1064,9 @@ async function call<T>(
 type Account = { id: string; provider: string; displayName: string; handle: string };
 type Post = {
   id: string;
-  status: 'draft' | 'scheduled' | 'published' | 'failed';
+  // 値は増えうる。知らない値は「まだ終わっていない」として扱う
+  status: 'draft' | 'awaiting_approval' | 'scheduled' | 'published' | 'failed' | (string & {});
+  approvedAt: string | null;
   deliveryMode: 'auto' | 'manual';
   failureReason: string | null;
   externalUrl: string | null;
@@ -964,8 +1086,7 @@ async function main(): Promise<void> {
       socialAccountId: account.id,
       body: '新しい記事を公開しました。',
       link: 'https://example.com/articles/1234',
-      status: 'scheduled',
-      scheduledAt: new Date().toISOString(), // いますぐ（次の定期実行で配信）
+      publishTiming: 'now', // いますぐ（次の定期実行で配信）。人の確認を待つなら 'after_approval'
       deliveryMode: 'auto',
       providerOptions: { langs: ['ja'] }, // Bluesky だけが受け付ける
       externalRef: 'article-1234:bluesky',
@@ -993,6 +1114,16 @@ async function main(): Promise<void> {
     if (data.status === 'failed') {
       console.error('配信に失敗しました', data.failureReason);
       return;
+    }
+    if (data.status === 'draft') {
+      console.log('下書きに戻されました（承認待ちが差し戻された・取りやめられた）');
+      return;
+    }
+    if (data.status === 'awaiting_approval') {
+      // 人が管理画面で承認するまで進まない。Webhook の social.post.approved を受け取るとポーリングが要らない
+      console.log('承認を待っています');
+      await sleep(60_000);
+      continue;
     }
     if (data.deliveryMode === 'manual') {
       console.log('人が投稿するのを待っています（手動投稿）');
@@ -1073,7 +1204,7 @@ try:
             "socialAccountId": account["id"],
             "body": "本日のお知らせです。",
             "link": "https://example.com/news/20261001",
-            "status": "scheduled",
+            "publishTiming": "scheduled",
             "scheduledAt": "2026-10-01T09:00:00+09:00",
             "deliveryMode": "auto",
             "externalRef": "notice-2026-10-01:x",
@@ -1094,6 +1225,13 @@ while True:
     if current["status"] == "failed":
         print("配信に失敗しました", current["failureReason"])
         break
+    if current["status"] == "draft":
+        print("下書きに戻されました（承認待ちが差し戻された・取りやめられた）")
+        break
+    if current["status"] == "awaiting_approval":
+        # 人が管理画面で承認するまで進まない（X の無料版では publishTiming を送ると常にこうなる）
+        time.sleep(60)
+        continue
     if current["deliveryMode"] == "manual":
         print("人が投稿するのを待っています（手動投稿）")
         break
@@ -1121,6 +1259,8 @@ while True:
 * 配信は予約日時ちょうどではなく、**その後の最初の定期実行**（既定 1 分ごと）で行われる。
   1 回の実行で送るのは最大 20 件なので、同じ時刻に大量に予約すると後ろのものは次の周期へずれる
 * 過去の時刻で登録すると次の定期実行で配信される
+* 承認待ちの投稿は、承認されるまで希望日時を過ぎても配信されない。承認する人は過ぎた希望日時では「指定の時間に投稿」を選べない
+  （即投稿を選ぶか日時を指定し直す。§4.10）。時刻に意味のある投稿は早めに登録する
 
 ### 8.3 秘密の扱い
 
@@ -1157,6 +1297,8 @@ while True:
 | 2026-09-25 | 入力の文字と範囲の規則を足した（§1.3・§1.4・§3.2・§4.4・§4.7・§5.2・§5.5）。**動作の変更がある**：(1) **対になっていないサロゲートを含む文字列は 422**（従来は `body`・`link`・`externalRef`・`externalId`・`externalUrl`・`failureReason`・アカウントの `displayName` / `handle` などで 2xx になり、U+FFFD に置き換わって保存されていた。`media`・`providerOptions` は 500）。絵文字を UTF-16 の長さで半分に切るクライアントは、コードポイント単位で切るよう直す必要がある。(2) 本文・`link` の対になっていないサロゲートの 422 は、X・Threads・Bluesky の手動投稿でも **Core の文言**になり、`link` の片割れは**キーが `link`** になる（従来は配信 Plugin の `本文に扱えない文字が含まれています。` を `body` で返していた）。(3) **NUL（U+0000）を含む文字列は 422**（従来は多くの項目で 500、`scheduledAt`・`credentials` などは 2xx）。(4) **`scheduledAt` の `0001-01-01T00:00:00Z` より前・`9999-12-31T23:59:59.999Z` より後は 422 `scheduledAt`**（従来は 201 か 500）。どれも正当な利用で送る値ではなく、API のバージョンは v1 のまま。OpenAPI の `scheduledAt` に範囲の説明が付いた |
 | 2026-09-25 | 検証を受けて §1.3 を訂正・追記した。使えない文字の検査はクエリの**名前**も見る（名前そのものに含むときの `details` のキーは `_`）。`details` のキーは先頭の 50 個まで。あわせて、項目名が `constructor`・`__proto__` などのときに 500 になっていたのと、深い入れ子（1 万段など）の本文で 500 になっていたのを直した（どちらも 422） |
 
+| 2026-10-01 | **承認待ちを足した**（`048-social-post-approval`）。`POST /social/posts` に任意の **`publishTiming`**（`now` / `scheduled` / `after_approval`。§4.4）、状態 **`awaiting_approval`**（§4.3・§6）、承認の操作 **`POST /social/posts/{id}/approve`**（Permission **`social.approve`**。§4.10）、応答の **`approvedAt`**、イベント **`social.post.approved`**（§6.6）。API のバージョンは v1 のまま。**既存の外部アプリへの影響**：(1) `publishTiming` を送らない要求は従来どおり。(2) `POST` の `status` の既定が OpenAPI から消えた（省略時は従来どおり `draft`。生成クライアントの既定値が消えることがある）。`publishTiming` と `status` を同時に送ると 422 `status`。(3) **状態の値 `awaiting_approval` が増えた。** 自分が承認待ちを使わなければ自分の投稿には現れないが、**`GET /social/posts` の一覧には他のアプリや人が作った承認待ちが含まれうる**。状態を網羅的に分岐しているクライアントは知らない値を受け取るので、無視するか「その他」として扱う。(4) `PATCH` で承認待ちから `scheduled` / `published` / `failed` へは変えられない（422 `status`）。`PATCH` に `publishTiming` を送ると 422（従来は黙って無視されていた）。(5) **承認を経た予約（`approvedAt` あり）の内容・日時・配信方法を書き換えると承認待ちに戻る。** 既存の予約はすべて `approvedAt: null` で、振る舞いは変わらない。(6) 既存のトークンの Scope に `social.approve` は無いので、既存のトークンは承認できない。(7) X の無料版（`sns-x-manual`）では `publishTiming` を送った登録が常に承認待ちになる（§5.1） |
+
 ### 関連文書
 
 * 運用手順（トークン発行・アカウント登録・結果の読み方）：[`SNS投稿の外部連携.md`](SNS投稿の外部連携.md)
@@ -1164,7 +1306,7 @@ while True:
 * 配信 Plugin の作り方：[`Plugin開発ガイド.md`](../Plugin開発ガイド.md) §9
 * API の全体方針：`docs/仕様書/05_API設計.md`（§10・§11 形式、§18 SNS API、§33 ページング、§36 Rate Limit、§37・§38 API Token）
 * 設計：`docs/設計/035-social-publishing/設計.md`、各 SNS は `036-sns-bluesky` / `037-sns-x` /
-  `038-sns-instagram` / `040-sns-threads`
+  `038-sns-instagram` / `040-sns-threads`、承認待ちは `048-social-post-approval`
 
 ---
 
