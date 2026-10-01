@@ -1155,7 +1155,12 @@ export const updateSocialPost = defineUseCase<UpdatePostInput, SocialPost>({
     // **読んだ時点の状態と承認の記録を条件にして書く**（048 設計 §6.3.6）。上の判定（承認を外すか・
     // 承認の記録を消すか）は読んだ時点の行で決めている。その間に承認が割り込んだ行へそのまま書くと、
     // 人が見ていない内容が承認済みの予約として出る（差し戻しなら DB の CHECK に落ちて 500 になる）。
-    const expected = { status: current.status, approvedAt: current.approvedAt };
+    // 配信ジョブの着手印も条件に入れる（着手の後に書くと結果が記録されず、二重投稿にもなりうる）。
+    const expected = {
+      status: current.status,
+      approvedAt: current.approvedAt,
+      publishStartedAt: current.publishStartedAt,
+    };
     const post = await context.connection.transaction((tx) =>
       socialRepository.updatePost(
         tx,

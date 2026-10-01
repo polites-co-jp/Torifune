@@ -481,6 +481,7 @@ export const socialRepository: SocialRepository = {
     expected?: {
       readonly status: PostStatus;
       readonly approvedAt: Date | null;
+      readonly publishStartedAt: Date | null;
     },
   ): Promise<SocialPost | null> {
     if (!UUID_PATTERN.test(id)) return null;
@@ -522,6 +523,16 @@ export const socialRepository: SocialRepository = {
               sql<Date>`date_trunc('milliseconds', approved_at)`,
               '=',
               expected.approvedAt,
+            );
+      // 配信ジョブの着手（`claimForPublish`）も同じく見る。着手の後に書くと、承認を外した行に着手印が残って
+      // 結果が記録されず、`published` の記録ならジョブの送信と重なって二重投稿になる。
+      query =
+        expected.publishStartedAt === null
+          ? query.where('publish_started_at', 'is', null)
+          : query.where(
+              sql<Date>`date_trunc('milliseconds', publish_started_at)`,
+              '=',
+              expected.publishStartedAt,
             );
     }
     const row = await query.returning(POST_COLUMNS).executeTakeFirst();

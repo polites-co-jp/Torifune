@@ -715,3 +715,74 @@ describe('#79 差し戻しと承認が競合しても 500 にならない', () =
     },
   );
 });
+
+// ---------------------------------------------------------------------------
+// #82 PATCH と配信の着手の競合（検証レポート §4 の 4。ユーザー裁定 2026-10-01）
+// ---------------------------------------------------------------------------
+
+/** 配信ジョブの着手（`claimForPublish` が立てる着手印）を SQL で再現する。 */
+async function claimByJob(id: string): Promise<void> {
+  await withConnection(async (connection) => {
+    await sql`UPDATE social_posts SET publish_started_at = now() WHERE id = ${id}`.execute(
+      connection.db,
+    );
+  });
+}
+
+/** PATCH を走らせ、投稿を読んだ直後で止めた間に配信ジョブを着手させてから PATCH を進める。 */
+async function patchAcrossClaim(id: string, patch: unknown): Promise<JsonResult> {
+  const gate = pauseAfterRead();
+  const pending = callUpdate(id, patch);
+  await gate.entered;
+  await claimByJob(id);
+  gate.release();
+  return pending;
+}
+
+async function publishStartedAtOf(id: string): Promise<Date | null> {
+  return withConnection(async (connection) => {
+    const row = await connection.db
+      .selectFrom('social_posts')
+      .select('publish_started_at')
+      .where('id', '=', id)
+      .executeTakeFirst();
+    return row?.publish_started_at ?? null;
+  });
+}
+
+describe('#82 PATCH が読んでから書くまでに配信が着手したら書かない', () => {
+  it('#82 承認済みの予約への { body } の間に着手 → 409・承認済みの予約のまま本文も変わらない', async () => {
+    const id = await makeApprovedScheduled();
+
+    const result = await patchAcrossClaim(id, { body: '着手の後に届いた本文' });
+
+    expect(result.status).toBe(409);
+    expect(detailsOf(result)['status']).toContain(
+      '投稿の状態が変わっています。読み直してからやり直してください。',
+    );
+    expect(await bodyOf(id)).toBe('新製品のお知らせです。');
+    expect(await statusOf(id)).toBe('scheduled');
+    expect(await approvedAtOf(id)).not.toBeNull();
+    expect(await publishStartedAtOf(id)).not.toBeNull();
+  });
+
+  it('#82 自動配信の予約への { status: published } の間に着手 → 409・scheduled のまま（二重投稿を防ぐ）', async () => {
+    const id = await makeScheduled();
+
+    const result = await patchAcrossClaim(id, {
+      status: 'published',
+      externalUrl: 'https://example.com/posts/1',
+    });
+
+    expect(result.status).toBe(409);
+    expect(await statusOf(id)).toBe('scheduled');
+  });
+
+  it('#82 着手していない予約への PATCH は従来どおり 200（着手印が無いことを条件にしても通る）', async () => {
+    const id = await makeScheduled();
+
+    const result = await callUpdate(id, { body: '書き換えた本文' });
+
+    expect(result.status).toBe(200);
+  });
+});
