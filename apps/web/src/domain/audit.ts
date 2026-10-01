@@ -29,6 +29,8 @@ export const AUDIT_ACTIONS = [
    * 「誰が・どの目的で読んだか」を残す。
    */
   'credential_read',
+  /** SNS 投稿の承認（048-social-post-approval 設計 §6.9）。承認待ちから予約へ進めた操作。 */
+  'approved',
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];

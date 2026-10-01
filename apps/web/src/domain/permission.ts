@@ -64,6 +64,8 @@ export const CORE_PERMISSIONS = [
   'social.read',
   'social.write',
   'social.delete',
+  // 承認待ちの SNS 投稿を承認する（048-social-post-approval 設計 §8.2）。
+  'social.approve',
   'user.manage',
   'plugin.manage',
   'token.manage',
@@ -111,6 +113,8 @@ export const PERMISSION_DESCRIPTIONS: Readonly<Record<CorePermission, string>> =
   'social.read': 'SNSアカウントと投稿を見る',
   'social.write': 'SNSアカウントと投稿を作成・変更する',
   'social.delete': 'SNSアカウントと投稿を削除する',
+  'social.approve':
+    '承認待ちのSNS投稿を承認して配信に回す（投稿を登録する外部アプリのトークンには付けない）',
   'user.manage': 'ユーザーとロールを管理する（管理者を作れる）',
   'plugin.manage': 'プラグインを導入・有効化する（任意のコードを動かせる）',
   'token.manage': 'APIトークンを発行・失効する（アカウントの分身を作れる）',
