@@ -124,6 +124,8 @@ const RESOURCE_LABEL: Record<string, string> = {
 
 const POST_STATUS_LABEL: Record<string, string> = {
   draft: '下書き',
+  // 048-social-post-approval の承認待ち。英字のまま出さない。
+  awaiting_approval: '承認待ち',
   scheduled: '予約',
   published: '配信済み',
   failed: '失敗',

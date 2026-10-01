@@ -98,14 +98,40 @@ export function isValidDisplayName(value: string): boolean {
 // 投稿
 // ---------------------------------------------------------------------------
 
-export const POST_STATUSES = ['draft', 'scheduled', 'published', 'failed'] as const;
+/**
+ * 投稿の状態。**並びは状態の進む順**（下書き → 承認待ち → 予約 → 結果）。
+ *
+ * `awaiting_approval`（承認待ち）は 048-social-post-approval で足した。「配信してよいと誰もまだ言っていない」
+ * という事実は既存の列の組み合わせから導けないため（048 設計 §2）。
+ */
+export const POST_STATUSES = [
+  'draft',
+  'awaiting_approval',
+  'scheduled',
+  'published',
+  'failed',
+] as const;
 export type PostStatus = (typeof POST_STATUSES)[number];
+
+/**
+ * 登録の時点での配信の時機（048-social-post-approval 設計 §6.1）。
+ *
+ * `deliveryMode`（誰が SNS へ出すか）とは別の軸。`now`＝即投稿、`scheduled`＝`scheduledAt` の時刻に投稿、
+ * `after_approval`＝人の確認（承認）を待ってから投稿。
+ */
+export const PUBLISH_TIMINGS = ['now', 'scheduled', 'after_approval'] as const;
+export type PublishTiming = (typeof PUBLISH_TIMINGS)[number];
+
+/** 承認するときに選べる時機（048-social-post-approval 設計 §6.4）。 */
+export const APPROVAL_TIMINGS = ['now', 'scheduled'] as const;
+export type ApprovalTiming = (typeof APPROVAL_TIMINGS)[number];
 
 /**
  * 配信の方法（035-social-publishing 設計 §5.6.1）。
  *
  * `auto` はジョブが Plugin を通して送る。`manual` は人が SNS 側で投稿し、
  * 結果を画面から記録する。**状態（`PostStatus`）は増やさない**（§5.8）。
+ * ただし 048-social-post-approval で承認待ちを 1 つ足した（承認待ちは既存の列から導けないため）。
  */
 export const DELIVERY_MODES = ['auto', 'manual'] as const;
 export type DeliveryMode = (typeof DELIVERY_MODES)[number];
@@ -283,8 +309,8 @@ export function isValidManualUrl(value: string): boolean {
 /**
  * 手動投稿待ちか。
  *
- * **状態は増やさない**（035-social-publishing 設計 §5.8）。
- * 「手動投稿待ち」は `manual` かつ `scheduled` かつ予約時刻が来たことから導く。
+ * **状態は増やさない**（035-social-publishing 設計 §5.8。048 で承認待ちを 1 つ足したが、それは導出できないため）。
+ * 「手動投稿待ち」は `manual` かつ `scheduled` かつ予約時刻が来たことから導く。承認待ちの行は拾わない。
  */
 export function isManualPending(
   post: Pick<SocialPost, 'deliveryMode' | 'status' | 'scheduledAt'>,
@@ -309,10 +335,15 @@ export function isManualPending(
  *
  * **`published` と `failed` からは戻せない。** 起きた事実は書き換えない。
  * 「配信した」を「下書き」に戻せると、記録が信用できなくなる。
+ *
+ * **承認待ち（`awaiting_approval`）から予約・配信の結果へは `PATCH` で進めない**
+ * （048-social-post-approval 設計 §6.6.2）。予約にするのは承認の操作（`canApprove`）だけ。
+ * 差し戻し（`draft`）と内容の修正（`awaiting_approval` のまま）はできる。
  */
 const ALLOWED_TRANSITIONS: Record<PostStatus, readonly PostStatus[]> = {
-  draft: ['draft', 'scheduled', 'published', 'failed'],
-  scheduled: ['scheduled', 'draft', 'published', 'failed'],
+  draft: ['draft', 'awaiting_approval', 'scheduled', 'published', 'failed'],
+  awaiting_approval: ['awaiting_approval', 'draft'],
+  scheduled: ['scheduled', 'draft', 'awaiting_approval', 'published', 'failed'],
   published: ['published'],
   failed: ['failed'],
 };
@@ -327,4 +358,232 @@ export function isPostStatus(value: string): value is PostStatus {
 
 export function isAccountStatus(value: string): value is AccountStatus {
   return (ACCOUNT_STATUSES as readonly string[]).includes(value);
+}
+
+// ---------------------------------------------------------------------------
+// 承認待ち（048-social-post-approval）
+// ---------------------------------------------------------------------------
+
+/**
+ * 承認できる状態か（048-social-post-approval 設計 §6.6.2）。
+ *
+ * `awaiting_approval → scheduled` は `canTransition` では偽で、承認の操作だけが行う。
+ */
+export function canApprove(status: PostStatus): boolean {
+  return status === 'awaiting_approval';
+}
+
+export interface CreateTimingInput {
+  /** 送られた登録の時機。送られなければ undefined（今の振る舞い。裁定 1）。 */
+  readonly publishTiming: PublishTiming | undefined;
+  /** 送られた状態。`publishTiming` と同時には来ない（HTTP のスキーマが断る）。 */
+  readonly status: PostStatus | undefined;
+  readonly scheduledAt: Date | null;
+  /** その provider が「手動投稿しかできない配信 Plugin」か（設計 §6.7）。 */
+  readonly manualOnly: boolean;
+  readonly now: Date;
+}
+
+export type CreateTimingResult =
+  | {
+      readonly ok: true;
+      readonly status: PostStatus;
+      readonly scheduledAt: Date | null;
+      /** 手動投稿しかできない配信 Plugin のために承認待ちに変えたか（監査に残す。裁定 5）。 */
+      readonly approvalForced: boolean;
+    }
+  | { readonly ok: false; readonly field: 'scheduledAt'; readonly message: string };
+
+const SCHEDULED_AT_REQUIRED_MESSAGE = '予約するときは予約日時を指定してください。';
+
+/**
+ * 登録の `status` / `scheduledAt` の実効値を決める（048-social-post-approval 設計 §6.2.2・§6.2.3）。
+ *
+ * * `publishTiming` を送らない要求は今の振る舞い（`status` の省略は `draft`）。**`manualOnly` を効かせない**（裁定 8）
+ * * `now` の `scheduledAt` は「いま」。`scheduled` は日時が要る（過去も可）。`after_approval` は承認待ち（日時は希望日時）
+ * * 表の解決の**後**に裁定 5 の上書きを掛ける：`publishTiming` を送っていて `manualOnly` なら承認待ち
+ *   （`scheduledAt` は `now` なら null、それ以外は送った値）。表の段階の誤りは provider によらず同じに返す
+ */
+export function resolveCreateTiming(input: CreateTimingInput): CreateTimingResult {
+  const { publishTiming, scheduledAt, now } = input;
+
+  if (publishTiming === undefined) {
+    const status = input.status ?? 'draft';
+    if (status === 'scheduled' && scheduledAt === null) {
+      return { ok: false, field: 'scheduledAt', message: SCHEDULED_AT_REQUIRED_MESSAGE };
+    }
+    return { ok: true, status, scheduledAt, approvalForced: false };
+  }
+
+  if (publishTiming === 'scheduled' && scheduledAt === null) {
+    return { ok: false, field: 'scheduledAt', message: SCHEDULED_AT_REQUIRED_MESSAGE };
+  }
+
+  if (input.manualOnly) {
+    return {
+      ok: true,
+      status: 'awaiting_approval',
+      scheduledAt: publishTiming === 'now' ? null : scheduledAt,
+      approvalForced: true,
+    };
+  }
+
+  switch (publishTiming) {
+    case 'now':
+      return { ok: true, status: 'scheduled', scheduledAt: now, approvalForced: false };
+    case 'scheduled':
+      return { ok: true, status: 'scheduled', scheduledAt, approvalForced: false };
+    case 'after_approval':
+      return { ok: true, status: 'awaiting_approval', scheduledAt, approvalForced: false };
+  }
+}
+
+export interface ApprovalScheduleInput {
+  readonly requested: ApprovalTiming;
+  /** 要求の `scheduledAt`。送られなければ undefined。 */
+  readonly scheduledAtInput: Date | null | undefined;
+  /** 登録された希望日時。 */
+  readonly registered: Date | null;
+  readonly manualOnly: boolean;
+  readonly now: Date;
+}
+
+export type ApprovalScheduleResult =
+  | {
+      readonly ok: true;
+      readonly timing: ApprovalTiming;
+      readonly scheduledAt: Date;
+      /** 手動投稿しかできない配信 Plugin のために即投稿へ読み替えたか（裁定 5）。 */
+      readonly approvalForced: boolean;
+    }
+  | { readonly ok: false; readonly field: 'scheduledAt'; readonly message: string };
+
+/**
+ * 承認のときの配信の時刻を決める（048-social-post-approval 設計 §6.4.5。裁定 4・5）。
+ *
+ * **過ぎた日時を即投稿に読み替えない。** 承認する人は「指定の時間に投稿」を明示して選んでいる。
+ * 決めた日時が「いま」以前（等しいときも）なら 422 で、即投稿か日時の指定し直しを求める。
+ */
+export function resolveApprovalSchedule(input: ApprovalScheduleInput): ApprovalScheduleResult {
+  const { requested, now } = input;
+
+  if (input.manualOnly) {
+    return { ok: true, timing: 'now', scheduledAt: now, approvalForced: requested === 'scheduled' };
+  }
+  if (requested === 'now') {
+    return { ok: true, timing: 'now', scheduledAt: now, approvalForced: false };
+  }
+
+  const fromInput = input.scheduledAtInput ?? null;
+  if (fromInput !== null && !isValidScheduledAt(fromInput)) {
+    return {
+      ok: false,
+      field: 'scheduledAt',
+      message: '0001-01-01T00:00:00Z から 9999-12-31T23:59:59.999Z までの日時を指定してください。',
+    };
+  }
+  const scheduledAt = fromInput ?? input.registered;
+  if (scheduledAt === null) {
+    return {
+      ok: false,
+      field: 'scheduledAt',
+      message: '承認して予約するときは日時を指定してください。',
+    };
+  }
+  if (scheduledAt.getTime() <= now.getTime()) {
+    return {
+      ok: false,
+      field: 'scheduledAt',
+      message: '指定の日時を過ぎています。即投稿を選ぶか、未来の日時を指定してください。',
+    };
+  }
+  return { ok: true, timing: 'scheduled', scheduledAt, approvalForced: false };
+}
+
+/** 承認を外すかを決めるのに比べる項目（048-social-post-approval 設計 §6.3.3）。 */
+export interface ApprovalSubject {
+  readonly status: PostStatus;
+  readonly approvedAt: Date | null;
+  readonly body: string;
+  readonly media: readonly PostMedia[];
+  readonly link: string | null;
+  readonly providerOptions: Readonly<Record<string, unknown>>;
+  readonly deliveryMode: DeliveryMode;
+  readonly scheduledAt: Date | null;
+}
+
+/** キーを再帰的に整列した JSON（キーの順序に依らずに比べる）。 */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
+  }
+  if (value !== null && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const entries = Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`);
+    return `{${entries.join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'undefined';
+}
+
+function sameMedia(a: readonly PostMedia[], b: readonly PostMedia[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((item, index) => item.url === b[index]?.url && item.alt === b[index]?.alt)
+  );
+}
+
+function sameTime(a: Date | null, b: Date | null): boolean {
+  return a === null || b === null ? a === b : a.getTime() === b.getTime();
+}
+
+/**
+ * 承認済みの予約を書き換えると承認待ちへ戻すか（048-social-post-approval 設計 §6.3.3。裁定 10）。
+ *
+ * 承認を経た予約（`approvedAt` あり）が、変更後も `scheduled` のまま、内容・日時・配信方法のどれかが
+ * **値として変わる**とき真。送っただけで値が同じなら偽（編集フォームは変えていない項目も送る）。
+ * `media` は要素の順序込みで、`providerOptions` はキーの順序に依らず、`scheduledAt` はミリ秒で比べる。
+ */
+export function revokesApproval(current: ApprovalSubject, next: ApprovalSubject): boolean {
+  if (current.status !== 'scheduled' || current.approvedAt === null) {
+    return false;
+  }
+  if (next.status !== 'scheduled') {
+    return false;
+  }
+  return (
+    current.body !== next.body ||
+    !sameMedia(current.media, next.media) ||
+    current.link !== next.link ||
+    canonicalJson(current.providerOptions) !== canonicalJson(next.providerOptions) ||
+    current.deliveryMode !== next.deliveryMode ||
+    !sameTime(current.scheduledAt, next.scheduledAt)
+  );
+}
+
+/**
+ * 手動投稿しかできない配信 Plugin か（048-social-post-approval 設計 §6.7.2。裁定 7）。
+ *
+ * **provider 名で分岐しない。** Application が登録簿から「`publish` があるか・`manual` があるか」を
+ * 取り出して渡す（Domain は Plugin API を知らない）。配信 Plugin が無ければ偽。
+ */
+export function isManualOnlyPublisher(
+  publisher: { readonly publish: boolean; readonly manual: boolean } | null,
+): boolean {
+  return publisher !== null && publisher.manual && !publisher.publish;
+}
+
+/**
+ * 承認の競合（048-social-post-approval 設計 §6.4.3）。
+ *
+ * 承認の要求の `expectedUpdatedAt` が投稿の `updatedAt` と合わない＝画面で見た後に内容が変わった。
+ * API は 409 `CONFLICT` と `details.expectedUpdatedAt` に写す。**`ConflictError` を継承しない**
+ * （既定文言の 409 と取り違えない）。
+ */
+export class StaleSocialPostError extends Error {
+  constructor(readonly postId: string) {
+    super('投稿の内容が変わっています');
+    this.name = 'StaleSocialPostError';
+  }
 }

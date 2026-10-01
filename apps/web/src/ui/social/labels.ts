@@ -11,6 +11,7 @@ import type { AccountStatus, DeliveryMode, PostStatus } from '@/domain/social/so
 
 export const POST_STATUS_LABEL: Record<PostStatus, string> = {
   draft: '下書き',
+  awaiting_approval: '承認待ち',
   scheduled: '予約済み',
   published: '配信済み',
   failed: '失敗',
