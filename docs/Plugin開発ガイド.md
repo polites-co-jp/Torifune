@@ -257,6 +257,8 @@ const campaigns = await data.campaigns.list({ siteId: site.id });
 承認待ちの投稿は人が Torifune の画面で承認するまで配信されない（承認の操作は Data API に無い）。
 **承認待ちの投稿に `socialPosts.markPublished` / `markFailed` を呼ぶと**、返す `Promise` が `error.name === 'ValidationError'`（`field` は `'status'`）で reject され、何も書き込まれない。
 承認待ちは 048 で初めて現れる状態なので、それまで成功していた呼び出しが失敗に変わることは無い。
+呼び出しの最中に人の承認・取りやめや配信の確定が重なって**投稿の状態が変わったとき**も、`error.name === 'SocialPostStateChangedError'` で reject され、
+何も書き込まれない（048-social-post-approval 設計 §6.3.6）。`socialPosts.get(id)` で読み直してから、必要ならやり直す。
 
 ### 文字列の引数
 
