@@ -56,7 +56,11 @@ function isUnsafePath(name: string): boolean {
   if (name.startsWith('/')) return true;
   // C:\ や C:/ のようなドライブ付き絶対パス。
   if (/^[a-zA-Z]:/.test(name)) return true;
-  return name.split('/').some((segment) => segment === '..');
+  // 空の区間（`a//b`）と `.` の区間（`a/./b`）も拒否する。展開の join が正規化して別の場所
+  // （たとえば Plugin のフォルダの直下）を指すため、名前の検証がすり抜けられる。
+  // ディレクトリの項目の末尾の `/` が作る最後の空の区間だけは認める。
+  const segments = name.endsWith('/') ? name.slice(0, -1).split('/') : name.split('/');
+  return segments.some((segment) => segment === '..' || segment === '.' || segment === '');
 }
 
 interface RawEntry {
@@ -183,7 +187,8 @@ export async function inspectPackage(archive: Buffer): Promise<InspectedPackage>
       throw new PluginPackageError(`シンボリックリンクが含まれている: ${entry.name}`);
     }
     const [top, child] = entry.name.split('/');
-    if (child !== undefined && child.startsWith(RESERVED_PREFIX)) {
+    // 大文字小文字を区別しないファイルシステム（開発機の Windows・macOS）では `.TORIFUNE-BUNDLED` も同じ名前。
+    if (child !== undefined && child.toLowerCase().startsWith(RESERVED_PREFIX)) {
       // 本体が置く印（同梱の印・隔離マーク）を Package から持ち込ませない。偽の同梱の印があると、
       // 利用者が更新した同梱 Plugin の ID のフォルダが、次の起動で同梱の版へ戻される
       // （050-bundled-plugin-sync 設計 §6.2.2・§6.3 #4）。

@@ -191,10 +191,23 @@ const PLUGIN_ID = /^[a-z][a-z0-9-]{1,63}$/;
  * JSON.stringify がそのまま残すため）。
  */
 function displayId(name: string): string {
-  if (PLUGIN_ID.test(name)) {
-    return name;
-  }
-  return JSON.stringify(name).replace(
+  return PLUGIN_ID.test(name) ? name : quoteForLog(name);
+}
+
+/** 版の形（数字・英字・`.`・`-`・`+` だけ。semver とその崩れた形を含む）。 */
+const VERSION_SHAPE = /^[0-9A-Za-z.+-]{1,64}$/;
+
+/**
+ * ログの行に出す版（Volume の plugin.json から読んだ値）。版の形ならそのまま、そうでなければ
+ * {@link displayId} と同じく引用する（手で置いた plugin.json の版で偽の行を作らせない）。
+ */
+function displayVersion(version: string): string {
+  return VERSION_SHAPE.test(version) ? version : quoteForLog(version);
+}
+
+/** JSON の文字列として引用し、表示できる ASCII 以外を `\uXXXX` にする。 */
+function quoteForLog(value: string): string {
+  return JSON.stringify(value).replace(
     /[^\x20-\x7e]/g,
     (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`,
   );
@@ -426,10 +439,12 @@ export function failureReason(error: unknown): string {
 function describeDecision(id: string, decision: BundledDecision): string {
   switch (decision.result) {
     case 'updated':
-      return decision.backup ? `updated: legacy (backup: ${BACKUP_DIR}/${id})` : 'updated';
+      return decision.backup
+        ? `updated: legacy (backup: ${BACKUP_DIR}/${displayId(id)})`
+        : 'updated';
     case 'skipped':
       return decision.reason === 'newer version'
-        ? `skipped: newer version ${decision.installedVersion} installed`
+        ? `skipped: newer version ${displayVersion(decision.installedVersion)} installed`
         : `skipped: ${decision.reason}`;
     default:
       return decision.result;
