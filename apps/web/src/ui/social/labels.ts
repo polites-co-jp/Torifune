@@ -57,6 +57,64 @@ export const MANUAL_HANDOFF_REASON_LABEL = {
   plugin_error: 'Plugin でエラーが起きました',
 } as const satisfies Record<string, string>;
 
+// ---------------------------------------------------------------------------
+// 承認待ち（048-social-post-approval 設計 §7.1〜§7.6）
+// ---------------------------------------------------------------------------
+
+export const APPROVAL_PENDING_LABEL = '承認待ち';
+
+/** ダッシュボードと投稿一覧から飛んで来る先（設計 §7.1・§7.3・§7.5）。 */
+export const APPROVAL_PENDING_ANCHOR = 'approval-pending';
+
+export const APPROVAL_PENDING_GUIDE =
+  '外部アプリなどから確認を求められている投稿です。内容を確かめて「承認する」を押すと配信に回ります。「差し戻す」と下書きに戻ります。';
+
+/** 区画の行の「承認する…」（ダイアログを開く）。ダイアログの確定ボタンは `APPROVE_LABEL`。 */
+export const APPROVE_OPEN_LABEL = '承認する…';
+export const APPROVE_LABEL = '承認する';
+export const REJECT_LABEL = '差し戻す';
+export const APPROVE_DIALOG_TITLE = '投稿を承認する';
+export const APPROVE_NOW_LABEL = '即投稿（次の定期実行で配信に回ります）';
+export const APPROVE_SCHEDULED_LABEL = '指定の時間に投稿';
+export const APPROVE_DESIRED_PAST_WARNING =
+  '希望日時を過ぎています。即投稿を選ぶか、日時を指定し直してください。';
+/** 手動投稿しかできない配信 Plugin の行の注意（設計 §6.7.3・§7.1.3）。 */
+export const MANUAL_ONLY_APPROVAL_NOTE =
+  'この SNS は手動投稿のみのため、承認するとすぐ「手動投稿待ち」に並びます。';
+/** 承認の 409（見た後に内容が変わった。設計 §7.1.3）。 */
+export const APPROVE_STALE_MESSAGE =
+  '投稿の内容が変わっています。内容を確かめてから承認し直してください。';
+export const APPROVE_RELOAD_LABEL = '閉じて読み込み直す';
+export const APPROVED_TOAST_AUTO = '承認しました。配信に回ります。';
+export const APPROVED_TOAST_MANUAL = '承認しました。「手動投稿待ち」から投稿してください。';
+export const REJECT_CONFIRM_TITLE = '承認の依頼を差し戻しますか？';
+export const REJECT_CONFIRM_MESSAGE = '下書きに戻します。承認の依頼は取り下げられます。';
+export const REJECTED_TOAST = '差し戻し、下書きに戻しました。';
+
+/** 行の上段の見出し（設計 §7.1.2）。 */
+export const APPROVAL_REQUESTED_LABEL = '依頼';
+export const APPROVAL_DESIRED_LABEL = '希望日時';
+/** 依頼の経路。API トークンからの登録か、画面からの登録か。 */
+export const APPROVAL_VIA_LABEL = { api: 'API', screen: '画面' } as const;
+export const APPROVAL_DESIRED_PAST_NOTE = '（過ぎています）';
+export const APPROVAL_LINK_LABEL = 'リンク';
+export const APPROVAL_MEDIA_LABEL = '画像';
+
+/** 投稿一覧の状態列の補足（設計 §7.3）。 */
+export const APPROVAL_PENDING_ROW_NOTE = '（区画で承認）';
+export const APPROVED_ROW_NOTE = '（承認済み）';
+
+/** 投稿フォームの案内（設計 §7.4）。 */
+export const POST_FORM_AWAITING_NOTE =
+  '承認待ちの投稿です。予約にするには SNS 画面の「承認待ち」で承認してください。';
+export const POST_FORM_APPROVED_NOTE =
+  '承認済みの投稿です。本文・リンク・画像・日時・配信方法を変えると承認待ちに戻ります。';
+
+/** ダッシュボードの案内（設計 §7.5）。件数は呼ぶ側が整えて渡す。 */
+export function APPROVAL_REMINDER(count: string): string {
+  return `承認待ちの投稿が ${count} 件あります。SNS 画面で確かめてください。`;
+}
+
 /** 配信の支度ができていない予約への注意（設計 §7.3、要件 §4 裁定 #8）。 */
 export const NO_PUBLISHER_BADGE = '配信 Plugin なし';
 export const NO_CREDENTIAL_BADGE = '資格情報 未設定';

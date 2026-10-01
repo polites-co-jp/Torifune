@@ -16,6 +16,7 @@ import {
   type Column,
   type StatDelta,
 } from '@/ui/components';
+import { APPROVAL_PENDING_ANCHOR, APPROVAL_REMINDER } from '@/ui/social/labels';
 
 /**
  * Core の Widget（06_画面設計.md §9-10、014-dashboard、028-analytics-dashboard-redesign 設計 §7.2）。
@@ -109,6 +110,8 @@ const ACTION_LABEL: Record<string, string> = {
   uninstalled: '削除',
   // 配信ジョブによる読み出しは操作者を持たないので、一覧では「—」と並ぶ（035 設計 §6.5.8）。
   credential_read: '参照（資格情報の読み出し）',
+  // SNS 投稿の承認（048-social-post-approval 設計 §6.9）。英字のまま出さない。
+  approved: '承認',
 };
 
 const RESOURCE_LABEL: Record<string, string> = {
@@ -598,6 +601,27 @@ export function ManualPendingReminder({ count }: { readonly count: number }) {
     <Alert tone="warning">
       {`手動投稿待ちが ${formatCount(count)} 件あります。SNS 画面で投稿してください。`}{' '}
       <Link href="/social#manual-pending" style={LINK_STYLE}>
+        SNS 画面へ →
+      </Link>
+    </Alert>
+  );
+}
+
+/**
+ * 承認待ちの案内（048-social-post-approval 設計 §7.5。ユーザー裁定 11）。
+ *
+ * 承認待ちは人が動かない限り進まない。`/social` を開かない限り気づけないのでは依頼が放置される。
+ * 0 件なら描かない（`ManualPendingReminder` と同じ形）。
+ */
+export function ApprovalPendingReminder({ count }: { readonly count: number }) {
+  if (count <= 0) {
+    return null;
+  }
+
+  return (
+    <Alert tone="info">
+      {APPROVAL_REMINDER(formatCount(count))}{' '}
+      <Link href={`/social#${APPROVAL_PENDING_ANCHOR}`} style={LINK_STYLE}>
         SNS 画面へ →
       </Link>
     </Alert>

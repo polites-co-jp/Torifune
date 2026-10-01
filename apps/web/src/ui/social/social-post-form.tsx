@@ -11,8 +11,11 @@ import {
 } from '@/domain/social/social';
 import { apiRequest } from '@/ui/client/api-client';
 import { Alert, Button, FormField, Input, Select, Textarea } from '@/ui/components';
+import { toIsoOrNull, toLocalInputValue } from '@/ui/social/datetime-local';
 import {
   DELIVERY_MODE_LABEL,
+  POST_FORM_APPROVED_NOTE,
+  POST_FORM_AWAITING_NOTE,
   POST_FORM_DELIVERY_NOTE,
   POST_FORM_SCHEDULE_NOTE,
   POST_STATUS_LABEL,
@@ -55,6 +58,11 @@ export interface SocialPostFormValues {
   readonly status: PostStatus;
   /** 配信方法（035-social-publishing 設計 §7.4）。既定は `auto`。 */
   readonly deliveryMode: DeliveryMode;
+  /**
+   * 承認して予約にした時刻（ISO。048-social-post-approval 設計 §7.4）。承認を経ていなければ null。
+   * 承認済みの予約を編集すると承認待ちに戻ることを知らせるのに使う。
+   */
+  readonly approvedAtIso?: string | null;
 }
 
 export interface SocialPostFormProps {
@@ -74,28 +82,6 @@ export interface SocialPostFormProps {
   readonly sidebar?: ReactNode;
 }
 
-/** ローカル時刻の `datetime-local` 値を、API へ渡せる ISO 文字列にする。 */
-function toIsoOrNull(local: string): string | null {
-  if (local === '') {
-    return null;
-  }
-  const date = new Date(local);
-  return Number.isNaN(date.getTime()) ? null : date.toISOString();
-}
-
-/** ISO 文字列を `datetime-local` が読む形（`YYYY-MM-DDTHH:mm`）へ、閲覧者の時刻で直す。 */
-function toLocalInputValue(iso: string | null): string {
-  if (iso === null) {
-    return '';
-  }
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) {
-    return '';
-  }
-  const shifted = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
-  return shifted.toISOString().slice(0, 16);
-}
-
 export function SocialPostForm({ title, initial, accounts, postId, sidebar }: SocialPostFormProps) {
   const [message, setMessage] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, readonly string[]>>({});
@@ -113,13 +99,25 @@ export function SocialPostForm({ title, initial, accounts, postId, sidebar }: So
   const manualSupported =
     accounts.find((account) => account.id === socialAccountId)?.manualSupported === true;
 
-  // 新規はどの状態からでも作れる。編集は現在の状態から進める先だけを出す。
+  // 新規は下書き・承認待ち・予約から選ぶ（048-social-post-approval 設計 §7.4）。編集は現在の状態から進める先だけを出す。
   // `published` / `failed` は自分自身しか残らない（起きた事実は書き換えない）。
+  // 承認待ちの編集では承認待ちと下書きだけが並ぶ（予約へは承認で進む）。
   const statusOptions = (Object.keys(POST_STATUS_LABEL) as PostStatus[]).filter((status) =>
     postId === undefined
-      ? status === 'draft' || status === 'scheduled'
+      ? status === 'draft' || status === 'awaiting_approval' || status === 'scheduled'
       : canTransition(initial.status, status),
   );
+  // 状態の欄の下の案内（048 設計 §7.4）。
+  const approvalNote =
+    postId === undefined
+      ? undefined
+      : initial.status === 'awaiting_approval'
+        ? POST_FORM_AWAITING_NOTE
+        : initial.status === 'scheduled' &&
+            initial.approvedAtIso !== undefined &&
+            initial.approvedAtIso !== null
+          ? POST_FORM_APPROVED_NOTE
+          : undefined;
   const locked = postId !== undefined && statusOptions.length <= 1;
 
   async function onSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
@@ -272,7 +270,9 @@ export function SocialPostForm({ title, initial, accounts, postId, sidebar }: So
               ? {
                   description: `${POST_STATUS_LABEL[initial.status]}になった投稿は状態を戻せません。`,
                 }
-              : {})}
+              : approvalNote === undefined
+                ? {}
+                : { description: approvalNote })}
             {...(fieldErrors['status'] === undefined ? {} : { errors: fieldErrors['status'] })}
           >
             {(props) => (
