@@ -273,6 +273,8 @@ describe('#19 追加項目を省略した作成', () => {
 
     expect(Object.keys(dataOf(result)).sort()).toEqual(
       [
+        // 048 で足した（承認した時刻。048-social-post-approval 設計 §6.11）。
+        'approvedAt',
         'attemptCount',
         'body',
         'createdAt',

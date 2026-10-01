@@ -35,6 +35,7 @@ Torifune は、**外部のアプリが API で登録した投稿を、指定し�
 | --- | --- |
 | SNSアカウントの登録・更新、投稿の登録・更新 | `social.write` |
 | 投稿・アカウントの参照 | `social.read` |
+| 承認待ちの投稿の承認（`POST /api/v1/social/posts/{id}/approve`） | `social.approve`（**外部アプリのトークンには付けない**。人が管理画面で承認する。既定で管理者と編集者にある） |
 | APIトークンの発行 | `token.manage`（**画面から。トークン認証では発行できない**） |
 | `POST /api/v1/social/publish`（配信の手動実行） | `system.manage` |
 
@@ -47,7 +48,7 @@ Torifune は、**外部のアプリが API で登録した投稿を、指定し�
 | 項目 | 値 |
 | --- | --- |
 | 名前 | `my-app` など、**どの外部アプリか分かる名前** |
-| Scope | `social.read` と `social.write` |
+| Scope | `social.read` と `social.write`（**`social.approve` は付けない**。付けると外部アプリが自分で依頼した承認を自分で通せてしまう） |
 | 有効期限 | 期限を切るなら、切れる前に貼り替える運用とセットで |
 
 **平文のトークンは発行直後に一度しか表示されない。** その場で控える。
@@ -196,7 +197,8 @@ curl -X POST https://torifune.example.com/api/v1/social/posts \
 | --- | --- | --- |
 | `socialAccountId` | — | §2 で作ったアカウントの `id`（必須） |
 | `body` | — | 本文（必須） |
-| `status` | `draft` | `draft` なら下書き。**配信するなら `scheduled`** |
+| `publishTiming` | なし | **いつ配信へ回すか**（推奨）。`now`＝すぐ／`scheduled`＝`scheduledAt` の時刻に／`after_approval`＝**人が管理画面で確かめてから**（下記）。省略すると `status` と `scheduledAt` で決まる。`status` と同時には送れない（422） |
+| `status` | `draft` | `draft` なら下書き。**配信するなら `scheduled`**（`publishTiming` を送るときは送らない） |
 | `scheduledAt` | `null` | 配信する時刻（ISO 8601）。**`scheduled` のときは必須**（無いと 422） |
 | `deliveryMode` | `auto` | `auto` = Torifune が配信する。`manual` = 人が投稿画面から投稿する（§6） |
 | `externalRef` | なし | 外部アプリ側の ID。**再送のための冪等キー**（§4）。1〜200 文字 |
@@ -205,6 +207,22 @@ curl -X POST https://torifune.example.com/api/v1/social/posts \
 | `providerOptions` | `{}` | provider 固有の追加項目（返信先の ID など）。JSON にして 4096 バイト以内。**中身を検証するのは配信 Plugin** |
 
 応答は 201。`{ "data": { "id": "…", "status": "scheduled", "deliveryMode": "auto", … } }`。
+
+### 人の確認を待ってから出す（承認待ち）
+
+`publishTiming: "after_approval"` で登録すると、投稿は**承認待ち**（`status: "awaiting_approval"`）になり、配信されない。
+`scheduledAt` を添えると**希望日時**として残る。
+
+* 管理画面の **SNS**（`/social`）の「承認待ち」区画に並び、ダッシュボードにも「承認待ちの投稿が n 件あります」と出る
+* `social.approve` を持つ人（既定で管理者・編集者）が本文・リンク・画像の URL・投稿先を確かめ、「承認する」で**即投稿**か
+  **指定の時間に投稿**（希望日時）を選ぶ。希望日時を過ぎていれば即投稿を選ぶか日時を指定し直す。「差し戻す」と下書きに戻る
+* 外部アプリは `GET /api/v1/social/posts/{id}` の `status` か、Webhook の `social.post.approved` で承認されたことを知る。
+  承認された投稿は `approvedAt` に承認の時刻が入る。差し戻されると `status: "draft"` になる（理由は返らない）
+* **承認済みの予約の本文・日時などを API で書き換えると、承認待ちに戻る**（人が見た内容と違うものを出さないため）
+* **X の無料版（手動投稿だけの配信 Plugin）では、`publishTiming` を送った登録はどの値でも承認待ちになり、承認するとすぐ
+  「手動投稿待ち」（§6）に並ぶ**
+
+詳しい項目・422・409 は [`SNS投稿API仕様.md`](SNS投稿API仕様.md) の §4.4・§4.10。
 
 ### 媒体（`media`）はファイルを預からない
 
@@ -300,11 +318,12 @@ curl -H "Authorization: Bearer $TORIFUNE_TOKEN" \
 
 ### 状態の読み方
 
-投稿の状態は 4 つしかない（`draft` / `scheduled` / `published` / `failed`）。
+投稿の状態は 5 つしかない（`draft` / `awaiting_approval` / `scheduled` / `published` / `failed`）。値は増えうるので、知らない値は無視する。
 **配信の進み具合は、状態と他の項目の組み合わせで読む。**
 
 | 見たいこと | 条件 |
 | --- | --- |
+| 承認待ち | `status: "awaiting_approval"`。人が管理画面で承認するまで配信されない（§3） |
 | 配信待ち | `status: "scheduled"` で `attemptCount: 0`、`nextAttemptAt: null` |
 | 再試行待ち | `status: "scheduled"` で `nextAttemptAt` が入っている（`failureReason` に前回の理由） |
 | **支度待ち** | `status: "scheduled"` で `nextAttemptAt` が入っているのに **`failureReason` が空**。配信の支度がまだ整っていない（下記）。`skipCount` が 1 以上になる |
@@ -438,7 +457,7 @@ Torifune が付けた理由が入る。資格情報が混じらないよう、�
 ### イベント・Webhook で受け取る
 
 結果をポーリングせずに受け取りたい場合は Webhook を使う
-（`social.post.published` / `social.post.failed`）。
+（`social.post.approved` / `social.post.published` / `social.post.failed`。`social.post.approved` は承認待ちの投稿が承認されたとき）。
 **Payload に理由は載らない**（`{ postId, accountId, status }` だけ）ので、
 理由が要るときは `GET /api/v1/social/posts/{id}` で引く。
 詳しくは [`Eventリファレンス.md`](../Eventリファレンス.md)。
@@ -491,7 +510,7 @@ Torifune は既定で **1 分ごと**に配信を回す。止めている構成
   | キー | 意味 |
   | --- | --- |
   | `interrupted` | 前回の実行が途中で死んでいた投稿（`failed`（結果不明）に落とした） |
-  | `due` | 1 回の実行で**読んで判定した**期限到来の投稿の件数（飛ばした分を含む。上限 200）。200 ちょうどなら、まだ読んでいない期限到来の投稿が残っている |
+  | `due` | 1 回の実行で**読んで判定した**期限到来の投稿の件数（飛ばした分を含む。上限 200）。200 ちょうどなら、まだ読んでいない期限到来の投稿が残っている。読んだ後・送る前に人が書き換えて送らなくなった投稿（予約日時を未来へ直した・手動投稿へ変えた・取りやめた）は `due` にだけ数え、他のどれにも数えない |
   | `skipped` | 配信の支度が整わず**飛ばして後ろへ送った**件数（§5 の最後） |
   | `skipFailed` | 支度が整わないまま**約 24 時間が過ぎて取りやめた**件数（§5 の最後）。`failed` とは分けて数える |
   | `attempted` | 配信を試みた件数（1 回あたり最大 20 件） |

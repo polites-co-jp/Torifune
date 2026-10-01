@@ -4,6 +4,7 @@ import { listRecentActivities } from '@/application/audit-use-cases';
 import { listCampaigns } from '@/application/campaign/campaign-use-cases';
 import { listSites } from '@/application/site/site-use-cases';
 import {
+  listApprovalPendingPosts,
   listManualPendingPosts,
   listSocialPosts,
   listSocialPostsByIds,
@@ -24,6 +25,7 @@ import { Card } from '@/ui/components';
 import {
   AccessOverview,
   ActiveCampaigns,
+  ApprovalPendingReminder,
   ManualPendingReminder,
   RecentActivities,
   RecentPosts,
@@ -132,6 +134,11 @@ export default async function DashboardPage() {
   // 手動投稿待ちは**件数だけ**を取る（設計 §7.6）。操作は `/social` の区画に置く。
   const manualPendingTotal = canReadSocial
     ? (await listManualPendingPosts(context, { limit: 1 })).total
+    : 0;
+
+  // 承認待ちも**件数だけ**を取る（048-social-post-approval 設計 §7.5。裁定 11）。
+  const approvalPendingTotal = canReadSocial
+    ? (await listApprovalPendingPosts(context, { limit: 1 })).total
     : 0;
 
   // サイト別の行。名前順、`archived` を除く既定（設計 §7.2）。
@@ -266,6 +273,8 @@ export default async function DashboardPage() {
         {canReadCampaigns && <ActiveCampaigns campaigns={campaignRows} />}
 
         {/* 「最近の投稿」の上・Plugin の Widget の前に置く（設計 §7.6 / §7.8）。 */}
+        {/* 承認待ちの案内は手動投稿待ちの上（048 設計 §7.5）。承認 → 手動投稿の順に流れる。 */}
+        {canReadSocial && <ApprovalPendingReminder count={approvalPendingTotal} />}
         {canReadSocial && <ManualPendingReminder count={manualPendingTotal} />}
 
         <div

@@ -100,11 +100,23 @@ describe('countPostsByStatus', () => {
       { status: 'failed' },
     ]);
 
-    expect(counts).toEqual({ draft: 1, scheduled: 1, published: 2, failed: 1 });
+    expect(counts).toEqual({
+      draft: 1,
+      awaiting_approval: 0,
+      scheduled: 1,
+      published: 2,
+      failed: 1,
+    });
   });
 
   /** 0件の状態も 0 として出す。欄が消えると「無い」のか「見えない」のか分からない。 */
   it('0件の状態も欄を残す', () => {
-    expect(countPostsByStatus([])).toEqual({ draft: 0, scheduled: 0, published: 0, failed: 0 });
+    expect(countPostsByStatus([])).toEqual({
+      draft: 0,
+      awaiting_approval: 0,
+      scheduled: 0,
+      published: 0,
+      failed: 0,
+    });
   });
 });

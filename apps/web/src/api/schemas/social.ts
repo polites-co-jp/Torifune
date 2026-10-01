@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   ACCOUNT_STATUSES,
+  APPROVAL_TIMINGS,
   DELIVERY_MODES,
   DISPLAY_NAME_MAX_LENGTH,
   EXTERNAL_ID_MAX_LENGTH,
@@ -15,6 +16,7 @@ import {
   POST_BODY_MAX_LENGTH,
   POST_STATUSES,
   PROVIDER_OPTIONS_MAX_BYTES,
+  PUBLISH_TIMINGS,
   type PostMedia,
   type SocialAccount,
   type SocialPost,
@@ -94,6 +96,15 @@ const credentialsSchema = z
 export const accountStatusSchema = z.enum(ACCOUNT_STATUSES);
 export const postStatusSchema = z.enum(POST_STATUSES);
 
+/**
+ * 登録の時機（048-social-post-approval 設計 §6.1・§6.11）。`deliveryMode`（誰が出すか）とは別の軸。
+ */
+export const publishTimingSchema = z
+  .enum(PUBLISH_TIMINGS)
+  .describe(
+    '即投稿（now）・指定の時間に投稿（scheduled）・承認を待ってから投稿（after_approval）。省略すると status と scheduledAt で決まる（従来どおり）。',
+  );
+
 export const accountListQuerySchema = z.object({
   page: pageQuerySchema,
   perPage: perPageQuerySchema,
@@ -137,6 +148,10 @@ export const postListQuerySchema = z.object({
   status: postStatusSchema.optional(),
 });
 
+/** ISO 8601 の日時（`2026-10-01T09:00:00.000Z` / `+09:00` の形）。 */
+const ISO_DATE_TIME_PATTERN =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})$/;
+
 /**
  * 予約日時（046-input-500-nul-and-ranges 設計 §6.5）。範囲の検査は UseCase（`isValidScheduledAt`）が行う。
  * OpenAPI の `date-time` には範囲を表す仕組みが無いので、説明に書く。
@@ -149,30 +164,63 @@ const scheduledAtSchema = z.coerce
     '予約日時。0001-01-01T00:00:00Z から 9999-12-31T23:59:59.999Z まで（範囲外は 422）。null は予約しない。',
   );
 
-export const createPostSchema = z.object({
-  socialAccountId: z.string().min(1, '入力してください。'),
-  body: z.string().min(1, '入力してください。').max(POST_BODY_MAX_LENGTH),
-  scheduledAt: scheduledAtSchema,
-  status: postStatusSchema.default('draft'),
-  deliveryMode: deliveryModeSchema.default('auto'),
-  media: mediaSchema.default([]),
-  link: z
-    .string()
-    .nullish()
-    .refine(
-      (value) => value === null || value === undefined || isValidLink(value),
-      `URL は https で${MEDIA_URL_MAX_LENGTH}文字以内にしてください。`,
-    ),
-  providerOptions: providerOptionsSchema.default({}),
-  /** 外部アプリ側の ID。同じ API Token からの再送を 1 行にまとめる冪等キー。 */
-  externalRef: z
-    .string()
-    .trim()
-    .min(1, '入力してください。')
-    .max(EXTERNAL_REF_MAX_LENGTH)
-    .optional(),
-  csrfToken: z.string().optional(),
-});
+export const createPostSchema = z
+  .object({
+    socialAccountId: z.string().min(1, '入力してください。'),
+    body: z.string().min(1, '入力してください。').max(POST_BODY_MAX_LENGTH),
+    scheduledAt: scheduledAtSchema,
+    /** 省略すると今の振る舞い（048 設計 §6.2.2）。 */
+    publishTiming: publishTimingSchema.optional(),
+    /**
+     * **Zod の既定を置かない**（048 設計 §6.2.1）。送られなかったのか `draft` を送ったのかを区別しないと、
+     * `publishTiming` との同時指定を断れない。省略時の `draft` は UseCase が補う。
+     */
+    status: postStatusSchema
+      .optional()
+      .describe(
+        '投稿の状態。省略時は draft（publishTiming を送らないとき）。publishTiming と同時には指定できない（422）。推奨は publishTiming。',
+      ),
+    deliveryMode: deliveryModeSchema.default('auto'),
+    media: mediaSchema.default([]),
+    link: z
+      .string()
+      .nullish()
+      .refine(
+        (value) => value === null || value === undefined || isValidLink(value),
+        `URL は https で${MEDIA_URL_MAX_LENGTH}文字以内にしてください。`,
+      ),
+    providerOptions: providerOptionsSchema.default({}),
+    /** 外部アプリ側の ID。同じ API Token からの再送を 1 行にまとめる冪等キー。 */
+    externalRef: z
+      .string()
+      .trim()
+      .min(1, '入力してください。')
+      .max(EXTERNAL_REF_MAX_LENGTH)
+      .optional(),
+    csrfToken: z.string().optional(),
+  })
+  // 要求全体の形が通ったときだけ掛かる（048 設計 §6.2.4 の 1b）。違反はまとめて返す。
+  .superRefine((value, context) => {
+    if (value.publishTiming === undefined) return;
+    if (value.status !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['status'],
+        message: 'publishTiming と status は同時に指定できません。',
+      });
+    }
+    if (
+      value.publishTiming === 'now' &&
+      value.scheduledAt !== undefined &&
+      value.scheduledAt !== null
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['scheduledAt'],
+        message: 'publishTiming が now のときは scheduledAt を指定できません。',
+      });
+    }
+  });
 
 export const updatePostSchema = z.object({
   body: z.string().min(1).max(POST_BODY_MAX_LENGTH).optional(),
@@ -204,6 +252,43 @@ export const updatePostSchema = z.object({
    * 「失敗した」だけを送れて理由を送れないと、画面から原因が追えない。
    */
   failureReason: z.string().max(FAILURE_REASON_MAX_LENGTH).nullish(),
+  /**
+   * **どんな値でも 422**（048 設計 §6.3.5）。知らない項目は黙って無視されるので、`POST` で覚えた
+   * `publishTiming` を `PATCH` に送ると承認を依頼したつもりで何も起きない。黙って捨てない。
+   */
+  publishTiming: z
+    .unknown()
+    .optional()
+    .refine(
+      (value) => value === undefined,
+      'publishTiming は登録のときだけ指定できます。承認を依頼するときは status に awaiting_approval を指定してください。',
+    )
+    .describe('指定すると 422。登録のときだけ使う。'),
+  csrfToken: z.string().optional(),
+});
+
+/**
+ * 承認の要求（048-social-post-approval 設計 §6.4.1）。
+ *
+ * `expectedUpdatedAt` は画面（または `GET`）で読んだ投稿の `updatedAt`。**必須**（付け忘れた承認が黙って
+ * 最新の内容を承認しないように）。`z.coerce.date()` は数値も受けるので使わず、ISO 8601 の文字列として受ける。
+ */
+export const approvePostSchema = z.object({
+  publishTiming: z
+    .enum(APPROVAL_TIMINGS)
+    .describe(
+      '即投稿（now）か指定の時間に投稿（scheduled）。scheduled で scheduledAt を省略すると登録された希望日時を使う。',
+    ),
+  scheduledAt: scheduledAtSchema,
+  expectedUpdatedAt: z
+    .string()
+    .refine(
+      (value) => ISO_DATE_TIME_PATTERN.test(value) && !Number.isNaN(Date.parse(value)),
+      'ISO 8601 の日時で指定してください。',
+    )
+    .describe(
+      '画面（または GET）で読んだ投稿の updatedAt。投稿の updatedAt と合わなければ 409（見た後に内容が変わった）。',
+    ),
   csrfToken: z.string().optional(),
 });
 
@@ -286,6 +371,8 @@ export const postResponseSchema = z.object({
   nextAttemptAt: z.string().nullable(),
   skipCount: z.number(),
   skipReason: skipReasonSchema.nullable(),
+  /** 承認して予約にした時刻。承認を経ていなければ null（048 設計 §6.11）。 */
+  approvedAt: z.string().nullable(),
 });
 
 export const postEnvelopeSchema = dataEnvelope(postResponseSchema);
@@ -338,6 +425,8 @@ export interface PostResponse {
   readonly skipCount: number;
   /** どの理由で飛ばしたか。飛ばされていなければ null。 */
   readonly skipReason: SkipReason | null;
+  /** 承認して予約にした時刻（048 設計 §6.11）。承認を経ていなければ null。 */
+  readonly approvedAt: string | null;
 }
 
 export function toPostResponse(post: SocialPost): PostResponse {
@@ -363,5 +452,6 @@ export function toPostResponse(post: SocialPost): PostResponse {
     nextAttemptAt: post.nextAttemptAt?.toISOString() ?? null,
     skipCount: post.skipCount,
     skipReason: post.skipReason,
+    approvedAt: post.approvedAt?.toISOString() ?? null,
   };
 }

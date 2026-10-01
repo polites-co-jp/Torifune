@@ -343,6 +343,7 @@ describe('分析の材料', () => {
 
     expect(countPostsByStatus(posts)).toEqual({
       draft: 1,
+      awaiting_approval: 0,
       scheduled: 1,
       published: 0,
       failed: 0,

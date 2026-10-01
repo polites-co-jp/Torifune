@@ -57,7 +57,9 @@ export const POST = defineRoute({
       socialAccountId: body.socialAccountId,
       body: body.body,
       scheduledAt: body.scheduledAt ?? null,
-      status: body.status,
+      // 省略は渡さない。省略時の draft は UseCase が補う（048-social-post-approval 設計 §6.2.1）。
+      ...(body.status === undefined ? {} : { status: body.status }),
+      ...(body.publishTiming === undefined ? {} : { publishTiming: body.publishTiming }),
       deliveryMode: body.deliveryMode,
       media: body.media,
       link: body.link ?? null,

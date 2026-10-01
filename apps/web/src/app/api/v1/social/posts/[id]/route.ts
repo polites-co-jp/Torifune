@@ -37,7 +37,15 @@ export const PATCH = defineRoute({
   permission: 'social.write',
   body: updatePostSchema,
   response: postEnvelopeSchema,
-  additionalResponses: [POST_NOT_FOUND],
+  additionalResponses: [
+    POST_NOT_FOUND,
+    // 048-social-post-approval 設計 §6.3.6。
+    {
+      status: 409,
+      description:
+        '読んでから書くまでの間に投稿の状態か承認の記録が変わった（多くは承認が割り込んだ）。何も変えていない。`details.status` に理由',
+    },
+  ],
   handler: async ({ context, params, body }) => {
     // 事前検査が publisher の登録簿を引く（設計 §6.7）。
     await ensurePluginsStartedAnonymously();

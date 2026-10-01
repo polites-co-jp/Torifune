@@ -44,6 +44,8 @@ const POST_RESPONSE = {
   // 出さないと運用者が「あと何回で取りやめか」を知れないまま予約し直す（設計 §6.1.4）。
   skipCount: 0,
   skipReason: null,
+  // 048 で足した（承認した時刻。048-social-post-approval 設計 §6.11）。
+  approvedAt: null,
 } as const;
 
 describe('#64 投稿の応答スキーマ（§6.1.4）', () => {
@@ -198,6 +200,8 @@ describe('#118 飛ばした履歴を応答に出す（§6.1.4）', () => {
         'nextAttemptAt',
         'skipCount',
         'skipReason',
+        // 048 で足した（048-social-post-approval 設計 §6.11）。
+        'approvedAt',
       ].sort(),
     );
   });
@@ -238,6 +242,7 @@ describe('#118 toPostResponse が飛ばした履歴を写す', () => {
       nextAttemptAt: null,
       skipCount: 0,
       skipReason: null,
+      approvedAt: null,
       ...overrides,
     };
   }

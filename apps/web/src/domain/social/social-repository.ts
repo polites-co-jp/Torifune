@@ -78,6 +78,11 @@ export interface SocialPostUpdate {
   readonly nextAttemptAt?: Date | null | undefined;
   readonly skipCount?: number | undefined;
   readonly skipReason?: string | null | undefined;
+  /**
+   * 承認の時刻（048-social-post-approval 設計 §6.3.3）。承認待ち・下書きへ移すときと承認を外すときに
+   * NULL へ戻す（DB の CHECK が、承認待ち・下書きの行が値を持つことを断る）。値を入れるのは承認だけ。
+   */
+  readonly approvedAt?: Date | null | undefined;
 }
 
 export interface SocialPostListQuery {
@@ -184,10 +189,20 @@ export interface SocialRepository {
     createdByTokenId: string,
     externalRef: string,
   ): Promise<SocialPost | null>;
+  /**
+   * 投稿を書き換える。`expected` を渡すと、**状態・承認の記録・配信の着手印が読んだ時点のままの行だけ**を
+   * 書き換える（048-social-post-approval 設計 §6.3.6）。合わなければ何も変えずに null を返す。
+   * 読んでから書く間に承認や配信の着手が割り込むと、読んだ時点の判定のまま書き換えてしまうため。
+   */
   updatePost(
     connection: Connection,
     id: string,
     patch: SocialPostUpdate,
+    expected?: {
+      readonly status: PostStatus;
+      readonly approvedAt: Date | null;
+      readonly publishStartedAt: Date | null;
+    },
   ): Promise<SocialPost | null>;
   deletePost(connection: Connection, id: string): Promise<boolean>;
 
@@ -200,6 +215,35 @@ export interface SocialRepository {
    * `total` は `limit` で切る前の全件数（ダッシュボードの件数に使う。§7.6）。
    */
   listManualPending(connection: Connection, limit: number): Promise<SocialPostPage>;
+
+  // -------------------------------------------------------------------------
+  // 承認（048-social-post-approval 設計 §6.4.6 / §6.5）
+  // -------------------------------------------------------------------------
+
+  /**
+   * 承認待ちの投稿を予約にする（設計 §6.4.6）。
+   *
+   * **判定と更新を 1 文で行う**：承認待ちで、`updated_at` をミリ秒に切り詰めた値が `expectedUpdatedAt` と
+   * 一致する行だけを `scheduled` にし、`approved_at` と `updated_at` に `now` を、`next_attempt_at` に NULL を入れる。
+   * 読んでから書く 2 段にすると、その間の書き換えを承認してしまう。同時に 2 本来ても通るのは 1 本だけ。
+   *
+   * 当てはまる行が無ければ（状態が違う・内容が変わった・無い・id の形が不正）null で、何も変えない。
+   * `skip_count` / `skip_reason` / `attempt_count` は触らない。
+   */
+  approvePost(
+    connection: Connection,
+    input: {
+      readonly id: string;
+      readonly scheduledAt: Date;
+      readonly now: Date;
+      readonly expectedUpdatedAt: Date;
+    },
+  ): Promise<SocialPost | null>;
+
+  /**
+   * 承認待ちの投稿を作成の古い順に引く（設計 §6.5）。`total` は `limit` で切る前の全件数。
+   */
+  listApprovalPending(connection: Connection, limit: number): Promise<SocialPostPage>;
 
   // -------------------------------------------------------------------------
   // 配信ジョブ（035-social-publishing 設計 §6.5.3 / §6.5.4 / §6.5.6）
@@ -237,7 +281,9 @@ export interface SocialRepository {
    * 飛ばした行では 0 のままという約束がある）。`deferred` なら `next_attempt_at` を置いて
    * 次に見る時刻まで候補から外し、`failed` なら順番待ちから外す。
    *
-   * **更新できた行数を返す。** 0 ならその間に人が触っているので、次の周期で判定し直す。
+   * **書く時点で期限の来た自動配信の行にだけ書く**（取り出し条件と同じ判定。`listDue` と共通。049）。
+   * **更新できた行数を返す。** 0 なら読んだ後に人が触っている（予約日時を未来へ直した・手動投稿へ変えた・
+   * 状態を変えた）ので、何も書かない。期限の来た自動配信の予約に戻っていれば次の周期で判定し直す。
    */
   deferSkipped(connection: Connection, id: string, verdict: SkipVerdict): Promise<number>;
 
@@ -248,7 +294,9 @@ export interface SocialRepository {
    * 同じトランザクションに入れると、プロセスが死んだときに印がロールバックされ、
    * 次の実行が同じ投稿をもう一度送る。
    *
-   * 誰かが先に触っていれば `null`（更新 0 行）。
+   * **書く時点で期限の来た自動配信の行にだけ書く**（取り出し条件と同じ判定。`listDue` と共通。049）。
+   * そうでなければ `null`（更新 0 行）。列を作った後に `PATCH` で予約日時を未来へ直された・
+   * 手動投稿へ変えられた・状態を変えられた行や、誰かが先に着手した行がこれに当たる。
    */
   claimForPublish(connection: Connection, id: string): Promise<SocialPost | null>;
 

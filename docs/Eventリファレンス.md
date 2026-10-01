@@ -27,7 +27,8 @@ Plugin は `context.events.on(...)` で購読する。使い方は
 | `site.deleted` | Webサイトを削除した | `SiteEventPayload` |
 | `social.account.connected` | SNSアカウントを接続した | `SocialAccountEventPayload` |
 | `social.account.disconnected` | SNSアカウントの接続を切った | `SocialAccountEventPayload` |
-| `social.post.created` | SNS投稿を作った | `SocialPostEventPayload` |
+| `social.post.created` | SNS投稿を作った（承認待ちで登録したときは `status` が `'awaiting_approval'`） | `SocialPostEventPayload` |
+| `social.post.approved` | 承認待ちのSNS投稿が承認されて予約になった（`POST /api/v1/social/posts/{id}/approve` が成功したとき。1 回の承認で 1 回。差し戻し・承認が外れたときは発火しない。048-social-post-approval） | `SocialPostEventPayload` |
 | `social.post.published` | SNS投稿の配信が完了した（**本体の定期実行が配信を終えたとき**、または手動投稿を「投稿した」と記録したとき） | `SocialPostEventPayload` |
 | `social.post.failed` | SNS投稿の配信が失敗した（本体の定期実行が失敗・打ち切り・中断と判定したとき、または `PATCH /api/v1/social/posts/{id}` で `failed` にしたとき） | `SocialPostEventPayload` |
 | `campaign.created` | キャンペーンを作った | `CampaignEventPayload` |
@@ -58,7 +59,9 @@ interface SocialPostEventPayload {
   /**
    * 投稿の状態。`social.post.published` なら `'published'`、
    * `social.post.failed` なら `'failed'`。`social.post.created` では
-   * 作成時の状態（`'draft'` / `'scheduled'`）。
+   * 作成時の状態（`'draft'` / `'awaiting_approval'` / `'scheduled'`）。
+   * `social.post.approved` では `'scheduled'`（承認の時機・日時・承認者は載らない。要るなら Data API で引く）。
+   * **値は増えうる**ので、知らない値は無視する。
    */
   readonly status?: string;
 }

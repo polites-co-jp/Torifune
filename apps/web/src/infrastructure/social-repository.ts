@@ -93,6 +93,7 @@ interface PostRow {
   next_attempt_at: Date | null;
   skip_count: number;
   skip_reason: string | null;
+  approved_at: Date | null;
 }
 
 /**
@@ -131,6 +132,7 @@ function toPost(row: PostRow): SocialPost {
     nextAttemptAt: row.next_attempt_at,
     skipCount: Number(row.skip_count),
     skipReason: toSkipReason(row.skip_reason),
+    approvedAt: row.approved_at,
   };
 }
 
@@ -158,6 +160,7 @@ const POST_COLUMNS = [
   'next_attempt_at',
   'skip_count',
   'skip_reason',
+  'approved_at',
 ] as const;
 
 /**
@@ -189,6 +192,28 @@ function postInsertValues(post: NewSocialPost): Record<string, unknown> {
     ...(post.externalRef === undefined ? {} : { external_ref: post.externalRef }),
     ...(post.createdByTokenId === undefined ? {} : { created_by_token_id: post.createdByTokenId }),
   };
+}
+
+/**
+ * 自動配信の期限が来ている（035 §6.5.3 の取り出し条件。049）。
+ *
+ * **`listDue`・`deferSkipped`・`claimForPublish` が同じものを使う。** 列を作ってから書くまでに
+ * `PATCH` で予約日時を未来へ直された・手動投稿へ変えられた行に書かないため、書く側も取り出しと同じ条件を
+ * **同じ 1 文の中で**見る。Domain の `isDue` が同じ判定の純関数。
+ *
+ * 値を JavaScript で作らず関数にしてあるのは、`now()` を文ごとに DB で評価させるため。
+ */
+function dueForAutoPublish(eb: ExpressionBuilder<Schema, 'social_posts'>): Expression<SqlBool> {
+  return eb.and([
+    eb('status', '=', 'scheduled'),
+    // 手動投稿はジョブが一切触らない（035 §6.5.3）。
+    eb('delivery_mode', '=', 'auto'),
+    eb('publish_started_at', 'is', null),
+    // 022 より前に作られた「予約日時の無い予約」は、これまでどおり誰も取り出さない。
+    eb('scheduled_at', 'is not', null),
+    eb('scheduled_at', '<=', sql<Date>`now()`),
+    eb.or([eb('next_attempt_at', 'is', null), eb('next_attempt_at', '<=', sql<Date>`now()`)]),
+  ]);
 }
 
 export const socialRepository: SocialRepository = {
@@ -475,6 +500,11 @@ export const socialRepository: SocialRepository = {
     connection: Connection,
     id: string,
     patch: SocialPostUpdate,
+    expected?: {
+      readonly status: PostStatus;
+      readonly approvedAt: Date | null;
+      readonly publishStartedAt: Date | null;
+    },
   ): Promise<SocialPost | null> {
     if (!UUID_PATTERN.test(id)) return null;
 
@@ -496,13 +526,38 @@ export const socialRepository: SocialRepository = {
     if (patch.nextAttemptAt !== undefined) values['next_attempt_at'] = patch.nextAttemptAt;
     if (patch.skipCount !== undefined) values['skip_count'] = patch.skipCount;
     if (patch.skipReason !== undefined) values['skip_reason'] = patch.skipReason;
+    if (patch.approvedAt !== undefined) values['approved_at'] = patch.approvedAt;
 
-    const row = await connection.db
+    let query = connection.db
       .updateTable('social_posts')
       .set(values as never)
-      .where('id', '=', id)
-      .returning(POST_COLUMNS)
-      .executeTakeFirst();
+      .where('id', '=', id);
+    // 判定と更新を 1 文で（048-social-post-approval 設計 §6.3.6）。READ COMMITTED では、行ロックを待った
+    // UPDATE は WHERE を最新の行で評価し直すので、割り込んだ承認の後の行には当たらない。
+    if (expected !== undefined) {
+      query = query.where('status', '=', expected.status);
+      query =
+        expected.approvedAt === null
+          ? query.where('approved_at', 'is', null)
+          : // 読んだ値はミリ秒（postgres-date が小数部を切り捨てる）。DB の値も切り詰めて比べる
+            // （SQL で直接入れた `now()` はマイクロ秒を持つ。approvePost の `updated_at` と同じ扱い）。
+            query.where(
+              sql<Date>`date_trunc('milliseconds', approved_at)`,
+              '=',
+              expected.approvedAt,
+            );
+      // 配信ジョブの着手（`claimForPublish`）も同じく見る。着手の後に書くと、承認を外した行に着手印が残って
+      // 結果が記録されず、`published` の記録ならジョブの送信と重なって二重投稿になる。
+      query =
+        expected.publishStartedAt === null
+          ? query.where('publish_started_at', 'is', null)
+          : query.where(
+              sql<Date>`date_trunc('milliseconds', publish_started_at)`,
+              '=',
+              expected.publishStartedAt,
+            );
+    }
+    const row = await query.returning(POST_COLUMNS).executeTakeFirst();
 
     return row === undefined ? null : toPost(row as PostRow);
   },
@@ -547,6 +602,59 @@ export const socialRepository: SocialRepository = {
     return { items: rows.map((row) => toPost(row as PostRow)), total: Number(counted.count) };
   },
 
+  async approvePost(
+    connection: Connection,
+    input: {
+      readonly id: string;
+      readonly scheduledAt: Date;
+      readonly now: Date;
+      readonly expectedUpdatedAt: Date;
+    },
+  ): Promise<SocialPost | null> {
+    if (!UUID_PATTERN.test(input.id)) return null;
+
+    // 判定と更新を 1 文で（048-social-post-approval 設計 §6.4.6）。
+    // `updated_at` は作成時に DB の now()（マイクロ秒）で入るので、応答の `updatedAt`（ミリ秒）と比べるには
+    // ミリ秒に切り詰める（設計 §6.4.3）。生の比較だと作成直後の投稿が必ず合わない。
+    const row = await connection.db
+      .updateTable('social_posts')
+      .set({
+        status: 'scheduled',
+        scheduled_at: input.scheduledAt,
+        approved_at: input.now,
+        next_attempt_at: null,
+        updated_at: input.now,
+      })
+      .where('id', '=', input.id)
+      .where('status', '=', 'awaiting_approval')
+      .where(sql<Date>`date_trunc('milliseconds', updated_at)`, '=', input.expectedUpdatedAt)
+      .returning(POST_COLUMNS)
+      .executeTakeFirst();
+
+    return row === undefined ? null : toPost(row as PostRow);
+  },
+
+  async listApprovalPending(connection: Connection, limit: number): Promise<SocialPostPage> {
+    // 既存の `(status, scheduled_at, id)` 索引が status の絞り込みに効く（設計 §5.3）。
+    const rows = await connection.db
+      .selectFrom('social_posts')
+      .select(POST_COLUMNS)
+      .where('status', '=', 'awaiting_approval')
+      // 古い依頼から捌く（設計 §6.5）。並びが同値のときに揺れないよう id を足す。
+      .orderBy('created_at', 'asc')
+      .orderBy('id', 'asc')
+      .limit(limit)
+      .execute();
+
+    const counted = await connection.db
+      .selectFrom('social_posts')
+      .select((eb) => eb.fn.countAll<string>().as('count'))
+      .where('status', '=', 'awaiting_approval')
+      .executeTakeFirstOrThrow();
+
+    return { items: rows.map((row) => toPost(row as PostRow)), total: Number(counted.count) };
+  },
+
   async failInterrupted(
     connection: Connection,
     reason: string,
@@ -586,19 +694,11 @@ export const socialRepository: SocialRepository = {
       return [];
     }
 
+    // 取り出し条件は `deferSkipped`・`claimForPublish` と共通の述語（049）。
     let query = connection.db
       .selectFrom('social_posts')
       .select(POST_COLUMNS)
-      .where('status', '=', 'scheduled')
-      // 手動投稿はジョブが一切触らない（設計 §6.5.3）。
-      .where('delivery_mode', '=', 'auto')
-      .where('publish_started_at', 'is', null)
-      // 022 より前に作られた「予約日時の無い予約」は、これまでどおり誰も取り出さない。
-      .where('scheduled_at', 'is not', null)
-      .where('scheduled_at', '<=', sql<Date>`now()`)
-      .where((eb) =>
-        eb.or([eb('next_attempt_at', 'is', null), eb('next_attempt_at', '<=', sql<Date>`now()`)]),
-      );
+      .where(dueForAutoPublish);
 
     // **2 ページ目以降だけ。** 取り出し条件そのものは `022` のときと変わらない
     // （足したのはカーソルの比較だけ。設計 §6.5.3）。
@@ -644,9 +744,11 @@ export const socialRepository: SocialRepository = {
         .updateTable('social_posts')
         .set(values as never)
         .where('id', '=', id)
-        // **着手印を書く前の行だけ。** その間に誰かが触っていたら何もしない。
-        .where('status', '=', 'scheduled')
-        .where('publish_started_at', 'is', null)
+        // **取り出し条件と同じ述語を、書く 1 文の中で見る**（049 設計 §6.3）。
+        // 読んだ後に `PATCH` で予約日時を未来へ直された・手動投稿へ変えられた・状態を変えられた行には
+        // 何も書かない（手動投稿の予約を数えて取りやめない・消された待ち時刻を書き戻さない）。
+        // 待ち時刻の条件も入るので、同じ実行の中で同じ行を二度後ろへ送ることも無い。
+        .where(dueForAutoPublish)
         .executeTakeFirst(),
     );
 
@@ -671,16 +773,14 @@ export const socialRepository: SocialRepository = {
           updated_at: sql<Date>`now()`,
         } as never)
         .where('id', '=', id)
-        .where('status', '=', 'scheduled')
-        .where('publish_started_at', 'is', null)
-        // **待ち時刻が未来の行は claim しない**（設計 §6.5.4。4 回目の検証の低-1）。
-        // `listDue` と同じ条件をここでも見る。カーソル停滞の打ち切り（§6.5.3）は
-        // 「直前のカーソルと同値の行」しか見ないので、**同じミリ秒に 2 行以上**あると
-        // 素通りする。そのとき `retry` で着手印が外れた行（`next_attempt_at` は未来）を
-        // 同じ実行の中でもう一度 claim しうる——**SNS の投稿は取り消せない**。
-        .where((eb) =>
-          eb.or([eb('next_attempt_at', 'is', null), eb('next_attempt_at', '<=', sql<Date>`now()`)]),
-        )
+        // **取り出し条件と同じ述語を、書く 1 文の中で見る**（049 設計 §6.2）。
+        // 列を作ってから前の行の `publish()` を待つ間に、`PATCH` で予約日時を未来へ直された・
+        // 手動投稿へ変えられた・取りやめてから予約し直された行は、ここで 0 行になる。
+        // 待ち時刻が未来の行も claim しない（設計 §6.5.4。4 回目の検証の低-1）。
+        // カーソル停滞の打ち切り（§6.5.3）は「直前のカーソルと同値の行」しか見ないので、
+        // **同じミリ秒に 2 行以上**あると素通りする。そのとき `retry` で着手印が外れた行
+        // （`next_attempt_at` は未来）を同じ実行の中でもう一度 claim しうる——**SNS の投稿は取り消せない**。
+        .where(dueForAutoPublish)
         .returning(POST_COLUMNS)
         .executeTakeFirst();
 

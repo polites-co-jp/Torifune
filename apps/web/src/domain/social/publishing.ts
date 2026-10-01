@@ -98,6 +98,8 @@ export function canRetry(attempt: number): boolean {
 /**
  * 配信の対象か（設計 §6.5.3 の SQL と同じ判定）。
  *
+ * 取り出し（`listDue`）だけでなく、着手（`claimForPublish`）・支度待ちへ送る（`deferSkipped`）も
+ * 同じ判定で書く行を選ぶ（Infrastructure の共通の述語 `dueForAutoPublish`。049）。
  * SQL 側とこの関数が食い違わないよう、テストは両方を同じ条件で突く。
  */
 export function isDue(

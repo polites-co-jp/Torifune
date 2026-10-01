@@ -869,7 +869,8 @@ export async function publishDuePosts(
     const verdict = decideSkipOutcome(post, reason, new Date());
     const updated = await socialRepository.deferSkipped(connection, post.id, verdict);
     if (updated === 0) {
-      // その間に人が触った。次の周期で判定し直す。
+      // 読んだ後に `PATCH` で予約日時・配信方法・状態が変わった行は 0 行で弾かれる
+      // （取り出し条件と同じ述語を書く 1 文で見る。049）。数えずに次の周期で判定し直す。
       return;
     }
 
@@ -996,10 +997,11 @@ export async function publishDuePosts(
     const { post, account, publisher, publish, fields } = row;
 
     // b: 着手印。**自分のトランザクションでコミットしてから `publish()` を呼ぶ。**
-    // 2 と 3 のあいだに人が触った行は 0 行で弾かれる（従来どおり）。
+    // 2 と 3 のあいだに `PATCH` で予約日時・配信方法・状態が変わった行は 0 行で弾かれる
+    // （取り出し条件と同じ述語を着手の 1 文で見る。049）。
     const claimed = await socialRepository.claimForPublish(connection, post.id);
     if (claimed === null) {
-      // 誰かが先に触った。行は相手のものなので何もしない。
+      // 人が「まだ送らない」ことにしたか、誰かが先に触った。行は相手のものなので何もしない。
       continue;
     }
 

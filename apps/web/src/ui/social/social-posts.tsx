@@ -18,6 +18,9 @@ import {
   type ToastMessage,
 } from '@/ui/components';
 import {
+  APPROVAL_PENDING_ANCHOR,
+  APPROVAL_PENDING_ROW_NOTE,
+  APPROVED_ROW_NOTE,
   DELIVERY_MODE_LABEL,
   MANUAL_PENDING_ANCHOR,
   MANUAL_PENDING_LABEL,
@@ -65,6 +68,11 @@ export interface PostRow {
    * Server と Client で描画が食い違う（設計 §7.1 の補足）。
    */
   readonly manualPending?: boolean;
+  /**
+   * 承認して予約にした時刻（ISO。048-social-post-approval 設計 §7.3）。承認を経ていなければ null。
+   * **任意。** 渡さない行は承認を経ていないものとして描く。
+   */
+  readonly approvedAt?: string | null;
 }
 
 /** アカウントごとの配信の支度（設計 §7.3）。 */
@@ -234,6 +242,16 @@ export function SocialPosts(props: SocialPostsProps) {
             {post.status === 'scheduled' && post.failureReason !== null && (
               <span style={CAPTION_STYLE}>{`（再試行待ち・${post.attemptCount + 1} 回目）`}</span>
             )}
+            {/* 承認待ちは区画で承認する（048-social-post-approval 設計 §7.3）。 */}
+            {post.status === 'awaiting_approval' && (
+              <span style={CAPTION_STYLE}>
+                <a href={`#${APPROVAL_PENDING_ANCHOR}`}>{APPROVAL_PENDING_ROW_NOTE}</a>
+              </span>
+            )}
+            {/* 承認を経た予約。編集すると承認待ちへ戻ることの手がかり（048 設計 §7.3）。 */}
+            {post.status === 'scheduled' &&
+              post.approvedAt !== undefined &&
+              post.approvedAt !== null && <span style={CAPTION_STYLE}>{APPROVED_ROW_NOTE}</span>}
             {post.status === 'scheduled' && post.manualPending === true && (
               <span style={CAPTION_STYLE}>
                 <a href={`#${MANUAL_PENDING_ANCHOR}`}>{MANUAL_PENDING_LABEL}</a>

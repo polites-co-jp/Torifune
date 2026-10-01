@@ -1,5 +1,5 @@
 import { PluginPublisherConflictError, type PublisherRegistration } from '@torifune/plugin-api';
-import { isValidProvider } from '@/domain/social/social';
+import { isManualOnlyPublisher, isValidProvider } from '@/domain/social/social';
 import { processState } from '@/infrastructure/process-state';
 
 /**
@@ -58,6 +58,24 @@ export function unregisterPublishersOf(pluginId: string): void {
 
 export function findPublisher(provider: string): RegisteredPublisher | null {
   return publishers.get(provider) ?? null;
+}
+
+/**
+ * その provider が「手動投稿しかできない配信 Plugin」か（048-social-post-approval 設計 §6.7.2。裁定 7）。
+ *
+ * **provider 名で分岐しない。** そのときの登録簿の形（`publish` を持たず `manual` を持つ）で判定する。
+ * 配信 Plugin が無い provider は偽（知らないものを手動投稿だけとは決めない）。
+ */
+export function isManualOnlyProvider(provider: string): boolean {
+  const found = findPublisher(provider);
+  return isManualOnlyPublisher(
+    found === null
+      ? null
+      : {
+          publish: found.registration.publish !== undefined,
+          manual: found.registration.manual !== undefined,
+        },
+  );
 }
 
 export function listPublishers(): readonly RegisteredPublisher[] {

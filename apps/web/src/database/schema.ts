@@ -236,6 +236,9 @@ export interface SocialPostsTable {
   skip_count: Generated<number>;
   /** どの理由で飛ばしたか。NULL なら飛ばされていない。 */
   skip_reason: string | null;
+  // ここから 025_social_post_approval.sql（048-social-post-approval 設計 §5.4）。
+  /** 承認して予約にした時刻。承認を経ていなければ NULL。誰が承認したかは監査ログが持つ。 */
+  approved_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
 }
 
 export interface PluginsTable {
