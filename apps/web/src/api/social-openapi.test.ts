@@ -204,12 +204,14 @@ describe('#36 404・409 を宣言しない SNS の操作', () => {
     },
   );
 
-  it.each(SOCIAL_OPERATIONS.filter((operationId) => operationId !== 'publishSocialPosts'))(
-    "#36 %s に '409' が無い",
-    (operationId) => {
-      expect(operation(operationId).responses['409']).toBeUndefined();
-    },
-  );
+  // `updateSocialPost` は 048 で 409 を宣言した（処理中に状態が変わった。048-social-post-approval 設計 §6.3.6）。
+  it.each(
+    SOCIAL_OPERATIONS.filter(
+      (operationId) => operationId !== 'publishSocialPosts' && operationId !== 'updateSocialPost',
+    ),
+  )("#36 %s に '409' が無い", (operationId) => {
+    expect(operation(operationId).responses['409']).toBeUndefined();
+  });
 });
 
 /* -------------------------------------------------------------------------- */

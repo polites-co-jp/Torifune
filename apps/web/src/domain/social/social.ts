@@ -592,3 +592,18 @@ export class StaleSocialPostError extends Error {
     this.name = 'StaleSocialPostError';
   }
 }
+
+/**
+ * 更新の競合（048-social-post-approval 設計 §6.3.6）。
+ *
+ * PATCH が投稿を読んでから書くまでの間に、状態か承認の記録が変わった（多くは承認が割り込んだ）。
+ * 読んだ時点の判定（承認を外すか・承認の記録を消すか）のまま書くと、人が見ていない内容が
+ * 承認済みの予約として出るので、書かずに断る。API は 409 `CONFLICT` と `details.status` に写す。
+ * **`ConflictError` を継承しない**（既定文言の 409 と取り違えない）。
+ */
+export class SocialPostStateChangedError extends Error {
+  constructor(readonly postId: string) {
+    super('投稿の状態が変わっています');
+    this.name = 'SocialPostStateChangedError';
+  }
+}

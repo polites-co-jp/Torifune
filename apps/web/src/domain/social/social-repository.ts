@@ -189,10 +189,19 @@ export interface SocialRepository {
     createdByTokenId: string,
     externalRef: string,
   ): Promise<SocialPost | null>;
+  /**
+   * 投稿を書き換える。`expected` を渡すと、**状態と承認の記録が読んだ時点のままの行だけ**を書き換える
+   * （048-social-post-approval 設計 §6.3.6）。合わなければ何も変えずに null を返す。
+   * 読んでから書く間に承認が割り込むと、読んだ時点の判定のまま承認済みの予約を書き換えてしまうため。
+   */
   updatePost(
     connection: Connection,
     id: string,
     patch: SocialPostUpdate,
+    expected?: {
+      readonly status: PostStatus;
+      readonly approvedAt: Date | null;
+    },
   ): Promise<SocialPost | null>;
   deletePost(connection: Connection, id: string): Promise<boolean>;
 

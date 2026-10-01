@@ -69,7 +69,8 @@ const SOCIAL_ADDITIONAL: Readonly<Record<string, readonly number[]>> = {
   updateSocialAccount: [404],
   deleteSocialAccount: [404],
   getSocialPost: [404],
-  updateSocialPost: [404],
+  // 048 で 409 を足した（読んでから書くまでに状態か承認の記録が変わった。設計 §6.3.6）。
+  updateSocialPost: [404, 409],
   deleteSocialPost: [404],
   publishSocialPosts: [409],
   // 048 で足した（存在しない投稿と、見た後に内容が変わっていた承認）。

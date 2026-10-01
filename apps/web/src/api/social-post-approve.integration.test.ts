@@ -7,17 +7,23 @@ import { POST as createSocialPostRoute } from '@/app/api/v1/social/posts/route';
 import { POST as createWebhookRoute } from '@/app/api/v1/webhooks/route';
 import { createApiToken } from '@/application/api-token/api-token-use-cases';
 import { login } from '@/application/auth/login';
-import type { AuthorizationContext } from '@/application/authorization/authorize';
+import { ForbiddenError, type AuthorizationContext } from '@/application/authorization/authorize';
 import { authorizationContextFor } from '@/application/authorization/context';
 import { resetEventHandlers, subscribe } from '@/application/events';
 import { publishDuePosts } from '@/application/social/publish';
 import { registerPublisher, resetPublisherRegistry } from '@/application/social/publisher-registry';
-import { createSocialAccount, listManualPendingPosts } from '@/application/social/social-use-cases';
+import {
+  approveSocialPost,
+  createSocialAccount,
+  listManualPendingPosts,
+} from '@/application/social/social-use-cases';
 import { withConnection } from '@/application/transaction';
 import type { UserIdentity } from '@/authentication/identity';
 import { hashPassword } from '@/authentication/password';
 import { generateApiToken } from '@/domain/api-token';
+import type { PermissionName } from '@/domain/permission';
 import { roleRepository } from '@/infrastructure/role-repository';
+import { socialRepository } from '@/infrastructure/social-repository';
 import { useScratchDatabase, type ScratchDatabase } from '@/test-support/database';
 
 /**
@@ -573,6 +579,23 @@ describe('#40 承認待ちでない投稿は 422 status', () => {
     expect(Object.keys(detailsOf(result))).toContain('status');
     expect((await rowOf(id)).status).toBe(status);
   });
+
+  it('#40 承認待ちでないことを、内容が変わったことより先に見る（古い updatedAt でも 422 status）', async () => {
+    const created = await callCreate({
+      socialAccountId: bothAccountId,
+      body: '承認待ちでない投稿',
+      status: 'draft',
+    });
+    const id = String(dataOf(created)['id']);
+
+    const result = await callApprove(id, {
+      publishTiming: 'now',
+      expectedUpdatedAt: past(),
+    });
+
+    expect(result.status).toBe(422);
+    expect(Object.keys(detailsOf(result))).toContain('status');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -658,6 +681,23 @@ describe('#41 見た内容を承認する（expectedUpdatedAt）', () => {
 
     expect(result.status).toBe(409);
     expect((await rowOf(post.id)).status).toBe('awaiting_approval');
+  });
+
+  it('#41 (B) Repository の approvePost は、古い expectedUpdatedAt なら何も変えず null（1 文の条件だけで断る）', async () => {
+    const post = await makeAwaiting();
+    const before = await rowOf(post.id);
+
+    const approved = await withConnection(async (connection) =>
+      socialRepository.approvePost(connection, {
+        id: post.id,
+        scheduledAt: new Date(),
+        now: new Date(),
+        expectedUpdatedAt: new Date(Date.parse(post.updatedAt) - 1),
+      }),
+    );
+
+    expect(approved).toBeNull();
+    expect(await rowOf(post.id)).toEqual(before);
   });
 });
 
@@ -967,6 +1007,23 @@ describe('#48 承認は飛ばした回数を触らない', () => {
 // ---------------------------------------------------------------------------
 
 describe('#52 トークンの Scope と所有者の Permission', () => {
+  it('#52 (B) UseCase も social.approve を求める（social.write だけの文脈 → ForbiddenError）', async () => {
+    const post = await makeAwaiting();
+    const writer: AuthorizationContext = {
+      ...admin.context,
+      permissions: new Set<PermissionName>(['social.read', 'social.write']),
+    };
+
+    await expect(
+      approveSocialPost(writer, {
+        id: post.id,
+        publishTiming: 'now',
+        expectedUpdatedAt: new Date(post.updatedAt),
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+    expect((await rowOf(post.id)).status).toBe('awaiting_approval');
+  });
+
   it('#52 Scope social.read + social.write のトークン（所有者は管理者）→ 403', async () => {
     const post = await makeAwaiting();
 

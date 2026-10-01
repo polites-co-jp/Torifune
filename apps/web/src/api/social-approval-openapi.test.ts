@@ -192,6 +192,15 @@ describe('#59 listSocialPosts と updateSocialPost の status の enum', () => {
   });
 });
 
+describe('#78 updateSocialPost の 409（読んでから書くまでに状態が変わった）', () => {
+  it('#78 応答に 409 があり、description が状態の変化を説明する', () => {
+    const conflict = operation('updateSocialPost').responses['409'] as
+      { readonly description?: string } | undefined;
+    expect(conflict).toBeDefined();
+    expect(conflict?.description).toContain('状態');
+  });
+});
+
 /* -------------------------------------------------------------------------- */
 /* #58 approveSocialPost                                                         */
 /* -------------------------------------------------------------------------- */

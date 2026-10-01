@@ -478,6 +478,10 @@ export const socialRepository: SocialRepository = {
     connection: Connection,
     id: string,
     patch: SocialPostUpdate,
+    expected?: {
+      readonly status: PostStatus;
+      readonly approvedAt: Date | null;
+    },
   ): Promise<SocialPost | null> {
     if (!UUID_PATTERN.test(id)) return null;
 
@@ -501,12 +505,26 @@ export const socialRepository: SocialRepository = {
     if (patch.skipReason !== undefined) values['skip_reason'] = patch.skipReason;
     if (patch.approvedAt !== undefined) values['approved_at'] = patch.approvedAt;
 
-    const row = await connection.db
+    let query = connection.db
       .updateTable('social_posts')
       .set(values as never)
-      .where('id', '=', id)
-      .returning(POST_COLUMNS)
-      .executeTakeFirst();
+      .where('id', '=', id);
+    // 判定と更新を 1 文で（048-social-post-approval 設計 §6.3.6）。READ COMMITTED では、行ロックを待った
+    // UPDATE は WHERE を最新の行で評価し直すので、割り込んだ承認の後の行には当たらない。
+    if (expected !== undefined) {
+      query = query.where('status', '=', expected.status);
+      query =
+        expected.approvedAt === null
+          ? query.where('approved_at', 'is', null)
+          : // 読んだ値はミリ秒（postgres-date が小数部を切り捨てる）。DB の値も切り詰めて比べる
+            // （SQL で直接入れた `now()` はマイクロ秒を持つ。approvePost の `updated_at` と同じ扱い）。
+            query.where(
+              sql<Date>`date_trunc('milliseconds', approved_at)`,
+              '=',
+              expected.approvedAt,
+            );
+    }
+    const row = await query.returning(POST_COLUMNS).executeTakeFirst();
 
     return row === undefined ? null : toPost(row as PostRow);
   },

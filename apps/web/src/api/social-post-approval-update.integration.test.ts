@@ -1,7 +1,7 @@
 import type { PublisherRegistration } from '@torifune/plugin-api';
 import { sql } from 'kysely';
 import { uuidv7 } from 'uuidv7';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   GET as getSocialPostRoute,
   PATCH as updateSocialPostRoute,
@@ -11,11 +11,16 @@ import type { AuthorizationContext } from '@/application/authorization/authorize
 import { authorizationContextFor } from '@/application/authorization/context';
 import { resetEventHandlers } from '@/application/events';
 import { registerPublisher, resetPublisherRegistry } from '@/application/social/publisher-registry';
-import { createSocialAccount, createSocialPost } from '@/application/social/social-use-cases';
+import {
+  approveSocialPost,
+  createSocialAccount,
+  createSocialPost,
+} from '@/application/social/social-use-cases';
 import { withConnection } from '@/application/transaction';
 import type { UserIdentity } from '@/authentication/identity';
 import type { PostStatus } from '@/domain/social/social';
 import { roleRepository } from '@/infrastructure/role-repository';
+import { socialRepository } from '@/infrastructure/social-repository';
 import { useScratchDatabase, type ScratchDatabase } from '@/test-support/database';
 
 /**
@@ -250,6 +255,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   resetPublisherRegistry();
   resetEventHandlers();
   await withConnection(async (connection) => {
@@ -603,4 +609,109 @@ describe('#34 監査 updated の detail に status（更新後）', () => {
     const details = await updatedAuditDetails();
     expect(details[0]?.['status']).toBe('scheduled');
   });
+});
+
+// ---------------------------------------------------------------------------
+// #78・#79 PATCH と承認の競合（検証レポート §3 のセキュリティ 中-1・低-1）
+// ---------------------------------------------------------------------------
+
+/**
+ * PATCH が投稿を読んだ直後（アカウントを引くところ）で止める。その間に承認を割り込ませる。
+ * 承認の側が同じ関数を呼んでも止めない（止めると承認も進まない）。差し戻し（`draft`）は
+ * `validate()` を呼ばないので、`validate()` ではなくアカウントの読み出しで止める。
+ */
+function pauseAfterRead(): { readonly entered: Promise<void>; readonly release: () => void } {
+  let signalEntered = (): void => undefined;
+  const entered = new Promise<void>((resolve) => {
+    signalEntered = resolve;
+  });
+  let release = (): void => undefined;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const original = socialRepository.findAccountById.bind(socialRepository);
+  let calls = 0;
+  vi.spyOn(socialRepository, 'findAccountById').mockImplementation(async (...args) => {
+    calls += 1;
+    if (calls === 1) {
+      signalEntered();
+      await released;
+    }
+    return original(...args);
+  });
+  return { entered, release };
+}
+
+async function bodyOf(id: string): Promise<string | undefined> {
+  return withConnection(async (connection) => {
+    const row = await connection.db
+      .selectFrom('social_posts')
+      .select('body')
+      .where('id', '=', id)
+      .executeTakeFirst();
+    return row?.body;
+  });
+}
+
+/** PATCH を走らせ、`validate()` で止まった間に承認を通してから PATCH を進める。 */
+async function patchAcrossApproval(id: string, patch: unknown): Promise<JsonResult> {
+  const read = await callGet(id);
+  const gate = pauseAfterRead();
+
+  const pending = callUpdate(id, patch);
+  await gate.entered;
+  await approveSocialPost(admin, {
+    id,
+    publishTiming: 'scheduled',
+    expectedUpdatedAt: new Date(read['updatedAt'] as string),
+  });
+  gate.release();
+  return pending;
+}
+
+describe('#78 PATCH が読んでから書くまでに承認されたら、承認していない内容を書かない', () => {
+  it('#78 承認待ちへの { body } の間に承認が入る → 409 CONFLICT・details.status', async () => {
+    const id = await makeAwaiting();
+
+    const result = await patchAcrossApproval(id, { body: '人が見ていない本文' });
+
+    expect(result.status).toBe(409);
+    expect((result.body['error'] as { code: string }).code).toBe('CONFLICT');
+    expect(detailsOf(result)['status']).toContain(
+      '投稿の状態が変わっています。読み直してからやり直してください。',
+    );
+  });
+
+  it('#78 409 の後も行は承認したときの本文のまま（承認済みの予約）', async () => {
+    const id = await makeAwaiting();
+
+    await patchAcrossApproval(id, { body: '人が見ていない本文' });
+
+    expect(await bodyOf(id)).toBe('新製品のお知らせです。');
+    expect(await statusOf(id)).toBe('scheduled');
+    expect(await approvedAtOf(id)).not.toBeNull();
+  });
+
+  it('#78 409 のときは更新の監査を残さない', async () => {
+    const id = await makeAwaiting();
+
+    await patchAcrossApproval(id, { body: '人が見ていない本文' });
+
+    expect(await updatedAuditDetails()).toHaveLength(0);
+  });
+});
+
+describe('#79 差し戻しと承認が競合しても 500 にならない', () => {
+  it.each(['draft', 'awaiting_approval'])(
+    '#79 承認待ちへの { status: %s } の間に承認が入る → 409・承認済みの予約のまま',
+    async (status) => {
+      const id = await makeAwaiting();
+
+      const result = await patchAcrossApproval(id, { status });
+
+      expect(result.status).toBe(409);
+      expect(await statusOf(id)).toBe('scheduled');
+      expect(await approvedAtOf(id)).not.toBeNull();
+    },
+  );
 });

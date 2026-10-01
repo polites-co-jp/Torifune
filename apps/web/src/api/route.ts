@@ -11,7 +11,7 @@ import { bearerTokenOf } from '@/domain/api-token';
 import { JobBusyError } from '@/domain/jobs/job';
 import type { PermissionName } from '@/domain/permission';
 import { ConflictError, NotFoundError, ValidationError } from '@/domain/repository';
-import { StaleSocialPostError } from '@/domain/social/social';
+import { SocialPostStateChangedError, StaleSocialPostError } from '@/domain/social/social';
 import { unusableTextDetailsOf } from '@/domain/text';
 import { log } from '@/infrastructure/logging';
 import { redactSecrets } from '@/infrastructure/secret-text';
@@ -452,6 +452,14 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
               '投稿の内容が変わっています。内容を確かめてから承認し直してください。',
             ],
           },
+          cors,
+        );
+      }
+      // 更新の競合（048 設計 §6.3.6）。読んでから書くまでに状態か承認の記録が変わった。
+      if (error instanceof SocialPostStateChangedError) {
+        return errorResponse(
+          'CONFLICT',
+          { status: ['投稿の状態が変わっています。読み直してからやり直してください。'] },
           cors,
         );
       }

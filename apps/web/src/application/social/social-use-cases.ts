@@ -36,6 +36,7 @@ import {
   resolveApprovalSchedule,
   resolveCreateTiming,
   revokesApproval,
+  SocialPostStateChangedError,
   StaleSocialPostError,
   type AccountStatus,
   type ApprovalTiming,
@@ -1151,44 +1152,60 @@ export const updateSocialPost = defineUseCase<UpdatePostInput, SocialPost>({
       current.approvedAt !== null &&
       (effectiveStatus === 'draft' || effectiveStatus === 'awaiting_approval');
 
+    // **読んだ時点の状態と承認の記録を条件にして書く**（048 設計 §6.3.6）。上の判定（承認を外すか・
+    // 承認の記録を消すか）は読んだ時点の行で決めている。その間に承認が割り込んだ行へそのまま書くと、
+    // 人が見ていない内容が承認済みの予約として出る（差し戻しなら DB の CHECK に落ちて 500 になる）。
+    const expected = { status: current.status, approvedAt: current.approvedAt };
     const post = await context.connection.transaction((tx) =>
-      socialRepository.updatePost(tx, input.id, {
-        ...(input.body === undefined ? {} : { body: input.body }),
-        ...(input.scheduledAt === undefined ? {} : { scheduledAt: input.scheduledAt }),
-        ...(savedStatus === undefined ? {} : { status: savedStatus }),
-        ...(dropsApproval ? { approvedAt: null } : {}),
-        // published へ移すときだけ配信時刻を記録する。
-        ...(input.status === 'published' ? { publishedAt: new Date() } : {}),
-        // failed も同じ扱い。**updated_at で代用しない。**
-        // あれは「最後に触った時刻」であって「失敗した時刻」ではない。
-        ...(input.status === 'failed' ? { failedAt: new Date() } : {}),
-        ...(input.failureReason === undefined
-          ? {}
-          : { failureReason: normalizeFailureReason(input.failureReason) }),
-        ...(input.deliveryMode === undefined ? {} : { deliveryMode: input.deliveryMode }),
-        ...(input.media === undefined ? {} : { media: input.media }),
-        ...(input.link === undefined ? {} : { link: input.link }),
-        ...(input.providerOptions === undefined ? {} : { providerOptions: input.providerOptions }),
-        ...(input.externalId === undefined ? {} : { externalId: input.externalId }),
-        ...(input.externalUrl === undefined ? {} : { externalUrl: input.externalUrl }),
-        // **予約を未来へ置き直したら待ち時刻を消す**（設計 §5.1.1 / §6.2。裁定 #14-a）。
-        // 消さないと、後ろへ送られた待ち時刻を引きずったまま再予約され、指定した時刻に出ない。
-        //
-        // **`current.status` は見ない**（検証レポート §9.2 の R-1）。編集フォームは常に
-        // `status` を送るので、「予約中の投稿の日時を直す」という最も普通の操作も
-        // `scheduled` のままこの経路に入る。`draft` を経由する形だけを見ていると素通りする。
-        //
-        // **過去日時では消さない**（設計 §11 #21）。「過去日時＝いますぐ」と解釈すると、
-        // `2000-01-01` の予約まで即時配信の要求として扱うことになる。
-        //
-        // **`skip_count` / `skip_reason` は触らない**（裁定 #14-a）。飛ばした履歴を
-        // 予約し直しで減らさないことが、3 回上限の回避路を閉じている。
-        ...(entersApproval || clearsSkipWait(next) ? { nextAttemptAt: null } : {}),
-      }),
+      socialRepository.updatePost(
+        tx,
+        input.id,
+        {
+          ...(input.body === undefined ? {} : { body: input.body }),
+          ...(input.scheduledAt === undefined ? {} : { scheduledAt: input.scheduledAt }),
+          ...(savedStatus === undefined ? {} : { status: savedStatus }),
+          ...(dropsApproval ? { approvedAt: null } : {}),
+          // published へ移すときだけ配信時刻を記録する。
+          ...(input.status === 'published' ? { publishedAt: new Date() } : {}),
+          // failed も同じ扱い。**updated_at で代用しない。**
+          // あれは「最後に触った時刻」であって「失敗した時刻」ではない。
+          ...(input.status === 'failed' ? { failedAt: new Date() } : {}),
+          ...(input.failureReason === undefined
+            ? {}
+            : { failureReason: normalizeFailureReason(input.failureReason) }),
+          ...(input.deliveryMode === undefined ? {} : { deliveryMode: input.deliveryMode }),
+          ...(input.media === undefined ? {} : { media: input.media }),
+          ...(input.link === undefined ? {} : { link: input.link }),
+          ...(input.providerOptions === undefined
+            ? {}
+            : { providerOptions: input.providerOptions }),
+          ...(input.externalId === undefined ? {} : { externalId: input.externalId }),
+          ...(input.externalUrl === undefined ? {} : { externalUrl: input.externalUrl }),
+          // **予約を未来へ置き直したら待ち時刻を消す**（設計 §5.1.1 / §6.2。裁定 #14-a）。
+          // 消さないと、後ろへ送られた待ち時刻を引きずったまま再予約され、指定した時刻に出ない。
+          //
+          // **`current.status` は見ない**（検証レポート §9.2 の R-1）。編集フォームは常に
+          // `status` を送るので、「予約中の投稿の日時を直す」という最も普通の操作も
+          // `scheduled` のままこの経路に入る。`draft` を経由する形だけを見ていると素通りする。
+          //
+          // **過去日時では消さない**（設計 §11 #21）。「過去日時＝いますぐ」と解釈すると、
+          // `2000-01-01` の予約まで即時配信の要求として扱うことになる。
+          //
+          // **`skip_count` / `skip_reason` は触らない**（裁定 #14-a）。飛ばした履歴を
+          // 予約し直しで減らさないことが、3 回上限の回避路を閉じている。
+          ...(entersApproval || clearsSkipWait(next) ? { nextAttemptAt: null } : {}),
+        },
+        expected,
+      ),
     );
 
     if (post === null) {
-      throw new NotFoundError('SocialPost', input.id);
+      // 当たらなかったのは、消えたか、状態か承認の記録が変わったか。読み直して分ける。
+      const latest = await socialRepository.findPostById(context.connection, input.id);
+      if (latest === null) {
+        throw new NotFoundError('SocialPost', input.id);
+      }
+      throw new SocialPostStateChangedError(input.id);
     }
 
     if (input.status === 'published') {
