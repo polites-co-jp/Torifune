@@ -93,6 +93,7 @@ interface PostRow {
   next_attempt_at: Date | null;
   skip_count: number;
   skip_reason: string | null;
+  approved_at: Date | null;
 }
 
 /**
@@ -131,6 +132,7 @@ function toPost(row: PostRow): SocialPost {
     nextAttemptAt: row.next_attempt_at,
     skipCount: Number(row.skip_count),
     skipReason: toSkipReason(row.skip_reason),
+    approvedAt: row.approved_at,
   };
 }
 
@@ -158,6 +160,7 @@ const POST_COLUMNS = [
   'next_attempt_at',
   'skip_count',
   'skip_reason',
+  'approved_at',
 ] as const;
 
 /**
@@ -496,6 +499,7 @@ export const socialRepository: SocialRepository = {
     if (patch.nextAttemptAt !== undefined) values['next_attempt_at'] = patch.nextAttemptAt;
     if (patch.skipCount !== undefined) values['skip_count'] = patch.skipCount;
     if (patch.skipReason !== undefined) values['skip_reason'] = patch.skipReason;
+    if (patch.approvedAt !== undefined) values['approved_at'] = patch.approvedAt;
 
     const row = await connection.db
       .updateTable('social_posts')

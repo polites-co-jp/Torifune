@@ -2,7 +2,11 @@ import type { SocialAccountView, SocialPostDraftView, SocialPostView } from '@to
 import { uuidv7 } from 'uuidv7';
 import { defineUseCase } from '@/application/authorization/use-case';
 import { emit } from '@/application/events';
-import { findPublisher, type RegisteredPublisher } from '@/application/social/publisher-registry';
+import {
+  findPublisher,
+  isManualOnlyProvider,
+  type RegisteredPublisher,
+} from '@/application/social/publisher-registry';
 import { assertUsableText } from '@/application/text-input';
 import { NotFoundError, ValidationError } from '@/domain/repository';
 import type { Secret } from '@/domain/secret';
@@ -28,10 +32,12 @@ import {
   isValidPostBody,
   isValidProvider,
   isValidScheduledAt,
+  resolveCreateTiming,
   type AccountStatus,
   type DeliveryMode,
   type PostMedia,
   type PostStatus,
+  type PublishTiming,
   type SocialAccount,
   type SocialPost,
 } from '@/domain/social/social';
@@ -771,7 +777,16 @@ export interface CreatePostInput {
   readonly socialAccountId: string;
   readonly body: string;
   readonly scheduledAt: Date | null;
-  readonly status: PostStatus;
+  /**
+   * 送られた状態。省略すると `draft`（`publishTiming` を送らないとき）。
+   * `publishTiming` と同時には来ない（HTTP のスキーマが断る。048-social-post-approval 設計 §6.2.1）。
+   */
+  readonly status?: PostStatus | undefined;
+  /**
+   * 登録の時機（048-social-post-approval 設計 §6.2）。省略すると今の振る舞い（裁定 1）。
+   * 実効の `status` / `scheduledAt` は Domain の `resolveCreateTiming` が決める。
+   */
+  readonly publishTiming?: PublishTiming | undefined;
   readonly deliveryMode?: DeliveryMode | undefined;
   readonly media?: readonly PostMedia[] | undefined;
   readonly link?: string | null | undefined;
@@ -795,6 +810,11 @@ export interface CreatePostInput {
 export interface CreatePostOutput {
   readonly post: SocialPost;
   readonly created: boolean;
+  /**
+   * 手動投稿しかできない配信 Plugin のために承認待ちへ読み替えたか（048-social-post-approval 設計 §6.9）。
+   * 監査に残すために運ぶ（監査の `detail` は `context` を見られない）。再送は解決を行わないので false。
+   */
+  readonly approvalForced: boolean;
 }
 
 export const createSocialPost = defineUseCase<CreatePostInput, CreatePostOutput>({
@@ -805,11 +825,14 @@ export const createSocialPost = defineUseCase<CreatePostInput, CreatePostOutput>
     resourceType: 'social_post',
     resourceId: (_input, output) => output.post.id,
     // 本文は残さない。監査は「誰がいつ何をしたか」であって、内容の複製ではない。
-    detail: (_input, output) => ({
+    detail: (input, output) => ({
       socialAccountId: output.post.socialAccountId,
       status: output.post.status,
       // 再送も記録する。区別できないと「2 回登録された」ように見える。
       replayed: !output.created,
+      // 送った時機と、手動投稿しかできない配信 Plugin のための読み替え（048 設計 §6.9）。
+      publishTiming: input.publishTiming ?? null,
+      approvalForced: output.approvalForced,
     }),
   },
   handler: async (context, input) => {
@@ -860,8 +883,21 @@ export const createSocialPost = defineUseCase<CreatePostInput, CreatePostOutput>
         input.externalRef,
       );
       if (existing !== null) {
-        return { post: existing, created: false };
+        return { post: existing, created: false, approvalForced: false };
       }
+    }
+
+    // 5: 実効の状態と日時を決める（048-social-post-approval 設計 §6.2.2・§6.2.4）。
+    //    手動投稿しかできない配信 Plugin の読み替え（裁定 5）もここで決まる。判定はそのときの登録簿で行う。
+    const timing = resolveCreateTiming({
+      publishTiming: input.publishTiming,
+      status: input.status,
+      scheduledAt: input.scheduledAt,
+      manualOnly: isManualOnlyProvider(account.provider),
+      now: new Date(),
+    });
+    if (!timing.ok) {
+      throw new ValidationError('SocialPost', timing.field, timing.message);
     }
 
     const deliveryMode = input.deliveryMode ?? 'auto';
@@ -869,11 +905,12 @@ export const createSocialPost = defineUseCase<CreatePostInput, CreatePostOutput>
     const providerOptions = input.providerOptions ?? {};
     const link = input.link ?? null;
 
+    // 6〜8b は**解決した後の値**に掛ける。承認待ちの登録にも配信 Plugin の検査が掛かる（048 設計 §6.2.4）。
     await assertPostIsDeliverable(
       {
         body: input.body,
-        scheduledAt: input.scheduledAt,
-        status: input.status,
+        scheduledAt: timing.scheduledAt,
+        status: timing.status,
         deliveryMode,
         media,
         link,
@@ -888,8 +925,8 @@ export const createSocialPost = defineUseCase<CreatePostInput, CreatePostOutput>
         id: uuidv7(),
         socialAccountId: input.socialAccountId,
         body: input.body,
-        scheduledAt: input.scheduledAt,
-        status: input.status,
+        scheduledAt: timing.scheduledAt,
+        status: timing.status,
         deliveryMode,
         media,
         link,
@@ -908,7 +945,8 @@ export const createSocialPost = defineUseCase<CreatePostInput, CreatePostOutput>
       });
     }
 
-    return result;
+    // 同時の再送で既存が返った（`created: false`）ときは、この要求の解決は使われていない。
+    return { ...result, approvalForced: result.created && timing.approvalForced };
   },
 });
 

@@ -194,6 +194,11 @@ export interface SocialPost {
   readonly skipCount: number;
   /** どの理由で飛ばしたか。null なら飛ばされていない。 */
   readonly skipReason: SkipReason | null;
+  /**
+   * 承認して予約にした時刻。承認を経ていなければ null（048-social-post-approval 設計 §5.2）。
+   * 誰が承認したかは監査ログが持つ。
+   */
+  readonly approvedAt: Date | null;
 }
 
 /**

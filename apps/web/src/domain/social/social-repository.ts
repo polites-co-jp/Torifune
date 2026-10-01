@@ -78,6 +78,11 @@ export interface SocialPostUpdate {
   readonly nextAttemptAt?: Date | null | undefined;
   readonly skipCount?: number | undefined;
   readonly skipReason?: string | null | undefined;
+  /**
+   * 承認の時刻（048-social-post-approval 設計 §6.3.3）。承認待ち・下書きへ移すときと承認を外すときに
+   * NULL へ戻す（DB の CHECK が、承認待ち・下書きの行が値を持つことを断る）。値を入れるのは承認だけ。
+   */
+  readonly approvedAt?: Date | null | undefined;
 }
 
 export interface SocialPostListQuery {
