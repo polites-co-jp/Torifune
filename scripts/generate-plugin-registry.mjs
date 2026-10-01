@@ -42,6 +42,12 @@ function discover() {
   for (const name of readdirSync(pluginsDir, { withFileTypes: true })) {
     if (!name.isDirectory()) continue;
 
+    // 名前が `.` で始まるディレクトリは読み込まない。同梱 Plugin の同期が置く作業用・退避の
+    // ディレクトリ（`.torifune-sync-<id>.tmp` など）は plugin.json を持つので、万一ビルドと
+    // 重なってもビルドに入れないための守り。Plugin ID は `.` で始まれないので、Plugin を取りこぼさない。
+    // 詳細: docs/設計/050-bundled-plugin-sync/設計.md §6.4.3
+    if (name.name.startsWith('.')) continue;
+
     // 隔離マークのあるものは読み込まない。
     // ビルドを壊した Plugin を置いたままにすると、次のビルドも失敗し続ける。
     if (existsSync(join(pluginsDir, name.name, '.torifune-quarantine'))) {
