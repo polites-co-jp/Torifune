@@ -24,6 +24,7 @@
     ".": "./src/index.ts",
     "./migrate/runner": "./src/migrate/runner.ts",
     "./migrate/loader": "./src/migrate/loader.ts",
-    "./reset-password": "./src/reset-password/reset-password.ts"
+    "./reset-password": "./src/reset-password/reset-password.ts",
+    "./plugins/version": "./src/plugins/version.ts"
   }
 }
