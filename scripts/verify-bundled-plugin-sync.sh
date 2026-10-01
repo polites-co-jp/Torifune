@@ -213,9 +213,12 @@ fs.writeFileSync(path, JSON.stringify(manifest, null, 2) + '\n');
 # sns-x-manual：同期の後に利用者が編集した（印は残す）。
 USER_EDIT='<!-- verify-bundled-plugin-sync: user edit -->'
 in_app sh -c "printf '%s\n' '$USER_EDIT' >> /app/plugins/sns-x-manual/README.md"
-# sns-threads：フォルダごと消えた。
-in_app rm -rf /app/plugins/sns-threads
 
+# 利用者の Plugin の導入（監視ループの再ビルド）は、sns-threads を消す**前に**済ませる。
+# web のビルドは apps/web のテストも型検査し、そのテストが同梱 Plugin のソースを import するので、
+# 同梱 Plugin のフォルダが無いと監視ループの再ビルドが失敗する（監視ループの再ビルドは同期しない。
+# 設計 §6.5・§6.7.3）。#46 の意図（作り直す時点で同梱のフォルダが無い）は、消すのを作り直しの直前に
+# 移しても変わらない（実装プラン §8 の 30）。
 log "#46 利用者の Plugin を Package で導入する"
 in_app node /tmp/driver.mjs install-user
 wait_for_log_count 'rebuild succeeded' 1
@@ -229,6 +232,9 @@ user_plugin_files() {
 }
 USER_FILES_BEFORE="$(user_plugin_files)"
 [ -n "$USER_FILES_BEFORE" ] || die "#46 利用者の Plugin のファイルが無い"
+
+# sns-threads：フォルダごと消えた（作り直しの直前。上の注を参照）。
+in_app rm -rf /app/plugins/sns-threads
 
 log "#46 コンテナを作り直す（同じイメージ・同じ Volume）"
 docker rm -f "$APP" >/dev/null
