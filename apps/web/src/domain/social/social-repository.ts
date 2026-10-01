@@ -207,6 +207,35 @@ export interface SocialRepository {
   listManualPending(connection: Connection, limit: number): Promise<SocialPostPage>;
 
   // -------------------------------------------------------------------------
+  // 承認（048-social-post-approval 設計 §6.4.6 / §6.5）
+  // -------------------------------------------------------------------------
+
+  /**
+   * 承認待ちの投稿を予約にする（設計 §6.4.6）。
+   *
+   * **判定と更新を 1 文で行う**：承認待ちで、`updated_at` をミリ秒に切り詰めた値が `expectedUpdatedAt` と
+   * 一致する行だけを `scheduled` にし、`approved_at` と `updated_at` に `now` を、`next_attempt_at` に NULL を入れる。
+   * 読んでから書く 2 段にすると、その間の書き換えを承認してしまう。同時に 2 本来ても通るのは 1 本だけ。
+   *
+   * 当てはまる行が無ければ（状態が違う・内容が変わった・無い・id の形が不正）null で、何も変えない。
+   * `skip_count` / `skip_reason` / `attempt_count` は触らない。
+   */
+  approvePost(
+    connection: Connection,
+    input: {
+      readonly id: string;
+      readonly scheduledAt: Date;
+      readonly now: Date;
+      readonly expectedUpdatedAt: Date;
+    },
+  ): Promise<SocialPost | null>;
+
+  /**
+   * 承認待ちの投稿を作成の古い順に引く（設計 §6.5）。`total` は `limit` で切る前の全件数。
+   */
+  listApprovalPending(connection: Connection, limit: number): Promise<SocialPostPage>;
+
+  // -------------------------------------------------------------------------
   // 配信ジョブ（035-social-publishing 設計 §6.5.3 / §6.5.4 / §6.5.6）
   // -------------------------------------------------------------------------
 

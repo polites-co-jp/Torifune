@@ -551,6 +551,59 @@ export const socialRepository: SocialRepository = {
     return { items: rows.map((row) => toPost(row as PostRow)), total: Number(counted.count) };
   },
 
+  async approvePost(
+    connection: Connection,
+    input: {
+      readonly id: string;
+      readonly scheduledAt: Date;
+      readonly now: Date;
+      readonly expectedUpdatedAt: Date;
+    },
+  ): Promise<SocialPost | null> {
+    if (!UUID_PATTERN.test(input.id)) return null;
+
+    // 判定と更新を 1 文で（048-social-post-approval 設計 §6.4.6）。
+    // `updated_at` は作成時に DB の now()（マイクロ秒）で入るので、応答の `updatedAt`（ミリ秒）と比べるには
+    // ミリ秒に切り詰める（設計 §6.4.3）。生の比較だと作成直後の投稿が必ず合わない。
+    const row = await connection.db
+      .updateTable('social_posts')
+      .set({
+        status: 'scheduled',
+        scheduled_at: input.scheduledAt,
+        approved_at: input.now,
+        next_attempt_at: null,
+        updated_at: input.now,
+      })
+      .where('id', '=', input.id)
+      .where('status', '=', 'awaiting_approval')
+      .where(sql<Date>`date_trunc('milliseconds', updated_at)`, '=', input.expectedUpdatedAt)
+      .returning(POST_COLUMNS)
+      .executeTakeFirst();
+
+    return row === undefined ? null : toPost(row as PostRow);
+  },
+
+  async listApprovalPending(connection: Connection, limit: number): Promise<SocialPostPage> {
+    // 既存の `(status, scheduled_at, id)` 索引が status の絞り込みに効く（設計 §5.3）。
+    const rows = await connection.db
+      .selectFrom('social_posts')
+      .select(POST_COLUMNS)
+      .where('status', '=', 'awaiting_approval')
+      // 古い依頼から捌く（設計 §6.5）。並びが同値のときに揺れないよう id を足す。
+      .orderBy('created_at', 'asc')
+      .orderBy('id', 'asc')
+      .limit(limit)
+      .execute();
+
+    const counted = await connection.db
+      .selectFrom('social_posts')
+      .select((eb) => eb.fn.countAll<string>().as('count'))
+      .where('status', '=', 'awaiting_approval')
+      .executeTakeFirstOrThrow();
+
+    return { items: rows.map((row) => toPost(row as PostRow)), total: Number(counted.count) };
+  },
+
   async failInterrupted(
     connection: Connection,
     reason: string,

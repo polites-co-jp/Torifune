@@ -76,6 +76,11 @@ export interface SocialPostView {
   readonly socialAccountId: string;
   readonly body: string;
   readonly scheduledAt: string | null;
+  /**
+   * 投稿の状態。`'draft'`（下書き）/ `'awaiting_approval'`（承認待ち。048 で追加）/ `'scheduled'`（予約）/
+   * `'published'`（配信済み）/ `'failed'`（失敗）。**値は増えうる**ので、網羅的に分岐せず、知らない値は無視する。
+   * 承認待ちの投稿に `markPublished` / `markFailed` を呼ぶと reject される。
+   */
   readonly status: string;
   readonly publishedAt: string | null;
   /**

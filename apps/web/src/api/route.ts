@@ -11,6 +11,7 @@ import { bearerTokenOf } from '@/domain/api-token';
 import { JobBusyError } from '@/domain/jobs/job';
 import type { PermissionName } from '@/domain/permission';
 import { ConflictError, NotFoundError, ValidationError } from '@/domain/repository';
+import { StaleSocialPostError } from '@/domain/social/social';
 import { unusableTextDetailsOf } from '@/domain/text';
 import { log } from '@/infrastructure/logging';
 import { redactSecrets } from '@/infrastructure/secret-text';
@@ -439,6 +440,19 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
           'CONFLICT',
           { job: ['実行中のため受け付けられません。しばらくしてからやり直してください。'] },
           { ...cors, 'Retry-After': '10' },
+        );
+      }
+      // 承認の競合（048-social-post-approval 設計 §6.4.2）。見た後に内容が変わっていた。
+      // 既定文言では理由が伝わらないので、**`ConflictError` より前に**説明を添えて返す。
+      if (error instanceof StaleSocialPostError) {
+        return errorResponse(
+          'CONFLICT',
+          {
+            expectedUpdatedAt: [
+              '投稿の内容が変わっています。内容を確かめてから承認し直してください。',
+            ],
+          },
+          cors,
         );
       }
       if (error instanceof ConflictError) {

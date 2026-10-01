@@ -19,6 +19,8 @@ export const CORE_EVENTS = [
   'social.account.connected',
   'social.account.disconnected',
   'social.post.created',
+  // 承認待ちの投稿が承認されて予約になった（048-social-post-approval 設計 §6.8）。
+  'social.post.approved',
   'social.post.published',
   'social.post.failed',
   'campaign.created',
@@ -117,7 +119,7 @@ export interface SocialAccountEventPayload {
 }
 
 /**
- * SNS 投稿（`social.post.created` / `social.post.published` / `social.post.failed`）。
+ * SNS 投稿（`social.post.created` / `social.post.approved` / `social.post.published` / `social.post.failed`）。
  *
  * **失敗の理由は載せない**（035-social-publishing 設計 §9.6）。Plugin が返した自由文で、
  * 資格情報が混じる可能性を Core が完全には否定できない。要るなら Data API
@@ -126,6 +128,11 @@ export interface SocialAccountEventPayload {
 export interface SocialPostEventPayload {
   readonly postId: string;
   readonly accountId: string;
+  /**
+   * そのときの投稿の状態。`social.post.created` では `'draft'` / `'awaiting_approval'`（承認待ち）/
+   * `'scheduled'` など登録の結果、`social.post.approved` では `'scheduled'`、`social.post.published` なら
+   * `'published'`、`social.post.failed` なら `'failed'`。**値は増えうる**ので、知らない値は無視する。
+   */
   readonly status?: string;
 }
 
@@ -142,6 +149,7 @@ export interface CoreEventPayloads {
   readonly 'social.account.connected': SocialAccountEventPayload;
   readonly 'social.account.disconnected': SocialAccountEventPayload;
   readonly 'social.post.created': SocialPostEventPayload;
+  readonly 'social.post.approved': SocialPostEventPayload;
   readonly 'social.post.published': SocialPostEventPayload;
   readonly 'social.post.failed': SocialPostEventPayload;
   readonly 'campaign.created': CampaignEventPayload;
