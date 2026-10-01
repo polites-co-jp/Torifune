@@ -844,6 +844,16 @@ my-plugin.zip
 **ビルドに失敗した Plugin は隔離される**（`.torifune-quarantine` が置かれる）。
 本体は直前の成功ビルドへ戻って起動する。原因を直したらマークを消して入れ直す。
 
+### コンテナでの同梱 Plugin
+
+コンテナイメージでは、イメージをビルドしたときに `plugins/` にあった Plugin が**同梱**され、
+起動のたびに `plugins` の Volume へ反映される（`docs/運用/コンテナの更新と同梱Plugin.md`）。
+**Volume の中の同梱 Plugin のフォルダを直接編集すると、以後その Plugin は自動では更新されなくなる。**
+直したいなら自分の ID の Plugin として作るか、イメージを自分でビルドする。
+
+名前が `.torifune-` で始まるファイル・ディレクトリは本体が使う（`.torifune-quarantine`、同梱の印の
+`.torifune-bundled` など）。Plugin はこれらを置かない・読まない。
+
 ---
 
 ## 11. 開発の進め方

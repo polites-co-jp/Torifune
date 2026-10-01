@@ -168,6 +168,10 @@ plugins/
 プラグインのデータは Plugin Store（`context.store`）へ保存します。
 プラグインが独自のテーブルやマイグレーションを持つ方式は提供していません。
 
+コンテナイメージで動かす場合、イメージに同梱されたプラグインは起動のたびに `plugins` の Volume へ反映されます。
+利用者が導入・変更したプラグインには触れません。詳しくは [`docs/運用/コンテナの更新と同梱Plugin.md`](docs/運用/コンテナの更新と同梱Plugin.md) を参照してください。
+When running the container image, bundled plugins are synced into the plugins volume on every start; plugins installed or modified by users are left untouched.
+
 > **注意：プラグインは信頼されたコードとして扱われます。**
 > インストールは、実質的に Torifune へ追加のコードを導入する操作です。
 > 導入元の信頼性を確認してください。
