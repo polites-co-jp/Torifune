@@ -292,3 +292,29 @@ describe('plugins の引数', () => {
     expect(result.out).toBe(`${await (await loadTreeHash()).fingerprintPlugins(pluginsDir)}\n`);
   });
 });
+
+describe('plugins fingerprint の失敗（設計 §6.6.3）', () => {
+  it.each<readonly [string, (root: string) => Promise<string>, string]>([
+    ['plugins の場所が無い', async (base) => join(base, 'no-such-plugins'), 'ENOENT'],
+    [
+      'plugins の場所がファイル',
+      async (base) => {
+        const path = join(base, 'plugins-file');
+        await writeFile(path, 'not a directory');
+        return path;
+      },
+      'ENOTDIR',
+    ],
+  ])(
+    '%s → 標準出力には何も出さず、標準エラーに理由（OS のエラーコード）を出して終了コード 1',
+    async (_label, arrange, code) => {
+      const pluginsDir = await arrange(root);
+
+      const result = await runCli(['plugins', 'fingerprint', `--plugins-dir=${pluginsDir}`], {});
+
+      expect(result.code).toBe(1);
+      expect(result.out).toBe('');
+      expect(result.err).toBe(`[torifune] plugins fingerprint FAILED: ${code}\n`);
+    },
+  );
+});

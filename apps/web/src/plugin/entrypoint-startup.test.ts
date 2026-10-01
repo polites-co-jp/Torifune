@@ -333,6 +333,17 @@ describe.skipIf(!SH_AVAILABLE)('起動の最初の同期', () => {
 });
 
 describe.skipIf(!SH_AVAILABLE)('起動時の突き合わせ', () => {
+  it('§6.7.3 同期は起動時の突き合わせより前に走る（同期の記録が最初の指紋の記録より前にある）', () => {
+    const { status, calls } = runEntrypoint();
+
+    expect(status).toBe(0);
+    const sync = calls.findIndex((line) => kind(line) === 'sync');
+    const fingerprint = calls.findIndex((line) => kind(line) === 'fingerprint');
+    expect(sync, `同期が呼ばれていない: ${JSON.stringify(calls)}`).not.toBe(-1);
+    expect(fingerprint, `指紋が呼ばれていない: ${JSON.stringify(calls)}`).not.toBe(-1);
+    expect(sync).toBeLessThan(fingerprint);
+  });
+
   it('#36 いまの指紋と .next/torifune-plugin-sources が同じ → 指紋は計算するが、起動前にビルドしない', () => {
     const { status, calls } = runEntrypoint();
 
@@ -410,6 +421,14 @@ describe.skipIf(!SH_AVAILABLE)('起動時の突き合わせ', () => {
     const { stderr } = runEntrypoint();
 
     expect(stderr).toContain('could not fingerprint plugins');
+  });
+
+  it('#39 指紋のスタブが失敗 → 起動時の再ビルドの確かめを飛ばしたことを標準エラーに明示する', () => {
+    flag('fp-fail');
+
+    const { stderr } = runEntrypoint();
+
+    expect(stderr).toContain('startup rebuild check skipped');
   });
 
   it('#40 sentinel があり、指紋も違う → ビルドは起動前に 1 回だけ', () => {
