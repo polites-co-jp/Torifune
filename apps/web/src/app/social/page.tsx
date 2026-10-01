@@ -1,7 +1,13 @@
 import Link from 'next/link';
 import { helpLinkOfPlugin } from '@/application/plugin/plugin-help-use-cases';
-import { listPublishers, publisherLabels } from '@/application/social/publisher-registry';
 import {
+  findPublisher,
+  isManualOnlyProvider,
+  listPublishers,
+  publisherLabels,
+} from '@/application/social/publisher-registry';
+import {
+  listApprovalPendingPosts,
   listManualPendingPosts,
   listSocialAccounts,
   listSocialPosts,
@@ -14,6 +20,7 @@ import { Button } from '@/ui/components';
 import { AppShell } from '@/ui/layout/app-shell';
 import { ExtensionPoint, PluginActions } from '@/ui/plugin/plugin-slot';
 import { requirePageSession } from '@/ui/server/page-session';
+import { ApprovalPending, type ApprovalPendingRow } from '@/ui/social/approval-pending';
 import { ManualPending, type ManualPendingRow } from '@/ui/social/manual-pending';
 import { buildProviderOptions } from '@/ui/social/provider-options';
 import { SocialAccounts, type SocialAccountsProps } from '@/ui/social/social-accounts';
@@ -26,8 +33,35 @@ import { AsyncState } from '@/ui/states/async-state';
 
 export const dynamic = 'force-dynamic';
 
+/**
+ * 承認待ちの行の支度の警告（048-social-post-approval 設計 §7.1.1）。
+ *
+ * 投稿一覧の Badge（`social-posts.tsx` の `unreadyOf`）と同じ判定を `auto` の行にだけ掛ける。
+ * 承認しても支度待ちになることを承認の前に知らせる（承認は止めない）。
+ */
+function approvalWarningOf(
+  deliveryMode: string,
+  account: { readonly provider: string; readonly credentialConfigured: boolean } | undefined,
+): ApprovalPendingRow['warning'] {
+  if (deliveryMode !== 'auto' || account === undefined) {
+    return null;
+  }
+  const publisher = findPublisher(account.provider);
+  if (publisher === null || publisher.registration.publish === undefined) {
+    return 'no_publisher';
+  }
+  // 資格情報の要らない配信手段では「未設定」を警告しない（035 設計 §5.7）。
+  if (publisher.registration.credentialFields.length > 0 && !account.credentialConfigured) {
+    return 'credential_missing';
+  }
+  return null;
+}
+
 /** 手動投稿待ちの区画に並べる上限（設計 §6.6）。溢れた分は投稿一覧に「手動」として見える。 */
 const MANUAL_PENDING_LIMIT = 50;
+
+/** 承認待ちの区画に並べる上限（048-social-post-approval 設計 §7.1.1）。溢れは見出しの件数で分かる。 */
+const APPROVAL_PENDING_LIMIT = 50;
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -146,6 +180,31 @@ export default async function SocialPage({
     })),
   );
 
+  // 承認待ち（048-social-post-approval 設計 §7.1.1）。「いま」と配信の支度はここで見る。
+  const accountsById = new Map(accounts.items.map((account) => [account.id, account]));
+  const approvalPending = await listApprovalPendingPosts(context, {
+    limit: APPROVAL_PENDING_LIMIT,
+  });
+  const approvalRows: readonly ApprovalPendingRow[] = approvalPending.items.map((post) => {
+    const account = accountsById.get(post.socialAccountId);
+    return {
+      id: post.id,
+      accountName: accountNames[post.socialAccountId] ?? post.socialAccountId,
+      deliveryMode: post.deliveryMode,
+      body: post.body,
+      link: post.link,
+      media: post.media.map((item) => ({ url: item.url, alt: item.alt })),
+      requestedAt: post.createdAt.toISOString(),
+      // トークンの ID は渡さない。API からの依頼かどうかだけ（設計 §7.1.1）。
+      viaApi: post.createdByTokenId !== null,
+      desiredScheduledAt: post.scheduledAt?.toISOString() ?? null,
+      desiredPast: post.scheduledAt !== null && post.scheduledAt.getTime() <= now.getTime(),
+      manualOnly: account === undefined ? false : isManualOnlyProvider(account.provider),
+      updatedAt: post.updatedAt.toISOString(),
+      warning: approvalWarningOf(post.deliveryMode, account),
+    };
+  });
+
   const accountProps: SocialAccountsProps = {
     initialAccounts: accounts.items.map((account) => ({
       id: account.id,
@@ -187,8 +246,24 @@ export default async function SocialPage({
       </div>
       <ExtensionPoint point="social.list.actions" permissions={permissions} context={context} />
       <SocialAccounts {...accountProps} />
-      <ManualPending rows={manualRows} canWrite={permissions.has('social.write')} />
+      {/* 承認 → 手動投稿と、上から下へ流れる順に並べる（048 設計 §7.1）。 */}
+      <ApprovalPending
+        rows={approvalRows}
+        total={approvalPending.total}
+        canApprove={permissions.has('social.approve')}
+        canWrite={permissions.has('social.write')}
+      />
+      {/*
+        `key` は行の中身から作る。区画は受け取った行を手元の状態に持つので、承認・差し戻しの後の
+        `router.refresh()` で行が変わったときに作り直して映す（048 設計 §7.2）。
+      */}
+      <ManualPending
+        key={manualRows.map((row) => row.post.id).join(',')}
+        rows={manualRows}
+        canWrite={permissions.has('social.write')}
+      />
       <SocialPosts
+        key={posts.items.map((post) => `${post.id}:${post.updatedAt.getTime()}`).join(',')}
         initialPosts={posts.items.map((post) => ({
           id: post.id,
           socialAccountId: post.socialAccountId,
@@ -204,6 +279,8 @@ export default async function SocialPage({
           externalUrl: post.externalUrl,
           // 「手動投稿待ち」かどうかも Server Component 側で判定する（設計 §7.1 の補足）。
           manualPending: isManualPending(post, now),
+          // 承認を経た予約か（048 設計 §7.3）。
+          approvedAt: post.approvedAt?.toISOString() ?? null,
         }))}
         accountNames={accountNames}
         accountProviders={accountProviders}

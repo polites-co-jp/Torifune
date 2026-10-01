@@ -48,6 +48,8 @@ export default async function EditSocialPostPage({ params }: { params: Promise<{
           scheduledAtIso: post.scheduledAt?.toISOString() ?? null,
           status: post.status,
           deliveryMode: post.deliveryMode,
+          // 承認済みの予約の編集で「承認待ちに戻る」ことを知らせる（048 設計 §7.4）。
+          approvedAtIso: post.approvedAt?.toISOString() ?? null,
         }}
         // Plugin は編集画面の**脇**に自分の欄を足せる（06_画面設計.md §26）。
         // `site.edit.sidebar` と対になる、SNSドメイン側の拡張点。
