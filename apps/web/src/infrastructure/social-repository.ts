@@ -744,9 +744,11 @@ export const socialRepository: SocialRepository = {
         .updateTable('social_posts')
         .set(values as never)
         .where('id', '=', id)
-        // **着手印を書く前の行だけ。** その間に誰かが触っていたら何もしない。
-        .where('status', '=', 'scheduled')
-        .where('publish_started_at', 'is', null)
+        // **取り出し条件と同じ述語を、書く 1 文の中で見る**（049 設計 §6.3）。
+        // 読んだ後に `PATCH` で予約日時を未来へ直された・手動投稿へ変えられた・状態を変えられた行には
+        // 何も書かない（手動投稿の予約を数えて取りやめない・消された待ち時刻を書き戻さない）。
+        // 待ち時刻の条件も入るので、同じ実行の中で同じ行を二度後ろへ送ることも無い。
+        .where(dueForAutoPublish)
         .executeTakeFirst(),
     );
 

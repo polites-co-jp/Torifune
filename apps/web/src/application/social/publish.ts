@@ -869,7 +869,8 @@ export async function publishDuePosts(
     const verdict = decideSkipOutcome(post, reason, new Date());
     const updated = await socialRepository.deferSkipped(connection, post.id, verdict);
     if (updated === 0) {
-      // その間に人が触った。次の周期で判定し直す。
+      // 読んだ後に `PATCH` で予約日時・配信方法・状態が変わった行は 0 行で弾かれる
+      // （取り出し条件と同じ述語を書く 1 文で見る。049）。数えずに次の周期で判定し直す。
       return;
     }
 

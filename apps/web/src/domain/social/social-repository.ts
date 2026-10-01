@@ -281,7 +281,9 @@ export interface SocialRepository {
    * 飛ばした行では 0 のままという約束がある）。`deferred` なら `next_attempt_at` を置いて
    * 次に見る時刻まで候補から外し、`failed` なら順番待ちから外す。
    *
-   * **更新できた行数を返す。** 0 ならその間に人が触っているので、次の周期で判定し直す。
+   * **書く時点で期限の来た自動配信の行にだけ書く**（取り出し条件と同じ判定。`listDue` と共通。049）。
+   * **更新できた行数を返す。** 0 なら読んだ後に人が触っている（予約日時を未来へ直した・手動投稿へ変えた・
+   * 状態を変えた）ので、何も書かない。期限の来た自動配信の予約に戻っていれば次の周期で判定し直す。
    */
   deferSkipped(connection: Connection, id: string, verdict: SkipVerdict): Promise<number>;
 
