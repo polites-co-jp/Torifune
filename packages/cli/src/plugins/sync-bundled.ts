@@ -1,3 +1,15 @@
+import {
+  cp,
+  lstat,
+  mkdir,
+  readdir,
+  readFile,
+  rename as fsRename,
+  rm,
+  writeFile as fsWriteFile,
+} from 'node:fs/promises';
+import { join } from 'node:path';
+import { BUNDLED_MARKER, hashPluginTree, QUARANTINE_MARKER } from './tree-hash.js';
 import { compareVersions } from './version.js';
 
 /**
@@ -119,4 +131,351 @@ export function decideBundled(input: {
  */
 export function decideUnbundled(markerHash: string | null): 'kept' | 'untouched' {
   return markerHash === null ? 'untouched' : 'kept';
+}
+
+/**
+ * 適用が使うファイル操作の口（§6.6.1）。失敗を注入できるよう差し替えられる。
+ */
+export interface SyncFileOps {
+  /** ディレクトリを再帰的に写す（§6.4.1 の 1）。シンボリックリンクは辿らず、リンク先の文字列のまま写す。 */
+  copyDir(from: string, to: string): Promise<void>;
+  rename(from: string, to: string): Promise<void>;
+  /** 再帰的に消す。無くても失敗しない。シンボリックリンクはリンクそのものだけを消す。 */
+  remove(path: string): Promise<void>;
+  writeFile(path: string, data: string): Promise<void>;
+}
+
+export const nodeFileOps: SyncFileOps = {
+  copyDir: (from, to) =>
+    // verbatimSymlinks を立てないと相対リンクが絶対パスへ書き換わり、写しの木のハッシュが合わなくなる。
+    cp(from, to, {
+      recursive: true,
+      dereference: false,
+      verbatimSymlinks: true,
+      errorOnExist: true,
+      force: false,
+    }),
+  rename: (from, to) => fsRename(from, to),
+  remove: (path) => rm(path, { recursive: true, force: true }),
+  writeFile: (path, data) => fsWriteFile(path, data),
+};
+
+export interface SyncSummary {
+  readonly updated: number;
+  readonly restored: number;
+  readonly adopted: number;
+  readonly unchanged: number;
+  readonly skipped: number;
+  readonly kept: number;
+  readonly failed: number;
+  readonly untouched: number;
+}
+
+const LOG_PREFIX = '[torifune] bundled plugins: ';
+
+/** legacy の置き換え前の中身を移す先（`<plugins>` の直下。`.` で始まるのでビルドにも指紋にも入らない）。 */
+const BACKUP_DIR = '.torifune-bundled-backup';
+
+const MARKER_NOTE =
+  'Torifune が同梱 Plugin の更新に使う印。このフォルダの中身を変えると、以後このフォルダは自動では更新されない。';
+
+/** 作業用のディレクトリ（§6.4.1 の T・O）。 */
+function workPaths(pluginsDir: string, id: string): { readonly tmp: string; readonly old: string } {
+  return {
+    tmp: join(pluginsDir, `.torifune-sync-${id}.tmp`),
+    old: join(pluginsDir, `.torifune-sync-${id}.old`),
+  };
+}
+
+/** 失敗の理由として出す文字列を持つ例外。パスや内部の事情は持たせない。 */
+class SyncFailure extends Error {
+  constructor(readonly reason: string) {
+    super(reason);
+  }
+}
+
+function errorCode(error: unknown): string | undefined {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+/**
+ * 通常のファイルなら中身を読む。無い・通常のファイルでない（シンボリックリンクを含む）なら null。
+ *
+ * **シンボリックリンクを辿らない。** Volume の外のファイルを読まない。
+ */
+async function readRegularFile(path: string): Promise<string | null> {
+  try {
+    const info = await lstat(path);
+    if (!info.isFile()) {
+      return null;
+    }
+    return await readFile(path, 'utf8');
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/** plugin.json の version。無い・JSON でない・文字列でなければ null。 */
+async function readManifestVersion(dir: string): Promise<string | null> {
+  const raw = await readRegularFile(join(dir, 'plugin.json'));
+  if (raw === null) {
+    return null;
+  }
+  try {
+    const manifest: unknown = JSON.parse(raw);
+    const version =
+      typeof manifest === 'object' && manifest !== null
+        ? (manifest as Record<string, unknown>)['version']
+        : undefined;
+    return typeof version === 'string' ? version : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readMarkerHash(dir: string): Promise<string | null> {
+  const raw = await readRegularFile(join(dir, BUNDLED_MARKER));
+  return raw === null ? null : parseMarker(raw);
+}
+
+async function entryExists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') {
+      return false;
+    }
+    throw error;
+  }
+}
+
+/** Volume の `<plugins>/<id>` を観測する。ディレクトリでなければ（リンクを含む）辿らずに失敗にする。 */
+async function observeVolume(dir: string): Promise<VolumeState> {
+  let isDirectory: boolean;
+  try {
+    isDirectory = (await lstat(dir)).isDirectory();
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') {
+      return { kind: 'missing' };
+    }
+    throw error;
+  }
+  if (!isDirectory) {
+    throw new SyncFailure('ENOTDIR');
+  }
+  return {
+    kind: 'present',
+    quarantined: await entryExists(join(dir, QUARANTINE_MARKER)),
+    hash: await hashPluginTree(dir),
+    markerHash: await readMarkerHash(dir),
+    version: await readManifestVersion(dir),
+  };
+}
+
+/** トップレベルの、名前が `.` で始まらないディレクトリ（シンボリックリンクは数えない）。名前順。 */
+async function listPluginDirs(dir: string): Promise<string[]> {
+  const entries = await readdir(dir, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+    .map((entry) => entry.name)
+    .sort();
+}
+
+function markerContent(hash: string, version: string, syncedAt: Date): string {
+  return `${JSON.stringify(
+    { schema: 1, note: MARKER_NOTE, hash, version, syncedAt: syncedAt.toISOString() },
+    null,
+    2,
+  )}\n`;
+}
+
+interface ApplyContext {
+  readonly pluginsDir: string;
+  readonly ops: SyncFileOps;
+  readonly now: () => Date;
+}
+
+/** 退避の置き場を用意する。あってもディレクトリでなければ（リンクを含む）その中へ書かない。 */
+async function ensureBackupRoot(pluginsDir: string): Promise<string> {
+  const backupRoot = join(pluginsDir, BACKUP_DIR);
+  let isDirectory: boolean | null;
+  try {
+    isDirectory = (await lstat(backupRoot)).isDirectory();
+  } catch (error) {
+    if (errorCode(error) !== 'ENOENT') {
+      throw error;
+    }
+    isDirectory = null;
+  }
+  if (isDirectory === false) {
+    throw new SyncFailure('ENOTDIR');
+  }
+  if (isDirectory === null) {
+    await mkdir(backupRoot);
+  }
+  return backupRoot;
+}
+
+/**
+ * `<plugins>/<id>` を同梱の写しで置き換える（§6.4.1）。
+ *
+ * 作業用の T へ写してハッシュを確かめ、印を書いてから、D を退避（legacy）か O（印つきの更新）へ
+ * rename し、T を D へ rename する。rename は同じファイルシステムの中で原子的なので、
+ * D が半分だけ書き換わった状態は生じない。
+ */
+async function replaceWithBundled(
+  ctx: ApplyContext,
+  id: string,
+  source: { readonly dir: string; readonly hash: string; readonly version: string },
+  mode: 'restore' | 'update' | 'legacy',
+): Promise<void> {
+  const { pluginsDir, ops } = ctx;
+  const target = join(pluginsDir, id);
+  const { tmp, old } = workPaths(pluginsDir, id);
+
+  // 1〜3：T へ写し、欠けていないことを確かめ、印を書く
+  await ops.remove(tmp);
+  await ops.copyDir(source.dir, tmp);
+  if ((await hashPluginTree(tmp)) !== source.hash) {
+    throw new SyncFailure('copy mismatch');
+  }
+  await ops.writeFile(
+    join(tmp, BUNDLED_MARKER),
+    markerContent(source.hash, source.version, ctx.now()),
+  );
+
+  // 4：D をどかす
+  if (mode === 'legacy') {
+    const backup = join(await ensureBackupRoot(pluginsDir), id);
+    await ops.remove(backup); // ID ごとに最新の 1 つだけ残す
+    await ops.rename(target, backup);
+  } else if (mode === 'update') {
+    await ops.remove(old);
+    await ops.rename(target, old);
+  }
+
+  // 5：T を D へ
+  await ops.rename(tmp, target);
+
+  // 6：O を片付ける
+  if (mode === 'update') {
+    await ops.remove(old);
+  }
+}
+
+function describeDecision(id: string, decision: BundledDecision): string {
+  switch (decision.result) {
+    case 'updated':
+      return decision.backup ? `updated: legacy (backup: ${BACKUP_DIR}/${id})` : 'updated';
+    case 'skipped':
+      return decision.reason === 'newer version'
+        ? `skipped: newer version ${decision.installedVersion} installed`
+        : `skipped: ${decision.reason}`;
+    default:
+      return decision.result;
+  }
+}
+
+/**
+ * 同梱の写しと plugins を突き合わせ、同梱 Plugin のフォルダを更新する（§6.3・§6.4・§6.6.2）。
+ *
+ * 標準出力に、同梱の写しにある ID ごとに 1 行（以前は同梱だった ID の行を含む）と、最後に要約を 1 行出す。
+ * 利用者の Plugin は ID を出さず件数（`untouched`）だけ数える。
+ */
+export async function syncBundledPlugins(options: {
+  readonly bundledDir: string;
+  readonly pluginsDir: string;
+  readonly stdout: (text: string) => void;
+  readonly stderr: (text: string) => void;
+  readonly ops?: SyncFileOps;
+  readonly now?: () => Date;
+}): Promise<{ readonly exitCode: 0 | 1; readonly summary: SyncSummary }> {
+  const { bundledDir, pluginsDir, stdout } = options;
+  const ctx: ApplyContext = {
+    pluginsDir,
+    ops: options.ops ?? nodeFileOps,
+    now: options.now ?? (() => new Date()),
+  };
+  const counts = {
+    updated: 0,
+    restored: 0,
+    adopted: 0,
+    unchanged: 0,
+    skipped: 0,
+    kept: 0,
+    failed: 0,
+    untouched: 0,
+  };
+  const log = (id: string, text: string): void => stdout(`${LOG_PREFIX}${id} ${text}\n`);
+
+  // 空の Volume・ホストのディレクトリを付けた場合。全部が restored で置かれる
+  await mkdir(pluginsDir, { recursive: true });
+
+  const bundledIds = await listPluginDirs(bundledDir);
+
+  for (const id of bundledIds) {
+    const sourceDir = join(bundledDir, id);
+    const target = join(pluginsDir, id);
+
+    const bundledHash = await hashPluginTree(sourceDir);
+    const bundledVersion = await readManifestVersion(sourceDir);
+    if (bundledVersion === null) {
+      throw new SyncFailure('unreadable bundled manifest');
+    }
+
+    const volume = await observeVolume(target);
+    const decision = decideBundled({ bundledHash, bundledVersion, volume });
+    const source = { dir: sourceDir, hash: bundledHash, version: bundledVersion };
+
+    switch (decision.result) {
+      case 'restored':
+        await replaceWithBundled(ctx, id, source, 'restore');
+        break;
+      case 'updated':
+        await replaceWithBundled(ctx, id, source, decision.backup ? 'legacy' : 'update');
+        break;
+      case 'adopted':
+        // 中身は触らず印だけを書く。一時ファイルを経由しない（残ると木のハッシュに入る）
+        await ctx.ops.writeFile(
+          join(target, BUNDLED_MARKER),
+          markerContent(bundledHash, bundledVersion, ctx.now()),
+        );
+        break;
+      default:
+        break;
+    }
+    counts[decision.result] += 1;
+    log(id, describeDecision(id, decision));
+  }
+
+  // 同梱の写しに無い ID：以前は同梱だったもの（印あり）は残す。利用者の Plugin は数えるだけ
+  const bundledSet = new Set(bundledIds);
+  for (const id of await listPluginDirs(pluginsDir)) {
+    if (bundledSet.has(id)) {
+      continue;
+    }
+    let markerHash: string | null = null;
+    try {
+      markerHash = await readMarkerHash(join(pluginsDir, id));
+    } catch {
+      // 読めなければ印が無いものとして扱う。どちらにしても触らない
+    }
+    const decision = decideUnbundled(markerHash);
+    counts[decision] += 1;
+    if (decision === 'kept') {
+      log(id, 'kept: no longer bundled');
+    }
+  }
+
+  const summary = Object.entries(counts)
+    .map(([name, value]) => `${name}=${value}`)
+    .join(' ');
+  stdout(`${LOG_PREFIX}summary ${summary}\n`);
+
+  return { exitCode: counts.failed === 0 ? 0 : 1, summary: counts };
 }
