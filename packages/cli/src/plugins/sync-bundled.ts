@@ -142,6 +142,10 @@ export interface SyncFileOps {
   rename(from: string, to: string): Promise<void>;
   /** 再帰的に消す。無くても失敗しない。シンボリックリンクはリンクそのものだけを消す。 */
   remove(path: string): Promise<void>;
+  /**
+   * ファイルを書く。**そこにあるシンボリックリンクを辿らない**：先にその名前のもの（リンクならリンクそのもの）を
+   * 消し、新しいファイルとして作る（作る前に何かが置かれていれば失敗する）。Volume の外のファイルを書き換えないため。
+   */
   writeFile(path: string, data: string): Promise<void>;
 }
 
@@ -157,7 +161,12 @@ export const nodeFileOps: SyncFileOps = {
     }),
   rename: (from, to) => fsRename(from, to),
   remove: (path) => rm(path, { recursive: true, force: true }),
-  writeFile: (path, data) => fsWriteFile(path, data),
+  writeFile: async (path, data) => {
+    // rm はリンクを辿らずリンクそのものを消す。再帰はしない（ディレクトリなら失敗にする）。
+    // 'wx'（O_CREAT | O_EXCL）は、消した後に誰かがリンクを置いても辿らずに失敗する。
+    await rm(path, { force: true });
+    await fsWriteFile(path, data, { flag: 'wx' });
+  },
 };
 
 export interface SyncSummary {
@@ -172,6 +181,24 @@ export interface SyncSummary {
 }
 
 const LOG_PREFIX = '[torifune] bundled plugins: ';
+
+/** Plugin ID の形（`packages/plugin-api/src/manifest.ts` と同じ）。 */
+const PLUGIN_ID = /^[a-z][a-z0-9-]{1,63}$/;
+
+/**
+ * ログの行に出す名前。Plugin ID の形ならそのまま、そうでなければ JSON の文字列として引用し、
+ * 表示できる ASCII 以外を `\uXXXX` にする（フォルダの名前で偽の行を作らせない。U+2028 などは
+ * JSON.stringify がそのまま残すため）。
+ */
+function displayId(name: string): string {
+  if (PLUGIN_ID.test(name)) {
+    return name;
+  }
+  return JSON.stringify(name).replace(
+    /[^\x20-\x7e]/g,
+    (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  );
+}
 
 /** legacy の置き換え前の中身を移す先（`<plugins>` の直下。`.` で始まるのでビルドにも指紋にも入らない）。 */
 const BACKUP_DIR = '.torifune-bundled-backup';
@@ -475,7 +502,7 @@ export async function syncBundledPlugins(options: {
     failed: 0,
     untouched: 0,
   };
-  const log = (id: string, text: string): void => stdout(`${LOG_PREFIX}${id} ${text}\n`);
+  const log = (id: string, text: string): void => stdout(`${LOG_PREFIX}${displayId(id)} ${text}\n`);
 
   // ID に結びつかない I/O の失敗（残骸の片付け・写しに無い ID の列挙）。終了コードだけを 1 にする
   let otherFailure = false;
@@ -513,7 +540,7 @@ export async function syncBundledPlugins(options: {
       log(id, describeDecision(id, decision));
     } catch (error) {
       counts.failed += 1;
-      stderr(`${LOG_PREFIX}${id} FAILED: ${failureReason(error)}\n`);
+      stderr(`${LOG_PREFIX}${displayId(id)} FAILED: ${failureReason(error)}\n`);
     }
   }
 
