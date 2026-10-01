@@ -194,6 +194,28 @@ function postInsertValues(post: NewSocialPost): Record<string, unknown> {
   };
 }
 
+/**
+ * 自動配信の期限が来ている（035 §6.5.3 の取り出し条件。049）。
+ *
+ * **`listDue`・`deferSkipped`・`claimForPublish` が同じものを使う。** 列を作ってから書くまでに
+ * `PATCH` で予約日時を未来へ直された・手動投稿へ変えられた行に書かないため、書く側も取り出しと同じ条件を
+ * **同じ 1 文の中で**見る。Domain の `isDue` が同じ判定の純関数。
+ *
+ * 値を JavaScript で作らず関数にしてあるのは、`now()` を文ごとに DB で評価させるため。
+ */
+function dueForAutoPublish(eb: ExpressionBuilder<Schema, 'social_posts'>): Expression<SqlBool> {
+  return eb.and([
+    eb('status', '=', 'scheduled'),
+    // 手動投稿はジョブが一切触らない（035 §6.5.3）。
+    eb('delivery_mode', '=', 'auto'),
+    eb('publish_started_at', 'is', null),
+    // 022 より前に作られた「予約日時の無い予約」は、これまでどおり誰も取り出さない。
+    eb('scheduled_at', 'is not', null),
+    eb('scheduled_at', '<=', sql<Date>`now()`),
+    eb.or([eb('next_attempt_at', 'is', null), eb('next_attempt_at', '<=', sql<Date>`now()`)]),
+  ]);
+}
+
 export const socialRepository: SocialRepository = {
   async listAccounts(
     connection: Connection,
@@ -672,19 +694,11 @@ export const socialRepository: SocialRepository = {
       return [];
     }
 
+    // 取り出し条件は `deferSkipped`・`claimForPublish` と共通の述語（049）。
     let query = connection.db
       .selectFrom('social_posts')
       .select(POST_COLUMNS)
-      .where('status', '=', 'scheduled')
-      // 手動投稿はジョブが一切触らない（設計 §6.5.3）。
-      .where('delivery_mode', '=', 'auto')
-      .where('publish_started_at', 'is', null)
-      // 022 より前に作られた「予約日時の無い予約」は、これまでどおり誰も取り出さない。
-      .where('scheduled_at', 'is not', null)
-      .where('scheduled_at', '<=', sql<Date>`now()`)
-      .where((eb) =>
-        eb.or([eb('next_attempt_at', 'is', null), eb('next_attempt_at', '<=', sql<Date>`now()`)]),
-      );
+      .where(dueForAutoPublish);
 
     // **2 ページ目以降だけ。** 取り出し条件そのものは `022` のときと変わらない
     // （足したのはカーソルの比較だけ。設計 §6.5.3）。
