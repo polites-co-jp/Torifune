@@ -388,7 +388,7 @@ const LEFTOVER = /^\.torifune-sync-.+\.(?:tmp|old)$/;
 /**
  * `FAILED` の行に出す理由（§6.6.2）。OS のエラーコードまでとし、メッセージ・パス・スタックは出さない。
  */
-function failureReason(error: unknown): string {
+export function failureReason(error: unknown): string {
   if (error instanceof SyncFailure) {
     return error.reason;
   }
