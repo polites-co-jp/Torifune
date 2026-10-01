@@ -55,15 +55,18 @@ Volume の外（`/app/.torifune-bundled-plugins`）に持ち、起動のたび�
 | `adopted` | 中身はイメージと同じで、印だけを付けた（新しい Volume の最初の起動など） | 無い |
 | `updated` | 前回の同期が書いたまま誰も触っていなかったので、新しいイメージの版で置き換えた | 無い |
 | `updated: legacy (backup: …)` | 印の無い古い写しを、イメージの版で置き換えた。置き換える前の中身を退避した | 手で直していたなら退避から取り出す（下の「退避」） |
-| `restored` | フォルダが無かったので、イメージの写しを置いた | 無い（消したつもりの Plugin なら、下の「同梱 Plugin を消したとき」） |
+| `restored` | フォルダが無かったので、イメージの写しを置いた | 無い（消したつもりの Plugin なら、下の「同梱から外れた Plugin・消した同梱 Plugin」） |
 | `skipped: modified` | 前回の同期の後に中身が変わっている（Registry・Package での更新、手での編集）。利用者のものとして触らない | 同梱の版へ戻したいなら下の「同梱の版へ戻したいとき」 |
 | `skipped: newer version <版> installed` | 印が無く、同梱より新しい版が入っている。利用者が更新したものとして触らない | 無い |
 | `skipped: unreadable manifest` | 印が無く、`plugin.json` が読めない。判断できないので触らない | フォルダを確かめる。同梱の版でよければフォルダを消して再起動する |
 | `skipped: quarantined` | 隔離マーク（`.torifune-quarantine`）がある。原因を調べるために残している | 原因を調べ、マークを消して再起動すると通常の扱いに戻る |
 | `kept: no longer bundled` | 以前は同梱だったが、新しいイメージには無い。使い続けているかもしれないので残す | 不要なら管理画面から削除する |
-| `FAILED: <理由>`（標準エラー） | ファイル操作に失敗した。その Plugin は前の中身のまま | 理由（`ENOSPC` などの OS のエラーコード）を見て直し、再起動する |
+| `FAILED: <理由>`（標準エラー） | ファイル操作に失敗した。その Plugin は前の中身のまま。`ENOTDIR` は Volume の `<plugin-id>` がディレクトリでない（ファイル・リンク）、`unreadable bundled manifest` はイメージの写しの `plugin.json` が読めない（イメージの誤り） | 理由（`ENOSPC` などの OS のエラーコード）を見て直し、再起動する |
 
 要約の `untouched` は、利用者の Plugin の数（名前は出さない）。
+
+行の名前が Plugin ID の形（英小文字で始まる、英小文字・数字・`-` の 2〜64 文字）でないときは、
+`"Not An Id"` のように JSON の文字列として引用して出す（改行などを含む名前で偽の行を作らせないため）。
 
 同期の後の突き合わせで食い違えば、次の行が出て再ビルドが始まる。
 
@@ -75,6 +78,13 @@ Volume の外（`/app/.torifune-bundled-plugins`）に持ち、起動のたび�
 
 指紋を計算できなかったときは `could not fingerprint plugins - startup rebuild check skipped, starting with the current build` を出し、
 再ビルドせずにいまのビルドで起動する。
+
+## 環境変数
+
+| 変数 | 値 | 扱い |
+| --- | --- | --- |
+| `TORIFUNE_BUNDLED_PLUGINS_DIR` | `/app/.torifune-bundled-plugins` | **イメージ（`Dockerfile`）が宣言する。** 同梱 Plugin の写しの場所。空にすると同期しない。運用者が設定するものではない |
+| `TORIFUNE_PLUGINS_DIR` | `/app/plugins` | **`/app/plugins` から変えない。** レジストリの生成（ビルド）は常にイメージの中の `/app/plugins` を読むが、Plugin の導入・同期・起動時の指紋はこの変数の場所を使う。別の場所へ向けると、導入した Plugin がビルドに入らず、指紋もビルドの中身を表さなくなる（起動時の突き合わせが正しく働かない）。Volume は `/app/plugins` に付ける |
 
 ## 同梱 Plugin を自分で直したいとき
 

@@ -169,8 +169,9 @@ plugins/
 プラグインが独自のテーブルやマイグレーションを持つ方式は提供していません。
 
 コンテナイメージで動かす場合、イメージに同梱されたプラグインは起動のたびに `plugins` の Volume へ反映されます。
-利用者が導入・変更したプラグインには触れません。詳しくは [`docs/運用/コンテナの更新と同梱Plugin.md`](docs/運用/コンテナの更新と同梱Plugin.md) を参照してください。
-When running the container image, bundled plugins are synced into the plugins volume on every start; plugins installed or modified by users are left untouched.
+利用者が導入・変更したプラグインには触れません。
+ただし、この同期が入る前のイメージ（設計 `050` より前）で作った Volume では、同梱プラグインのフォルダに更新用の印が無いため、版が同梱と同じか古いものはイメージの版へ置き換わります（置き換える前の中身は `.torifune-bundled-backup/` に退避されます）。詳しくは [`docs/運用/コンテナの更新と同梱Plugin.md`](docs/運用/コンテナの更新と同梱Plugin.md) を参照してください。
+When running the container image, bundled plugins are synced into the plugins volume on every start; plugins installed or modified by users are left untouched. On volumes created by images built before this sync was added, bundled plugin folders whose version is the same as or older than the bundled one may be replaced once, after a backup to `.torifune-bundled-backup/`.
 
 > **注意：プラグインは信頼されたコードとして扱われます。**
 > インストールは、実質的に Torifune へ追加のコードを導入する操作です。
