@@ -209,3 +209,27 @@ export function credentialTargetLabel(displayName: string, providerName: string)
 export function credentialClearMessage(displayName: string): string {
   return `「${displayName}」の保存済みの資格情報を消します。消した値は元に戻せません。`;
 }
+
+// ---------------------------------------------------------------------------
+// アカウントの ID の表示とコピー（051-social-account-id-display 設計 §7.6）
+// ---------------------------------------------------------------------------
+
+/** 一覧の列の見出し。 */
+export const ACCOUNT_ID_HEADER = 'アカウントID';
+
+/** 行の「コピー」ボタンの見える文字。 */
+export const ACCOUNT_ID_COPY_LABEL = 'コピー';
+
+/**
+ * 「コピー」ボタンの `aria-label`（設計 §7.3.1）。行ごとに同じ「コピー」が並ぶので、
+ * 支援技術では表示名とサービスで行を見分ける。見える文字「コピー」を名前に含む。
+ */
+export function accountIdCopyAriaLabel(displayName: string, providerLabel: string): string {
+  return `「${displayName}（${providerLabel}）」のアカウントIDをコピー`;
+}
+
+export const ACCOUNT_ID_COPIED = 'アカウントIDをコピーしました。';
+
+/** 写せないとき（設計 §7.3.3）。ID の要素は 1 回のクリックで全体が選ばれる。 */
+export const ACCOUNT_ID_COPY_FAILED =
+  'コピーできませんでした。アカウントIDを選択して写してください。';
