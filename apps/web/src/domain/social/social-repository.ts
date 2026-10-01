@@ -292,7 +292,9 @@ export interface SocialRepository {
    * 同じトランザクションに入れると、プロセスが死んだときに印がロールバックされ、
    * 次の実行が同じ投稿をもう一度送る。
    *
-   * 誰かが先に触っていれば `null`（更新 0 行）。
+   * **書く時点で期限の来た自動配信の行にだけ書く**（取り出し条件と同じ判定。`listDue` と共通。049）。
+   * そうでなければ `null`（更新 0 行）。列を作った後に `PATCH` で予約日時を未来へ直された・
+   * 手動投稿へ変えられた・状態を変えられた行や、誰かが先に着手した行がこれに当たる。
    */
   claimForPublish(connection: Connection, id: string): Promise<SocialPost | null>;
 
