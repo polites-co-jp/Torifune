@@ -24,8 +24,12 @@ set -eu
 REBUILD_EXIT_CODE=75
 SENTINEL="${TORIFUNE_REBUILD_SENTINEL:-/app/.torifune-rebuild-request}"
 STATE_DIR="${TORIFUNE_BUILD_STATE_DIR:-/app/.torifune-build-state}"
+# TORIFUNE_NEXT_DIR はテストが .next の場所を一時ディレクトリへ向けるための口。運用では設定しない。
 NEXT_DIR="${TORIFUNE_NEXT_DIR:-/app/apps/web/.next}"
+# 生成スクリプトは常に <リポジトリ>/plugins（/app/plugins）を読む。ここを変えると指紋だけが別の場所を見て、
+# 起動のたびに再ビルドが走る。運用では /app/plugins から変えない。
 PLUGINS_DIR="${TORIFUNE_PLUGINS_DIR:-/app/plugins}"
+# 同梱 Plugin の写しの場所。イメージ（Dockerfile）が宣言する。空ならこの entrypoint は同期しない。
 BUNDLED_DIR="${TORIFUNE_BUNDLED_PLUGINS_DIR:-}"
 # 起動・ビルド・CLI のコマンド。テストからスタブへ差し替えられるようにしている。
 START_CMD="${TORIFUNE_START_CMD:-pnpm --filter @torifune/web start}"
@@ -88,7 +92,7 @@ if [ -f "$SENTINEL" ]; then
 else
   # shellcheck disable=SC2086
   if ! current_fingerprint=$($CLI plugins fingerprint --plugins-dir="$PLUGINS_DIR"); then
-    echo "[torifune] could not fingerprint plugins - starting with the current build" >&2
+    echo "[torifune] could not fingerprint plugins - startup rebuild check skipped, starting with the current build" >&2
   else
     build_fingerprint=""
     if [ -f "$FINGERPRINT_FILE" ]; then

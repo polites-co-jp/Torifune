@@ -73,7 +73,7 @@ Volume の外（`/app/.torifune-bundled-plugins`）に持ち、起動のたび�
 [torifune] rebuild succeeded
 ```
 
-指紋を計算できなかったときは `could not fingerprint plugins - starting with the current build` を出し、
+指紋を計算できなかったときは `could not fingerprint plugins - startup rebuild check skipped, starting with the current build` を出し、
 再ビルドせずにいまのビルドで起動する。
 
 ## 同梱 Plugin を自分で直したいとき
