@@ -628,6 +628,9 @@ curl -X POST https://torifune.example.com/api/v1/social/posts \
   「配信を開始しているため変更できません。」）。通常は配信の結果が記録された時点（配信 Plugin の制限時間 30 秒以内）で外れる。
   **配信の途中で Torifune のプロセスが落ちた場合は、次の定期実行が中断を判定して `failed`（結果不明）にするまで
   （既定の間隔で 1 分以上）残る**。その間は `GET` で状態を見て待つ
+* **予約日時を未来へ直す・`deliveryMode` を `manual` に変える・取りやめる `PATCH` が 200 を返したら、その予約は
+  Torifune がその周期の配信の順番に並べていても直した内容で扱われる**（直す前の日時・配信方法では送られない）。
+  配信の最中（着手の後）は従来どおり 422（上の箇条）
 * 変更後の値に対して §4.4 の 5〜8 と同じ検査を掛ける。ただし
   * 5・6（予約日時・手動投稿の媒体）は**変更後が `draft` / `awaiting_approval` / `scheduled` のときだけ**
   * 7（手動投稿の対応）は **`deliveryMode: "manual"` を送ったときだけ**
@@ -1304,6 +1307,7 @@ while True:
 | 2026-09-25 | 入力の文字と範囲の規則を足した（§1.3・§1.4・§3.2・§4.4・§4.7・§5.2・§5.5）。**動作の変更がある**：(1) **対になっていないサロゲートを含む文字列は 422**（従来は `body`・`link`・`externalRef`・`externalId`・`externalUrl`・`failureReason`・アカウントの `displayName` / `handle` などで 2xx になり、U+FFFD に置き換わって保存されていた。`media`・`providerOptions` は 500）。絵文字を UTF-16 の長さで半分に切るクライアントは、コードポイント単位で切るよう直す必要がある。(2) 本文・`link` の対になっていないサロゲートの 422 は、X・Threads・Bluesky の手動投稿でも **Core の文言**になり、`link` の片割れは**キーが `link`** になる（従来は配信 Plugin の `本文に扱えない文字が含まれています。` を `body` で返していた）。(3) **NUL（U+0000）を含む文字列は 422**（従来は多くの項目で 500、`scheduledAt`・`credentials` などは 2xx）。(4) **`scheduledAt` の `0001-01-01T00:00:00Z` より前・`9999-12-31T23:59:59.999Z` より後は 422 `scheduledAt`**（従来は 201 か 500）。どれも正当な利用で送る値ではなく、API のバージョンは v1 のまま。OpenAPI の `scheduledAt` に範囲の説明が付いた |
 | 2026-09-25 | 検証を受けて §1.3 を訂正・追記した。使えない文字の検査はクエリの**名前**も見る（名前そのものに含むときの `details` のキーは `_`）。`details` のキーは先頭の 50 個まで。あわせて、項目名が `constructor`・`__proto__` などのときに 500 になっていたのと、深い入れ子（1 万段など）の本文で 500 になっていたのを直した（どちらも 422） |
 | 2026-10-01 | **承認待ちを足した**（`048-social-post-approval`）。`POST /social/posts` に任意の **`publishTiming`**（`now` / `scheduled` / `after_approval`。§4.4）、状態 **`awaiting_approval`**（§4.3・§6）、承認の操作 **`POST /social/posts/{id}/approve`**（Permission **`social.approve`**。§4.10）、応答の **`approvedAt`**、イベント **`social.post.approved`**（§6.6）。API のバージョンは v1 のまま。**既存の外部アプリへの影響**：(1) `publishTiming` を送らない要求は従来どおり。(2) `POST` の `status` の既定が OpenAPI から消えた（省略時は従来どおり `draft`。生成クライアントの既定値が消えることがある）。`publishTiming` と `status` を同時に送ると 422 `status`。(3) **状態の値 `awaiting_approval` が増えた。** 自分が承認待ちを使わなければ自分の投稿には現れないが、**`GET /social/posts` の一覧には他のアプリや人が作った承認待ちが含まれうる**。状態を網羅的に分岐しているクライアントは知らない値を受け取るので、無視するか「その他」として扱う。(4) `PATCH` で承認待ちから `scheduled` / `published` / `failed` へは変えられない（422 `status`）。`PATCH` に `publishTiming` を送ると 422（従来は黙って無視されていた）。(5) **承認を経た予約（`approvedAt` あり）の内容・日時・配信方法を書き換えると承認待ちに戻る。** 既存の予約はすべて `approvedAt: null` で、振る舞いは変わらない。(6) 既存のトークンの Scope に `social.approve` は無いので、既存のトークンは承認できない。(7) X の無料版（`sns-x-manual`）では `publishTiming` を送った登録が常に承認待ちになる（§5.1）。(8) **`PATCH /social/posts/{id}` の処理中に承認・配信の開始などで投稿の状態が変わると 409 `CONFLICT`**（`details.status`。何も変えない。§4.7）。OpenAPI の `updateSocialPost` に 409 を宣言した |
+| 2026-10-01 | **配信の不具合を直した**（`049-publish-claim-conditions`）。配信ジョブが、その周期の配信の順番に並べた後に `PATCH` で予約日時を未来へ直された・`deliveryMode` を `manual` に変えられた・取りやめてから予約し直された予約を、直す前の内容のまま送っていた（`PATCH` は 200 を返していた）。直した後は、こうした予約は直した内容で扱われる（§4.7）。`POST /social/publish` の件数では `due` にだけ数え、他のどれにも数えない。**API の形・バージョン（v1）・OpenAPI は変わらない** |
 
 ### 関連文書
 
