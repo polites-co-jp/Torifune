@@ -163,3 +163,69 @@ describe('024 のマイグレーションは適用済み', () => {
     ).toBe(SHA256_OF_024);
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* #62 025 の状態の CHECK と Domain の POST_STATUSES                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `ADD CONSTRAINT social_posts_status_check CHECK (status IN (…))` の値の集合。
+ *
+ * `025` には `status IN (…)` が 2 つある（`social_posts_approved_at_check` にもある）ので、
+ * **`social_posts_status_check` の直後の `CHECK (status IN (…))` を読む**（実装プラン §2 のテストの方法）。
+ * `DROP CONSTRAINT social_posts_status_check,` の直後は `CHECK` ではないので拾わない。
+ * 戻す手順のコメントにある 4 値の CHECK を拾わないよう、コメントを先に落とす。
+ */
+function statusCheckValues(sql: string): string[] | null {
+  const match = withoutSqlComments(sql).match(
+    /social_posts_status_check\s+CHECK\s*\(\s*status\s+IN\s*\(([^)]*)\)\s*\)/i,
+  );
+  if (match === null) return null;
+  return [...(match[1] ?? '').matchAll(/'([^']*)'/g)].map((value) => value[1] ?? '').sort();
+}
+
+describe('#62 025 の social_posts_status_check と POST_STATUSES', () => {
+  it('#62 025 の social_posts_status_check の値の集合が POST_STATUSES と一致する', async () => {
+    const inSql = statusCheckValues(migrationSource(MIGRATION_025));
+    // 未実装の段階でこのファイル全体が読めなくならないよう、動的に読む。
+    const domain = (await import('@/domain/social/social')) as {
+      readonly POST_STATUSES?: readonly string[];
+    };
+
+    expect(
+      inSql,
+      '025 に social_posts_status_check の CHECK (status IN (…)) が無い',
+    ).not.toBeNull();
+    expect([...(domain.POST_STATUSES ?? [])].sort()).toEqual(inSql);
+  });
+
+  it('#62 025 の social_posts_status_check は 5 値で awaiting_approval を含む', () => {
+    expect(statusCheckValues(migrationSource(MIGRATION_025))).toEqual(
+      ['awaiting_approval', 'draft', 'failed', 'published', 'scheduled'].sort(),
+    );
+  });
+
+  it('#62 判別力：値を 1 つ落とした写しでは POST_STATUSES と一致しない', async () => {
+    const tampered = `ALTER TABLE social_posts
+    DROP CONSTRAINT social_posts_status_check,
+    ADD CONSTRAINT social_posts_status_check
+        CHECK (status IN ('draft', 'scheduled', 'published', 'failed')),
+    ADD CONSTRAINT social_posts_approved_at_check
+        CHECK (approved_at IS NULL OR status IN ('scheduled', 'published', 'failed'));`;
+    const domain = (await import('@/domain/social/social')) as {
+      readonly POST_STATUSES?: readonly string[];
+    };
+
+    expect(statusCheckValues(tampered)).toEqual(['draft', 'failed', 'published', 'scheduled']);
+    expect([...(domain.POST_STATUSES ?? [])].sort()).not.toEqual(statusCheckValues(tampered));
+  });
+
+  it('#62 判別力：approved_at の CHECK の IN を状態の CHECK と取り違えない', () => {
+    // approved_at の CHECK だけを持つ写しでは、状態の CHECK は見つからない。
+    const onlyApprovedAt = `ALTER TABLE social_posts
+    ADD CONSTRAINT social_posts_approved_at_check
+        CHECK (approved_at IS NULL OR status IN ('scheduled', 'published', 'failed'));`;
+
+    expect(statusCheckValues(onlyApprovedAt)).toBeNull();
+  });
+});
