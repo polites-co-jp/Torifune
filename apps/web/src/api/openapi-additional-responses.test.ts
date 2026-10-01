@@ -59,7 +59,10 @@ const REST_ADDITIONAL: Readonly<Record<string, readonly number[]>> = {
   completeSetup: [404, 409],
 };
 
-/** 042 §6.4 の表（SNS の 8 操作）：操作 ID → 追加の status。043 では変えない。 */
+/**
+ * 042 §6.4 の表（SNS の 8 操作）と 048 の承認（048-social-post-approval 設計 §6.11）：操作 ID → 追加の status。
+ * 043 では変えない。
+ */
 const SOCIAL_ADDITIONAL: Readonly<Record<string, readonly number[]>> = {
   createSocialPost: [200],
   getSocialAccount: [404],
@@ -69,6 +72,8 @@ const SOCIAL_ADDITIONAL: Readonly<Record<string, readonly number[]>> = {
   updateSocialPost: [404],
   deleteSocialPost: [404],
   publishSocialPosts: [409],
+  // 048 で足した（存在しない投稿と、見た後に内容が変わっていた承認）。
+  approveSocialPost: [404, 409],
 };
 
 const ADDITIONAL: Readonly<Record<string, readonly number[]>> = {
@@ -143,10 +148,10 @@ describe('#38 設計 §6.4 の表の 404 / 409 / 401 はエラーの形', () => 
 /* -------------------------------------------------------------------------- */
 
 describe('#39 全公開操作の追加の応答が表とちょうど一致する', () => {
-  it('#39 表は設計 §6.4 の 27 操作と 042 の 8 操作の計 35 行', () => {
+  it('#39 表は設計 §6.4 の 27 操作と 042・048 の 9 操作の計 36 行', () => {
     expect(Object.keys(REST_ADDITIONAL)).toHaveLength(27);
-    expect(Object.keys(SOCIAL_ADDITIONAL)).toHaveLength(8);
-    expect(Object.keys(ADDITIONAL)).toHaveLength(35);
+    expect(Object.keys(SOCIAL_ADDITIONAL)).toHaveLength(9);
+    expect(Object.keys(ADDITIONAL)).toHaveLength(36);
   });
 
   it('#39 表の操作はすべて文書に載っている公開操作', () => {
@@ -157,13 +162,13 @@ describe('#39 全公開操作の追加の応答が表とちょうど一致する
     );
   });
 
-  it('#39 公開操作は 65 で、表の 35 と何も足さない 30 に分かれる', () => {
+  it('#39 公開操作は 66 で、表の 36 と何も足さない 30 に分かれる', () => {
     const endpoints = listDocumentedEndpoints();
     const withoutAdditional = endpoints.filter(
       (endpoint) => ADDITIONAL[endpoint.operationId] === undefined,
     );
 
-    expect(endpoints).toHaveLength(65);
+    expect(endpoints).toHaveLength(66);
     expect(withoutAdditional).toHaveLength(30);
   });
 

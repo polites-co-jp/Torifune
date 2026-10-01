@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { CORE_EVENTS, PLUGIN_API_VERSION, SUPPORTED_API_VERSIONS } from '@torifune/plugin-api';
 import { describe, expect, it } from 'vitest';
 import { AUDIT_ACTIONS } from '@/domain/audit';
 import {
@@ -227,5 +228,96 @@ describe('#62 025 の social_posts_status_check と POST_STATUSES', () => {
         CHECK (approved_at IS NULL OR status IN ('scheduled', 'published', 'failed'));`;
 
     expect(statusCheckValues(onlyApprovedAt)).toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* #60 公開 Plugin API のイベントと版                                             */
+/* -------------------------------------------------------------------------- */
+
+describe('#60 公開 Plugin API のイベントと版', () => {
+  const PLUGIN_API_SRC = join(REPO_ROOT, 'packages', 'plugin-api', 'src');
+
+  it("#60 CORE_EVENTS に 'social.post.approved' がある", () => {
+    expect(CORE_EVENTS as readonly string[]).toContain('social.post.approved');
+  });
+
+  it('#60 PLUGIN_API_VERSION は 1 のまま（イベント名の追加は版を上げない。設計 §9.3）', () => {
+    expect(PLUGIN_API_VERSION).toBe(1);
+  });
+
+  it('#60 SUPPORTED_API_VERSIONS は [1]', () => {
+    expect([...SUPPORTED_API_VERSIONS]).toEqual([1]);
+  });
+
+  it.each(['events.ts', 'data.ts', 'version.ts'])(
+    '#60 packages/plugin-api/src/%s が apps/web を import しない',
+    (file) => {
+      const source = withoutSqlComments(readFileSync(join(PLUGIN_API_SRC, file), 'utf8'));
+
+      expect(source).not.toMatch(/from\s+['"](@torifune\/web|apps\/web|@\/)/);
+    },
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* #64 配信ジョブが承認待ちに触れない                                              */
+/* -------------------------------------------------------------------------- */
+
+/** 取り出し・着手・記録・手動投稿待ちの Repository のメソッド（設計 §6.10。実装プラン §2 のテストの方法）。 */
+const JOB_REPOSITORY_METHODS = [
+  'listDue',
+  'failInterrupted',
+  'deferSkipped',
+  'claimForPublish',
+  'recordOutcome',
+  'listManualPending',
+] as const;
+
+/**
+ * オブジェクトリテラルのメソッド `  async <name>(` から、次のメソッドかオブジェクトの終わりまで。
+ *
+ * `social-repository.ts` 全体では見ない（`approvePost` / `listApprovalPending` が正当に `awaiting_approval` を使う）。
+ */
+function methodBody(source: string, name: string): string {
+  const start = source.search(new RegExp(`^  async ${name}\\(`, 'm'));
+  expect(start, `${name} の定義が無い`).toBeGreaterThanOrEqual(0);
+  const rest = source.slice(start + 1);
+  const end = rest.search(/^ {2}async [A-Za-z]+\(|^\};?$/m);
+  return end === -1 ? rest : rest.slice(0, end);
+}
+
+describe('#64 配信ジョブの条件に awaiting_approval が現れない', () => {
+  const publishPath = join(SRC_DIR, 'application', 'social', 'publish.ts');
+  const repositoryPath = join(SRC_DIR, 'infrastructure', 'social-repository.ts');
+
+  it('#64 application/social/publish.ts に awaiting_approval が現れない', () => {
+    expect(readFileSync(publishPath, 'utf8')).not.toContain('awaiting_approval');
+  });
+
+  it.each(JOB_REPOSITORY_METHODS)(
+    '#64 infrastructure/social-repository.ts の %s に awaiting_approval が現れない',
+    (name) => {
+      const body = methodBody(readFileSync(repositoryPath, 'utf8'), name);
+
+      expect(body.length).toBeGreaterThan(0);
+      expect(body).not.toContain('awaiting_approval');
+    },
+  );
+
+  it('#64 判別力：listDue の本文に awaiting_approval を足した写しを見分ける', () => {
+    const tampered = `export const socialRepository = {
+  async listDue(connection, now, limit) {
+    return connection.db.selectFrom('social_posts').where('status', 'in', ['scheduled', 'awaiting_approval']);
+  },
+
+  async deferSkipped(connection, id) {
+    return 0;
+  },
+};
+`;
+
+    expect(methodBody(tampered, 'listDue')).toContain('awaiting_approval');
+    expect(methodBody(tampered, 'deferSkipped')).not.toContain('awaiting_approval');
   });
 });

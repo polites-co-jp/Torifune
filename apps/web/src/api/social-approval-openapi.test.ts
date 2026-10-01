@@ -191,3 +191,48 @@ describe('#59 listSocialPosts と updateSocialPost の status の enum', () => {
     expect(enumOf(bodyProperty('updateSocialPost', 'status'))).toEqual(POST_STATUS_VALUES);
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* #58 approveSocialPost                                                         */
+/* -------------------------------------------------------------------------- */
+
+describe('#58 approveSocialPost', () => {
+  it('#58 POST /social/posts/{id}/approve にある', () => {
+    expect(document().paths['/social/posts/{id}/approve']?.['post']?.operationId).toBe(
+      'approveSocialPost',
+    );
+  });
+
+  it('#58 x-required-permission が social.approve', () => {
+    expect(operation('approveSocialPost')['x-required-permission']).toBe('social.approve');
+  });
+
+  it('#58 応答のキーが 200・401・403・404・409・422・429・500 ちょうど', () => {
+    expect(Object.keys(operation('approveSocialPost').responses).sort()).toEqual(
+      ['200', '401', '403', '404', '409', '422', '429', '500'].sort(),
+    );
+  });
+
+  it("#58 要求の publishTiming の enum が ['now', 'scheduled']", () => {
+    expect(enumOf(bodyProperty('approveSocialPost', 'publishTiming'))).toEqual([
+      'now',
+      'scheduled',
+    ]);
+  });
+
+  it('#58 要求の publishTiming と expectedUpdatedAt が必須', () => {
+    const schema = operation('approveSocialPost').requestBody?.content['application/json']?.schema;
+    const required = valuesOf(schema, 'required').flatMap((value) =>
+      Array.isArray(value) ? value : [],
+    );
+
+    expect(required).toEqual(expect.arrayContaining(['publishTiming', 'expectedUpdatedAt']));
+  });
+
+  it('#58 200 応答の投稿に approvedAt がある', () => {
+    expect(typesOf(responsePostProperty('approveSocialPost', '200', 'approvedAt'))).toEqual([
+      'null',
+      'string',
+    ]);
+  });
+});
