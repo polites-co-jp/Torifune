@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # Plugin の再ビルドと失敗時の復帰を、**本番と同じイメージで**確かめる。
 #
-# 検証するのは `012-plugin-manager` の受け入れ条件 #30-#33。
+# 検証するのは `012-plugin-manager` の受け入れ条件 #30-#33 と、
+# `052-rebuild-without-tests` の受け入れ条件 #16・#17（出力では `052 #16` のように見分ける）。
 #
 #   #30 ビルドに失敗しても、再起動後に直前の正常な状態で立ち上がる
 #   #31 失敗した操作が failed として残る
 #   #32 失敗した Plugin が隔離され、次の再ビルドを壊さない
 #   #33 隔離された Plugin のファイルは消えていない
+#   052 #16 同梱 Plugin のフォルダが無くても、次の再ビルドが通る
+#           （本番のビルドはテストファイルを型検査しない）
+#   052 #17 同梱 Plugin のコードの型の誤りは、イメージの中でも今までどおりビルドを止める
 #
 # **`pnpm test` / `pnpm test:e2e` では検出できない領域を見る。**
 # dev と Vitest では動くのに本番ビルドでだけ壊れる不具合が実際に出た
@@ -61,6 +65,26 @@ wait_for_log() {
   done
   docker logs "$APP" || true
   die "ログに '$marker' が現れなかった"
+}
+
+# ログの `mark` 行より後に、再ビルドの結果（成功か失敗か）が現れるまで待つ。
+# **失敗なら待ち切らずに直ちに落とす**（`wait_for_log` は失敗でも 15 分待ち切るまで落ちない）。
+# 失敗のときは、`mark` より後の型の誤り（`error TS`）の行を出す。
+wait_for_rebuild_result_since() {
+  local mark="$1" label="$2" since
+  for _ in $(seq 1 180); do
+    since="$(docker logs "$APP" 2>&1 | tail -n "+$((mark + 1))")"
+    if grep -q -- 'rebuild FAILED' <<<"$since"; then
+      grep -- 'error TS' <<<"$since" >&2 || true
+      die "$label 再ビルドが失敗した（rebuild FAILED）"
+    fi
+    if grep -q -- 'rebuild succeeded' <<<"$since"; then
+      return 0
+    fi
+    sleep 5
+  done
+  docker logs "$APP" || true
+  die "$label ログに再ビルドの結果が現れなかった"
 }
 
 build_id() { in_app cat /app/apps/web/.next/BUILD_ID; }
@@ -139,7 +163,19 @@ log "OK #33 隔離された Plugin のファイルは残っている"
 
 # --- #32 -------------------------------------------------------------------
 log "隔離のあと、次の再ビルドが通ることを確かめる"
+
+# --- 052 #16（前半）--------------------------------------------------------
+# #32 の導入の前に、同梱 Plugin（sns-threads）をこのコンテナの /app/plugins から消す。
+# テストファイルがこの Plugin のソースを直接 import しているので、ビルドがテストまで
+# 型検査すると、次の再ビルドが TS2307 で落ちる（052 設計 §1.2 の 7）。
+# 削除の直前のログの行数を控え、それより後のログだけを見る。
+MARK="$(docker logs "$APP" 2>&1 | wc -l | tr -d ' ')"
+in_app rm -rf /app/plugins/sns-threads
+in_app test ! -e /app/plugins/sns-threads || die "052 #16 sns-threads を消せていない"
+log "052 #16 同梱 Plugin（sns-threads）を消した。この状態で次の再ビルドを走らせる"
+
 in_app node /tmp/driver.mjs install-example
+wait_for_rebuild_result_since "$MARK" '052 #16'
 wait_for_log 'rebuild succeeded'
 wait_for_app
 
@@ -153,4 +189,40 @@ FINAL_STATE="$(in_app node /tmp/driver.mjs state)"
 echo "$FINAL_STATE" | grep -q '"pluginId":"example-plugin","kind":"install","status":"succeeded"' \
   || die "サンプル Plugin の導入が succeeded になっていない: $FINAL_STATE"
 
-log "すべて成功した（#30-#33）"
+# --- 052 #16（後半）--------------------------------------------------------
+SINCE_MARK="$(docker logs "$APP" 2>&1 | tail -n "+$((MARK + 1))")"
+if grep -q -- 'error TS2307' <<<"$SINCE_MARK"; then
+  die "052 #16 同梱 Plugin を消した後のログに error TS2307 がある"
+fi
+in_app test -f /app/apps/web/src/plugin/generated-registry.ts \
+  || die "052 #16 コンテナにレジストリ（generated-registry.ts）が無い"
+if in_app grep -q 'plugins/sns-threads/' /app/apps/web/src/plugin/generated-registry.ts; then
+  die "052 #16 消した同梱 Plugin（sns-threads）がレジストリに残っている"
+fi
+log "OK 052 #16 同梱 Plugin のフォルダが無くても、次の再ビルドは通った"
+
+# --- 052 #17 ---------------------------------------------------------------
+# 同じイメージで、同梱 Plugin のエントリの末尾に型の誤りを足して `pnpm build`
+# （entrypoint の再ビルドと同じコマンド）を走らせる。アプリもデータベースも使わない。
+# 失敗しなければ、Plugin のコードの型検査がビルドから外れている。
+log "052 #17 同梱 Plugin のコードに型の誤りを足すと、ビルドが止まることを確かめる"
+GUARD_CMD="$(
+  cat <<'SH'
+set -e
+echo "" >> /app/plugins/sns-x-manual/index.ts
+echo "export const __guard052: number = 'x';" >> /app/plugins/sns-x-manual/index.ts
+cd /app
+pnpm build
+SH
+)"
+if OUT="$(docker run --rm --entrypoint sh "$IMAGE" -c "$GUARD_CMD" 2>&1)"; then
+  echo "$OUT" | tail -n 40 >&2
+  die "052 #17 同梱 Plugin のコードに型の誤りがあるのに pnpm build が成功した"
+fi
+if ! grep -q -- 'plugins/sns-x-manual/index.ts' <<<"$OUT" || ! grep -q -- 'error TS2322' <<<"$OUT"; then
+  echo "$OUT" | tail -n 40 >&2
+  die "052 #17 ビルドの失敗の出力に plugins/sns-x-manual/index.ts と error TS2322 が無い"
+fi
+log "OK 052 #17 同梱 Plugin のコードの型の誤りは、今までどおりビルドを止めた"
+
+log "すべて成功した（#30-#33・052 #16-#17）"
