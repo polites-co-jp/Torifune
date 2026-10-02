@@ -282,7 +282,7 @@ describe('コピーのボタン', () => {
     id: '0192b7a0-5c1e-7a3b-9f10-2d7c4e8a1c01',
     provider: 'mastodon',
     displayName: 'とりふねマストドン',
-    handle: '@torifune@example.social',
+    handle: '@torifune@social.example',
     status: 'connected',
     credentialConfigured: true,
   };
