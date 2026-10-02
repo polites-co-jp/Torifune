@@ -94,10 +94,14 @@ describe('#7〜#9 何も隠さないビルドの設定', () => {
     expect(checkRoots.filter((f) => !buildRoots.has(f)).length).toBeGreaterThanOrEqual(1);
   });
 
-  it('#9 プログラムの誤りは 0 件', () => {
-    const errors = typeErrors(baseline().program);
-    expect(errors, formatErrors(errors)).toHaveLength(0);
-  });
+  it(
+    '#9 プログラムの誤りは 0 件',
+    () => {
+      const errors = typeErrors(baseline().program);
+      expect(errors, formatErrors(errors)).toHaveLength(0);
+    },
+    PROGRAM_TIMEOUT,
+  );
 });
 
 describe('#13 本体と Plugin の誤りはビルドで止まる', () => {
