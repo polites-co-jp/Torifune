@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { join, relative, sep } from 'node:path';
 import { PLUGIN_API_VERSION } from '@torifune/plugin-api';
 import { describe, expect, it } from 'vitest';
 import { CORE_PERMISSIONS } from '@/domain/permission';
@@ -13,6 +13,7 @@ import { CORE_PERMISSIONS } from '@/domain/permission';
  * * `025` の SHA-256 の固定（G1。受け入れ条件の番号は無い。実装プラン §8 の 2）
  * * #63：公開 Plugin API の `SocialAccountView` / `SocialPostView` のキー、`PLUGIN_API_VERSION`、Core の Permission の数（G1）
  * * #60 の前半：`026` の `api_tokens_site_scopes_check` の配列と Domain の `SITE_TOKEN_SCOPES`（G2）
+ * * #64：`AccessScope` を組み立てるのは `application/social/access-scope.ts` の `scopeOf` だけ（G4）
  *
  * **未実装の値は静的 import にしない**（`approval-static-checks.test.ts` と同じ）。
  * 未実装の段階でこのファイル全体が読めなくなると、他の件まで一緒に落ちて何が壊れたのか読めなくなる。
@@ -255,5 +256,124 @@ describe('#60 026 の api_tokens_site_scopes_check と SITE_TOKEN_SCOPES', () =>
 ALTER TABLE api_tokens DROP CONSTRAINT api_tokens_site_scopes_check;`;
 
     expect(siteScopesCheckValues(onlyComment)).toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* #64 AccessScope を組み立てるのは scopeOf だけ                                  */
+/* -------------------------------------------------------------------------- */
+
+const SCOPE_OF_FILE = 'application/social/access-scope.ts';
+
+/** コメント（ブロックコメントと行コメント）を落とす。 */
+function withoutComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+}
+
+/** ディレクトリ以下のすべての `.ts` / `.tsx`（テストを除く）。`apps/web/src` からの相対パス（`/` 区切り）で返す。 */
+function sourceFilesUnder(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  const found: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === 'node_modules' || entry.name === 'test-support') continue;
+      found.push(...sourceFilesUnder(path));
+    } else if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)) {
+      found.push(relative(SRC_DIR, path).split(sep).join('/'));
+    }
+  }
+  return found;
+}
+
+/**
+ * `kind: 'site'` を**値として組み立てる**箇所の数（実装プラン §8 の 5）。
+ *
+ * 型の宣言は数えない：前に `readonly` があるもの、後ろが `;`（型リテラルのメンバー）のもの、
+ * 後ろが `}>`（`Extract<AccessScope, { kind: 'site' }>` のような型引数）のもの。
+ * オブジェクトリテラルは後ろが `,` か `}` になる。
+ */
+function siteScopeLiteralCount(source: string): number {
+  const code = withoutComments(source);
+  let count = 0;
+  for (const match of code.matchAll(/(readonly\s+)?\bkind\s*:\s*['"]site['"](\s*[;,}]\s*>?)?/g)) {
+    if (match[1] !== undefined) continue;
+    const tail = (match[2] ?? '').replace(/\s/g, '');
+    if (tail.startsWith(';') || tail === '}>') continue;
+    count += 1;
+  }
+  return count;
+}
+
+/** モジュールの関数 `export function <name>(`（`export` は任意）から、最初の行頭の `}` まで。無ければ ''。 */
+function exportedFunctionBody(source: string, name: string): string {
+  const normalized = source.replaceAll('\r\n', '\n');
+  const start = normalized.search(new RegExp(`^(export\\s+)?function ${name}\\(`, 'm'));
+  if (start === -1) return '';
+  const rest = normalized.slice(start);
+  const end = rest.search(/^\}$/m);
+  return end === -1 ? rest : rest.slice(0, end + 1);
+}
+
+describe('#64 AccessScope の site を組み立てるのは scopeOf だけ', () => {
+  it("#64 apps/web/src（テストを除く）で kind: 'site' を値として書くファイルは application/social/access-scope.ts だけ", () => {
+    const files = sourceFilesUnder(SRC_DIR).filter(
+      (file) => siteScopeLiteralCount(readFileSync(join(SRC_DIR, file), 'utf8')) > 0,
+    );
+
+    expect(files).toEqual([SCOPE_OF_FILE]);
+  });
+
+  it("#64 application/social/access-scope.ts の kind: 'site' はすべて scopeOf の本文にある", () => {
+    const path = join(SRC_DIR, SCOPE_OF_FILE);
+    expect(existsSync(path), `${SCOPE_OF_FILE} が無い`).toBe(true);
+    const source = readFileSync(path, 'utf8');
+    const body = exportedFunctionBody(source, 'scopeOf');
+
+    expect(body, 'scopeOf の定義が無い').not.toBe('');
+    expect(siteScopeLiteralCount(body)).toBeGreaterThan(0);
+    expect(siteScopeLiteralCount(body)).toBe(siteScopeLiteralCount(source));
+  });
+
+  it("#64 判別力：domain に { kind: 'site', siteId } を返す関数を足した写しを数える", () => {
+    const tampered = `export type AccessScope =
+  | { readonly kind: 'all' }
+  | { readonly kind: 'site'; readonly siteId: string };
+
+export function siteScope(siteId: string): AccessScope {
+  return { kind: 'site', siteId };
+}
+`;
+
+    expect(siteScopeLiteralCount(tampered)).toBe(1);
+  });
+
+  it('#64 判別力：型の宣言（readonly・型リテラル・型引数）とコメントは数えない', () => {
+    const declarations = `export type AccessScope =
+  | { readonly kind: 'all' }
+  | { readonly kind: 'site'; readonly siteId: string };
+type SiteScope = { kind: 'site'; siteId: string };
+type Narrowed = Extract<AccessScope, { kind: 'site' }>;
+// const commented = { kind: 'site', siteId };
+`;
+
+    expect(siteScopeLiteralCount(declarations)).toBe(0);
+  });
+
+  it('#64 判別力：scopeOf の外にある組み立ては本文の数と合わない', () => {
+    const tampered = `export function scopeOf(context) {
+  if (context.apiToken === undefined) return ALL_SCOPE;
+  return context.apiToken.siteId === null
+    ? { kind: 'common' }
+    : { kind: 'site', siteId: context.apiToken.siteId };
+}
+
+export function fromQuery(siteId) {
+  return { kind: 'site', siteId };
+}
+`;
+
+    expect(siteScopeLiteralCount(exportedFunctionBody(tampered, 'scopeOf'))).toBe(1);
+    expect(siteScopeLiteralCount(tampered)).toBe(2);
   });
 });

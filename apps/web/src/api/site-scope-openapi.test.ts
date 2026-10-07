@@ -6,6 +6,8 @@ import { buildOpenApiDocument } from './openapi';
  * SNS アカウントと API トークンをサイトに紐づける件の OpenAPI（053-site-scoped-social 設計 §8.8）。
  *
  * - #57：`createApiToken` の要求に `siteId`、`listApiTokens` / `createApiToken` の応答に `siteId` と `siteScoped`（boolean）（G3）
+ * - #56：`getSocialAccount` の応答の `data` に `siteId`（`string`・`nullable`）。`createSocialAccount` /
+ *   `updateSocialAccount` の要求に `siteId`（`nullable`・必須でない）（G4）
  *
  * 実際に登録されているエンドポイント（`@/api/endpoints`）から作った文書を見る（`social-approval-openapi.test.ts` の形）。
  */
@@ -144,5 +146,43 @@ describe('#57 API トークンの siteId / siteScoped', () => {
       operation('listApiTokens').responses['200']?.content?.['application/json']?.schema;
 
     expect(findProperty(findProperty(schema, 'data'), 'token')).toBeUndefined();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* #56 SNS アカウントの siteId                                                    */
+/* -------------------------------------------------------------------------- */
+
+describe('#56 SNS アカウントの siteId', () => {
+  it('#56 getSocialAccount の 200 応答の data に siteId があり string | null', () => {
+    expect(typesOf(responseDataProperty('getSocialAccount', '200', 'siteId'))).toEqual([
+      'null',
+      'string',
+    ]);
+  });
+
+  it.each(['createSocialAccount', 'updateSocialAccount'])(
+    '#56 %s の要求に siteId があり string | null',
+    (operationId) => {
+      expect(typesOf(bodyProperty(operationId, 'siteId'))).toEqual(['null', 'string']);
+    },
+  );
+
+  it.each(['createSocialAccount', 'updateSocialAccount'])(
+    '#56 %s の要求の siteId は必須でない',
+    (operationId) => {
+      expect(requiredOf(operationId)).not.toContain('siteId');
+    },
+  );
+
+  it.each([
+    ['listSocialAccounts', '200'],
+    ['createSocialAccount', '201'],
+    ['updateSocialAccount', '200'],
+  ])('#56 %s の %s 応答の data にも siteId がある', (operationId, status) => {
+    expect(typesOf(responseDataProperty(operationId, status, 'siteId'))).toEqual([
+      'null',
+      'string',
+    ]);
   });
 });
