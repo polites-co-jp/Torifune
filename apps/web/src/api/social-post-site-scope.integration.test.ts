@@ -1,6 +1,6 @@
 import { sql } from 'kysely';
 import { uuidv7 } from 'uuidv7';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { POST as createApiTokenRoute } from '@/app/api/v1/api-tokens/route';
 import {
   GET as getSocialAccountRoute,
@@ -21,12 +21,13 @@ import { login } from '@/application/auth/login';
 import { withConnection } from '@/application/transaction';
 import { hashPassword } from '@/authentication/password';
 import { roleRepository } from '@/infrastructure/role-repository';
+import { socialRepository } from '@/infrastructure/social-repository';
 import { useScratchDatabase, type ScratchDatabase } from '@/test-support/database';
 
 /**
  * SNS 投稿の区画（053-site-scoped-social 設計 §5.2・§7.3・§8.3・§8.7）。
  *
- * 受け入れ条件 #34〜#40・#42・#43・#55（#37 は DB の `origin_*` を SQL で読む B）。
+ * 受け入れ条件 #34〜#40・#42・#43・#55（#37 は DB の `origin_*` を SQL で読む B）と、検証の指摘の修正の #102。
  *
  * **ルートを直接叩く結合テスト**（`social-post-approve.integration.test.ts` の叩き方を写す）。
  * 共通の準備（設計 §13 の前書き）：サイト A・B（`active`）、アカウント `accA`（A 専用）・`accB`（B 専用）・
@@ -784,6 +785,66 @@ describe('#42 冪等の再送で区画の外の既存を見せない（設計 §
 
     expect(replay.status).toBe(200);
     expect(dataOf(replay)['id']).toBe(dataOf(first)['id']);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* #102 同時の再送の経路でも区画の外の既存を見せない                                  */
+/* -------------------------------------------------------------------------- */
+
+describe('#102 冪等の再送の同時実行の経路（挿入が既存を返す）でも区画の外の既存を見せない（設計 §8.3.1）', () => {
+  /**
+   * 同じ `externalRef` の要求が同時に 2 本来ると、UseCase の再送の検査（`findByExternalRef`）の時点では相手が
+   * まだコミットしておらず既存が見えず、挿入（`insertPostIdempotent`）の衝突の後で既存を引く。その経路を、
+   * 再送の検査の 1 回目の `findByExternalRef` だけを null にして作る（2 回目は元の実装。時機の差し込みで、振る舞いは差し替えない）。
+   */
+  it('#102 既存（accC を B へ付け替えた後の投稿）が区画の外なら 422 externalRef で、既存の投稿を返さない（行は増えない）', async () => {
+    const first = await callCreatePost(
+      { token: tokA },
+      { socialAccountId: accC, externalRef: 'r-102' },
+    );
+    expect(first.status).toBe(201);
+    const existingId = String(dataOf(first)['id']);
+    await moveAccount(accC, siteB);
+
+    const spy = vi.spyOn(socialRepository, 'findByExternalRef').mockResolvedValueOnce(null);
+    try {
+      const racing = await callCreatePost(
+        { token: tokA },
+        { socialAccountId: accA, externalRef: 'r-102' },
+      );
+
+      expect(racing.status).toBe(422);
+      expect(detailsOf(racing)['externalRef']).toEqual([MESSAGE_EXTERNAL_REF_USED]);
+      expect(JSON.stringify(racing.body)).not.toContain(existingId);
+      expect(await countPosts()).toBe(1);
+      // 経路の確認：再送の検査と挿入の後の引き直しの 2 回呼ばれた。
+      expect(spy).toHaveBeenCalledTimes(2);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('#102 既存が区画の中なら、同じ経路でも今までどおり 200 で既存を返す（前提の確認）', async () => {
+    const first = await callCreatePost(
+      { token: tokA },
+      { socialAccountId: accC, externalRef: 'r-102' },
+    );
+    expect(first.status).toBe(201);
+
+    const spy = vi.spyOn(socialRepository, 'findByExternalRef').mockResolvedValueOnce(null);
+    try {
+      const racing = await callCreatePost(
+        { token: tokA },
+        { socialAccountId: accC, externalRef: 'r-102' },
+      );
+
+      expect(racing.status).toBe(200);
+      expect(dataOf(racing)['id']).toBe(dataOf(first)['id']);
+      expect(spy).toHaveBeenCalledTimes(2);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

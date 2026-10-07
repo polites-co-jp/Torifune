@@ -19,6 +19,7 @@ import { CORE_PERMISSIONS } from '@/domain/permission';
  * * #62：`application/social/publish.ts` が `access-scope` を import しない（G5。変えないことの固定）
  * * #60 の後半：`api_tokens` の `site_id` / `site_scoped` / `scopes` と `social_posts` の `origin_*` を
  *   `UPDATE` するのは `infrastructure/api-token-repository.ts` の `changeSite` だけ（G7）
+ * * #100：Repository の区画の引数は必須（既定値・省略で `ALL_SCOPE` に倒れない。検証の指摘の修正）
  *
  * **未実装の値は静的 import にしない**（`approval-static-checks.test.ts` と同じ）。
  * 未実装の段階でこのファイル全体が読めなくなると、他の件まで一緒に落ちて何が壊れたのか読めなくなる。
@@ -742,5 +743,74 @@ describe('#60 api_tokens の site_id / site_scoped / scopes と social_posts の
       `${API_TOKEN_REPOSITORY_FILE}（api_tokens）`,
       'infrastructure/social-repository.ts（social_posts）',
     ]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* #100 Repository の区画の引数は必須                                             */
+/* -------------------------------------------------------------------------- */
+
+const SOCIAL_REPOSITORY_DECLARATION_FILE = 'domain/social/social-repository.ts';
+
+/** 区画を取る読み出し（053 設計 §7.4・実装プラン §8 の 4）。 */
+const SCOPED_REPOSITORY_METHODS = [
+  'listAccounts',
+  'listPosts',
+  'findPostById',
+  'findPostsByIds',
+  'listManualPending',
+  'listApprovalPending',
+] as const;
+
+/**
+ * 区画の引数が省略できる・既定値を持つ宣言（`scope?: AccessScope`・`scope: AccessScope = …`）の数。
+ *
+ * 省略や既定値があると、区画を渡し忘れた呼び出しが黙って `ALL_SCOPE`（絞らない）に倒れる。区画は失敗したときに
+ * 広がらない（閉じる）向きに作る。
+ */
+const OPTIONAL_SCOPE = /\bscope\s*(?:\?\s*:\s*AccessScope\b|:\s*AccessScope\s*=)/g;
+
+function optionalScopeCount(source: string): number {
+  return [...withoutComments(source).matchAll(OPTIONAL_SCOPE)].length;
+}
+
+/** `<name>(` の宣言の引数の並び（括弧の対応で切る）。無ければ null。 */
+function declarationParameters(source: string, name: string): string | null {
+  const code = withoutComments(source);
+  const match = new RegExp(`^\\s*(?:async\\s+)?${name}\\(`, 'm').exec(code);
+  if (match === null) return null;
+  return balancedContent(code, match.index + match[0].length - 1);
+}
+
+describe('#100 Repository の区画の引数は必須（省略・既定値で ALL_SCOPE に倒れない）', () => {
+  it.each([SOCIAL_REPOSITORY_FILE, SOCIAL_REPOSITORY_DECLARATION_FILE])(
+    '#100 %s に省略できる・既定値を持つ scope の宣言が無い',
+    (file) => {
+      expect(optionalScopeCount(readFileSync(join(SRC_DIR, file), 'utf8'))).toBe(0);
+    },
+  );
+
+  it.each(SCOPED_REPOSITORY_METHODS)(
+    '#100 Domain の宣言の %s が scope: AccessScope を必須で取る',
+    (name) => {
+      const parameters = declarationParameters(
+        readFileSync(join(SRC_DIR, SOCIAL_REPOSITORY_DECLARATION_FILE), 'utf8'),
+        name,
+      );
+
+      expect(parameters, `${name} の宣言が無い`).not.toBeNull();
+      expect(parameters).toMatch(/\bscope\s*:\s*AccessScope\b/);
+    },
+  );
+
+  it('#100 判別力：省略できる宣言と既定値を持つ宣言を数え、必須の宣言は数えない', () => {
+    const sample = [
+      '  listPosts(connection: Connection, query: Q, scope?: AccessScope): Promise<P>;',
+      '  async findPostById(connection: Connection, id: string, scope: AccessScope = ALL_SCOPE) {',
+      '  listAccounts(connection: Connection, query: Q, scope: AccessScope): Promise<P>;',
+      '  // scope?: AccessScope はコメントなので数えない',
+    ].join('\n');
+
+    expect(optionalScopeCount(sample)).toBe(2);
   });
 });

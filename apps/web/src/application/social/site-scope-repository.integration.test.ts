@@ -23,7 +23,7 @@ import type { UserIdentity } from '@/authentication/identity';
 import { hashPassword } from '@/authentication/password';
 import type { Connection } from '@/database/provider';
 import { NotFoundError } from '@/domain/repository';
-import { postVisible, type AccessScope } from '@/domain/social/access-scope';
+import { ALL_SCOPE, postVisible, type AccessScope } from '@/domain/social/access-scope';
 import type { SocialPost } from '@/domain/social/social';
 import { apiTokenRepository } from '@/infrastructure/api-token-repository';
 import { roleRepository } from '@/infrastructure/role-repository';
@@ -325,10 +325,13 @@ describe('#41 (B) findPostById(id, scope) と postVisible が一致する（7 �
     expect(visible.sort()).toEqual(['p1', 'p2', 'p3']);
   });
 
-  it('#41 区画を渡さなければ（既定は all）7 件とも見える', async () => {
+  // 053 の検証の指摘の修正で区画の引数は必須になった（既定値で all に倒さない。受け入れ条件 #100）。
+  it('#41 区画 all（ALL_SCOPE）を渡すと 7 件とも見える', async () => {
     for (const id of Object.values(posts)) {
       expect(
-        await withConnection((connection) => socialRepository.findPostById(connection, id)),
+        await withConnection((connection) =>
+          socialRepository.findPostById(connection, id, ALL_SCOPE),
+        ),
       ).not.toBeNull();
     }
   });

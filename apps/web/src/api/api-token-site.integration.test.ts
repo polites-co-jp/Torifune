@@ -1,6 +1,6 @@
 import { sql } from 'kysely';
 import { uuidv7 } from 'uuidv7';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   GET as listApiTokensRoute,
   POST as createApiTokenRoute,
@@ -13,13 +13,16 @@ import { login } from '@/application/auth/login';
 import { buildApiTokenContext } from '@/application/authorization/context';
 import { withConnection } from '@/application/transaction';
 import { hashPassword } from '@/authentication/password';
+import type { ApiToken } from '@/domain/api-token';
+import { apiTokenRepository } from '@/infrastructure/api-token-repository';
 import { roleRepository } from '@/infrastructure/role-repository';
 import { useScratchDatabase, type ScratchDatabase } from '@/test-support/database';
 
 /**
  * API トークンのサイト：発行・応答・監査・認証（053-site-scoped-social 設計 §7.2・§8.5.1〜§8.5.5・§10）。
  *
- * 受け入れ条件 #15〜#20・#22・#23・#51・#52・#54。
+ * 受け入れ条件 #15〜#20・#22・#23・#51・#52・#54。検証の指摘の修正で、#101（文脈の `apiToken.siteScoped`）と、
+ * #14・#20 を文脈の組み立ての段で固定する件（DB の CHECK に頼らない Scope の交差・使えないトークンの最終利用時刻）を足した。
  *
  * **ルートを直接叩く結合テスト**（`social-post-approve.integration.test.ts` の叩き方を写す）。
  * サイトのトークンは `POST /api-tokens` で発行する（実装プラン §2 のテストの方法：発行の経路も一緒に通す）。
@@ -754,5 +757,118 @@ describe('#54 発行の権限（token.manage・セッションだけ）', () => 
     );
 
     expect(result.status).toBe(401);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* 検証の指摘の修正：文脈の組み立ての段で固定する                                     */
+/* -------------------------------------------------------------------------- */
+
+/** `apiToken.siteScoped` を読む（検証の指摘の修正の前の型には無いので、形だけを見る）。 */
+function apiTokenSiteScopedOf(context: { readonly apiToken?: unknown }): unknown {
+  const apiToken = context.apiToken as { readonly siteScoped?: unknown } | undefined;
+  return apiToken === undefined ? 'no apiToken' : apiToken.siteScoped;
+}
+
+describe('#101 buildApiTokenContext の apiToken.siteScoped はトークン行から積む', () => {
+  it('#101 tokA では apiToken.siteScoped が true', async () => {
+    const tokA = await issue(siteA);
+
+    const context = await buildApiTokenContext(tokA.plaintext, REQUEST_INFO);
+
+    expect(apiTokenSiteScopedOf(context)).toBe(true);
+  });
+
+  it('#101 tokCommon では apiToken.siteScoped が false', async () => {
+    const tokCommon = await issue(null);
+
+    const context = await buildApiTokenContext(tokCommon.plaintext, REQUEST_INFO);
+
+    expect(apiTokenSiteScopedOf(context)).toBe(false);
+  });
+});
+
+/**
+ * 引いたトークンの行の Scope に `site.read` を足して返す（DB の `api_tokens_site_scopes_check` をすり抜けた行の代わり）。
+ * 行そのものは本物（発行したトークン）で、差し替えるのは Scope だけ。
+ */
+function stubScopesWithSiteRead(): { readonly restore: () => void } {
+  const original = apiTokenRepository.findByHash.bind(apiTokenRepository);
+  const spy = vi
+    .spyOn(apiTokenRepository, 'findByHash')
+    .mockImplementation(async (connection, hash) => {
+      const token = await original(connection, hash);
+      if (token === null) return null;
+      const widened: ApiToken = { ...token, scopes: [...token.scopes, 'site.read'] };
+      return widened;
+    });
+  return { restore: () => spy.mockRestore() };
+}
+
+describe('#14（文脈）サイトのトークンの実効 Permission は、DB の CHECK に頼らず SITE_TOKEN_SCOPES と交差する（設計 §8.5.3）', () => {
+  it('#14 行の Scope に site.read があっても、サイトのトークンの文脈の Permission に site.read は入らない', async () => {
+    const tokA = await issue(siteA);
+    const stub = stubScopesWithSiteRead();
+    try {
+      const context = await buildApiTokenContext(tokA.plaintext, REQUEST_INFO);
+
+      expect(context.identity).not.toBeNull();
+      expect(context.permissions.has('site.read')).toBe(false);
+      expect([...context.permissions].sort()).toEqual([...SNS_SCOPES].sort());
+    } finally {
+      stub.restore();
+    }
+  });
+
+  it('#14 対照：共通のトークンでは、同じく足した site.read が文脈の Permission に入る（交差はサイトのトークンだけ）', async () => {
+    const tokCommon = await issue(null);
+    const stub = stubScopesWithSiteRead();
+    try {
+      const context = await buildApiTokenContext(tokCommon.plaintext, REQUEST_INFO);
+
+      expect(context.permissions.has('site.read')).toBe(true);
+    } finally {
+      stub.restore();
+    }
+  });
+});
+
+async function lastUsedAtOf(tokenId: string): Promise<Date | null | undefined> {
+  return withConnection(async (connection) => {
+    const result = await sql<{
+      last_used_at: Date | null;
+    }>`SELECT last_used_at FROM api_tokens WHERE id = ${tokenId}`.execute(connection.db);
+    return result.rows[0]?.last_used_at;
+  });
+}
+
+describe('#20（最終利用時刻）使えないサイトのトークンは last_used_at を進めない（サイトの検査は touch の前。実装プラン §8 の 9）', () => {
+  it('#20 サイト A を archived にした tokA で文脈を作っても last_used_at は null のまま', async () => {
+    const tokA = await issue(siteA);
+    await setSiteStatus(siteA, 'archived');
+
+    const context = await buildApiTokenContext(tokA.plaintext, REQUEST_INFO);
+
+    expect(context.identity).toBeNull();
+    expect(await lastUsedAtOf(tokA.id)).toBeNull();
+  });
+
+  it('#20 サイトの消えた tokA（site_id を NULL にした行）でも last_used_at は null のまま', async () => {
+    const tokA = await issue(siteA);
+    await withConnection(async (connection) => {
+      await sql`UPDATE api_tokens SET site_id = NULL WHERE id = ${tokA.id}`.execute(connection.db);
+    });
+
+    await buildApiTokenContext(tokA.plaintext, REQUEST_INFO);
+
+    expect(await lastUsedAtOf(tokA.id)).toBeNull();
+  });
+
+  it('#20 対照：使えるサイトのトークンでは last_used_at が入る', async () => {
+    const tokA = await issue(siteA);
+
+    await buildApiTokenContext(tokA.plaintext, REQUEST_INFO);
+
+    expect(await lastUsedAtOf(tokA.id)).toBeInstanceOf(Date);
   });
 });
