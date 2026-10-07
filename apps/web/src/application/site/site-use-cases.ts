@@ -10,10 +10,12 @@ import {
   isSiteStatus,
   isValidSiteName,
   isValidSiteUrl,
+  SiteInUseError,
   type Site,
   type SiteStatus,
 } from '@/domain/site/site';
 import type { SiteListQuery, SitePage } from '@/domain/site/site-repository';
+import { apiTokenRepository } from '@/infrastructure/api-token-repository';
 import { siteRepository } from '@/infrastructure/site-repository';
 import { siteEventPayload } from './site-events';
 
@@ -171,25 +173,61 @@ export const updateSite = defineUseCase<UpdateSiteInput, Site>({
   },
 });
 
-export const deleteSite = defineUseCase<{ id: string }, void>({
+/**
+ * サイトの削除の結果。監査に残す値を運ぶ（監査の `detail` は `context` を見られない）。
+ * ルートと Plugin の Data API は使わない（204 / 戻り値なしのまま）。
+ */
+export interface DeleteSiteOutput {
+  /** 削除と同時に失効させたサイトのトークンの数（053-site-scoped-social 設計 §8.6 の 3）。 */
+  readonly revokedApiTokens: number;
+}
+
+export const deleteSite = defineUseCase<{ id: string }, DeleteSiteOutput>({
   name: 'site.delete',
   permission: 'site.delete',
   // 消えたあとで何が消えたかを追えなければ、監査にならない。
-  audit: { action: 'deleted', resourceType: 'site', resourceId: (input) => input.id },
+  audit: {
+    action: 'deleted',
+    resourceType: 'site',
+    resourceId: (input) => input.id,
+    detail: (_input, output) => ({ revokedApiTokens: output.revokedApiTokens }),
+  },
   handler: async (context, input) => {
     const site = await siteRepository.findById(context.connection, input.id);
     if (site === null) {
       throw new NotFoundError('Site', input.id);
     }
 
-    const deleted = await context.connection.transaction((tx) =>
-      siteRepository.delete(tx, input.id),
-    );
-    if (!deleted) {
-      throw new NotFoundError('Site', input.id);
+    // 053 設計 §8.6 の 2〜4 を 1 つのトランザクションで行う。
+    let revokedApiTokens: number;
+    try {
+      revokedApiTokens = await context.connection.transaction(async (tx) => {
+        // 2: 紐づいたアカウントがあれば断る（何も変えない）。消す（CASCADE）か共通に戻すかは運用者が決める。
+        const linked = await siteRepository.countLinkedAccounts(tx, input.id);
+        if (linked > 0) {
+          throw new SiteInUseError(linked);
+        }
+        // 3: 紐づいた失効していないトークンを失効させる。消えたサイトのトークンには使い道が無い。
+        const revoked = await apiTokenRepository.revokeBySite(tx, input.id, new Date());
+        // 4: 削除。外部キーに当たったら Repository が SiteInUseError(null) を投げる。
+        const deleted = await siteRepository.delete(tx, input.id);
+        if (!deleted) {
+          throw new NotFoundError('Site', input.id);
+        }
+        return revoked;
+      });
+    } catch (error) {
+      // 2 と 4 の間に紐づけられた。外部キー違反でトランザクションは中断しているので、
+      // ロールバックの後に数え直して件数つきで断る（実装プラン §8 の 8）。
+      if (error instanceof SiteInUseError && error.count === null) {
+        const linked = await siteRepository.countLinkedAccounts(context.connection, input.id);
+        throw new SiteInUseError(Math.max(linked, 1));
+      }
+      throw error;
     }
 
     await emit('site.deleted', siteEventPayload(site));
+    return { revokedApiTokens };
   },
 });
 

@@ -11,7 +11,7 @@ import { bearerTokenOf } from '@/domain/api-token';
 import { JobBusyError } from '@/domain/jobs/job';
 import type { PermissionName } from '@/domain/permission';
 import { ConflictError, NotFoundError, ValidationError } from '@/domain/repository';
-import { SiteGoneError } from '@/domain/site/site';
+import { SiteGoneError, SiteInUseError } from '@/domain/site/site';
 import { SocialPostStateChangedError, StaleSocialPostError } from '@/domain/social/social';
 import { unusableTextDetailsOf } from '@/domain/text';
 import { log } from '@/infrastructure/logging';
@@ -456,6 +456,19 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
           {
             expectedUpdatedAt: [
               '投稿の内容が変わっています。内容を確かめてから承認し直してください。',
+            ],
+          },
+          cors,
+        );
+      }
+      // 紐づいた SNS アカウントがあるサイトの削除（053 設計 §8.6）。既定文言では直し方が伝わらないので、
+      // **`ConflictError` より前に**件数と直し方を添えて返す。
+      if (error instanceof SiteInUseError) {
+        return errorResponse(
+          'CONFLICT',
+          {
+            socialAccounts: [
+              `このサイトに紐づいた SNS アカウントが ${error.count ?? 1} 件あります。アカウントのサイトを変えるか削除してから、サイトを削除してください。`,
             ],
           },
           cors,
