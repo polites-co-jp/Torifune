@@ -52,6 +52,7 @@ export const POST = defineRoute({
       credential: body.credential ?? null,
       ...(body.credentials === undefined ? {} : { credentials: body.credentials }),
       status: body.status,
+      ...(body.siteId === undefined ? {} : { siteId: body.siteId }),
     });
     return createdResponse(toAccountResponse(account));
   },

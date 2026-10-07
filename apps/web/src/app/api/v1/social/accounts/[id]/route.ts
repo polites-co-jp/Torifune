@@ -16,7 +16,8 @@ import { ensurePluginsStartedAnonymously } from '@/plugin/runtime';
 /** `{id}` のアカウントが無いときの応答（042-social-api-input-fixes 設計 §6.4）。 */
 const ACCOUNT_NOT_FOUND = {
   status: 404,
-  description: 'アカウントが存在しない（UUID の形でない ID を含む）',
+  description:
+    'アカウントが存在しない（UUID の形でない ID を含む。このトークンからは見えない（別のサイトの区画）ものを含む）',
 } as const;
 
 export const GET = defineRoute({
@@ -53,6 +54,7 @@ export const PATCH = defineRoute({
       ...(body.status === undefined ? {} : { status: body.status }),
       ...(body.credential === undefined ? {} : { credential: body.credential }),
       ...(body.credentials === undefined ? {} : { credentials: body.credentials }),
+      ...(body.siteId === undefined ? {} : { siteId: body.siteId }),
     });
     return dataResponse(toAccountResponse(account));
   },
