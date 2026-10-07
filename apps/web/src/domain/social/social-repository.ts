@@ -1,5 +1,5 @@
 import type { Connection } from '../../database/provider';
-import type { AccessScope } from './access-scope';
+import type { AccessScope, PostOrigin } from './access-scope';
 import type { PublishVerdict, SkipVerdict } from './publishing';
 import type {
   AccountStatus,
@@ -66,6 +66,14 @@ export interface NewSocialPost {
   readonly externalRef?: string | null | undefined;
   /** 登録した API Token。セッションからの登録は null。 */
   readonly createdByTokenId?: string | null | undefined;
+  /**
+   * 登録元の区画（053 設計 §7.3）。省略は `(null, false)`（共通）。
+   *
+   * **`createdByTokenId` があるときは使わない。** Repository が挿入のトランザクションの中でトークンの行を
+   * `FOR SHARE` で読み、その値を書く（文脈の区画の写しで書くと、トークンのサイトの変更と同時に進んだ登録が食い違う）。
+   * 読んだ行が失効している・サイトのトークンでサイトが消えていれば `SiteGoneError` を投げ、挿入しない。
+   */
+  readonly origin?: PostOrigin | undefined;
 }
 
 export interface SocialPostUpdate {
@@ -183,15 +191,28 @@ export interface SocialRepository {
     encryptedCredential: string,
   ): Promise<boolean>;
 
-  listPosts(connection: Connection, query: SocialPostListQuery): Promise<SocialPostPage>;
-  findPostById(connection: Connection, id: string): Promise<SocialPost | null>;
+  /**
+   * 投稿の読み出しの `scope` は区画（053 設計 §7.4）。省略は `ALL_SCOPE`（絞らない）。
+   * `listPosts` / `listManualPending` / `listApprovalPending` の `total` も同じ条件で数える。
+   */
+  listPosts(
+    connection: Connection,
+    query: SocialPostListQuery,
+    scope?: AccessScope,
+  ): Promise<SocialPostPage>;
+  /** 区画の外の投稿は null（存在しないのと同じ。053 設計 §8.3.2）。 */
+  findPostById(connection: Connection, id: string, scope?: AccessScope): Promise<SocialPost | null>;
   /**
    * IDでまとめて引く。
    *
    * キャンペーンに紐づく投稿のように「IDは判っている」場面で使う。
-   * 1件ずつ引くと件数分の往復になる。
+   * 1件ずつ引くと件数分の往復になる。区画の外の投稿は含めない。
    */
-  findPostsByIds(connection: Connection, ids: readonly string[]): Promise<readonly SocialPost[]>;
+  findPostsByIds(
+    connection: Connection,
+    ids: readonly string[],
+    scope?: AccessScope,
+  ): Promise<readonly SocialPost[]>;
   insertPost(connection: Connection, post: NewSocialPost): Promise<SocialPost>;
   /**
    * 冪等に登録する（035-social-publishing 設計 §6.1.3）。
@@ -235,7 +256,11 @@ export interface SocialRepository {
    *
    * `total` は `limit` で切る前の全件数（ダッシュボードの件数に使う。§7.6）。
    */
-  listManualPending(connection: Connection, limit: number): Promise<SocialPostPage>;
+  listManualPending(
+    connection: Connection,
+    limit: number,
+    scope?: AccessScope,
+  ): Promise<SocialPostPage>;
 
   // -------------------------------------------------------------------------
   // 承認（048-social-post-approval 設計 §6.4.6 / §6.5）
@@ -264,7 +289,11 @@ export interface SocialRepository {
   /**
    * 承認待ちの投稿を作成の古い順に引く（設計 §6.5）。`total` は `limit` で切る前の全件数。
    */
-  listApprovalPending(connection: Connection, limit: number): Promise<SocialPostPage>;
+  listApprovalPending(
+    connection: Connection,
+    limit: number,
+    scope?: AccessScope,
+  ): Promise<SocialPostPage>;
 
   // -------------------------------------------------------------------------
   // 配信ジョブ（035-social-publishing 設計 §6.5.3 / §6.5.4 / §6.5.6）

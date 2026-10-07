@@ -3,6 +3,7 @@ import {
   type Expression,
   type ExpressionBuilder,
   type RawBuilder,
+  type SelectQueryBuilder,
   type SqlBool,
 } from 'kysely';
 import type { Connection } from '../database/provider';
@@ -17,7 +18,8 @@ import type {
   SocialPost,
 } from '../domain/social/social';
 import { NotFoundError } from '../domain/repository';
-import { ALL_SCOPE, type AccessScope } from '../domain/social/access-scope';
+import { SiteGoneError } from '../domain/site/site';
+import { ALL_SCOPE, type AccessScope, type PostOrigin } from '../domain/social/access-scope';
 import type { PublishVerdict, SkipReason, SkipVerdict } from '../domain/social/publishing';
 import { isSkipReason } from '../domain/social/publishing';
 import type {
@@ -84,24 +86,61 @@ const ACCOUNT_COLUMNS = [
 interface ScopePredicates {
   /** `social_accounts` の行に掛ける条件。 */
   readonly account: RawBuilder<SqlBool> | null;
+  /**
+   * `social_posts` の行に掛ける条件。投稿先のアカウントの `site_id` を `scope_account.site_id` で参照する
+   * （`scopedPosts` が `social_accounts` を `scope_account` として内部結合する）。
+   */
+  readonly post: RawBuilder<SqlBool> | null;
 }
 
 /**
  * 区画の SQL の述語（053 設計 §7.4 の表）。**区画の条件はここ 1 か所にだけ書く**（受け入れ条件 #61）。
  *
- * Domain の `accountVisible` と同じ表を実装する。区画 `all` は条件を付けない（画面・ジョブの問い合わせを変えない）。
+ * Domain の `accountVisible` / `postVisible` と同じ表を実装する（一致は受け入れ条件 #41 が固定する）。
+ * 区画 `all` は条件を付けない（画面・ジョブの問い合わせを変えない）。
  */
 function scopePredicate(scope: AccessScope): ScopePredicates {
   switch (scope.kind) {
     case 'all':
-      return { account: null };
+      return { account: null, post: null };
     case 'common':
-      return { account: sql<SqlBool>`social_accounts.site_id IS NULL` };
+      return {
+        account: sql<SqlBool>`social_accounts.site_id IS NULL`,
+        post: sql<SqlBool>`(scope_account.site_id IS NULL AND social_posts.origin_site_scoped = false)`,
+      };
     case 'site':
       return {
         account: sql<SqlBool>`(social_accounts.site_id IS NULL OR social_accounts.site_id = ${scope.siteId})`,
+        post: sql<SqlBool>`(scope_account.site_id = ${scope.siteId} OR (scope_account.site_id IS NULL AND social_posts.origin_site_id = ${scope.siteId}))`,
       };
   }
+}
+
+/**
+ * 投稿の問い合わせに区画を掛ける（053 設計 §7.4）。
+ *
+ * 区画 `all` は**結合しない**（画面・ジョブの問い合わせと性能を変えない。設計 R7）。それ以外は投稿先のアカウントと
+ * 内部結合して `scopePredicate` の投稿の述語を掛ける。結合する側は `id`（`account_id`）と `site_id` だけを出す
+ * 派生表にしてあるので、既存の列名（`id`・`status`・`created_at` など）が曖昧にならず、各メソッドの条件・並びはそのまま使える。
+ */
+function scopedPosts(
+  query: SelectQueryBuilder<Schema, 'social_posts', object>,
+  scope: AccessScope,
+): SelectQueryBuilder<Schema, 'social_posts', object> {
+  const predicate = scopePredicate(scope).post;
+  if (predicate === null) {
+    return query;
+  }
+  return query
+    .innerJoin(
+      (eb) =>
+        eb
+          .selectFrom('social_accounts')
+          .select(['id as account_id', 'site_id'])
+          .as('scope_account'),
+      (join) => join.onRef('scope_account.account_id', '=', 'social_posts.social_account_id'),
+    )
+    .where(predicate) as unknown as SelectQueryBuilder<Schema, 'social_posts', object>;
 }
 
 /** `social_accounts.site_id` の外部キー違反（PostgreSQL の 23503）か。 */
@@ -219,7 +258,7 @@ const DELIVERED_AT = sql<Date>`COALESCE(published_at, failed_at, updated_at)`;
 /** 冪等な登録の試行回数。同時要求の相手がコミットするのを待つぶん。 */
 const IDEMPOTENT_INSERT_ATTEMPTS = 3;
 
-function postInsertValues(post: NewSocialPost): Record<string, unknown> {
+function postInsertValues(post: NewSocialPost, origin: PostOrigin): Record<string, unknown> {
   return {
     id: post.id,
     social_account_id: post.socialAccountId,
@@ -235,7 +274,46 @@ function postInsertValues(post: NewSocialPost): Record<string, unknown> {
       : { provider_options: JSON.stringify(post.providerOptions) }),
     ...(post.externalRef === undefined ? {} : { external_ref: post.externalRef }),
     ...(post.createdByTokenId === undefined ? {} : { created_by_token_id: post.createdByTokenId }),
+    origin_site_id: origin.originSiteId,
+    origin_site_scoped: origin.originSiteScoped,
   };
+}
+
+/** トークン以外の登録の既定の登録元の区画（共通。053 設計 §7.3）。 */
+const COMMON_ORIGIN: PostOrigin = { originSiteId: null, originSiteScoped: false };
+
+/**
+ * 挿入で書く登録元の区画を決める（053 設計 §7.3・§8.3.1）。
+ *
+ * **トークンの登録は、トークンの行を `FOR SHARE` で読んだ値を書く**（文脈の区画の写しは使わない）。呼び出し側の
+ * トランザクションの中で読むので、トークンのサイトの変更（`changeSite`）がコミットするまで待ってから変更後の値を読む。
+ * 逆順なら変更の `UPDATE` がこの登録のコミットを待ち、登録した投稿も書き換えの対象に入る（受け入れ条件 #89）。
+ *
+ * 読んだ行が無い・失効している・サイトのトークンでサイトが消えている（`site_scoped` で `site_id` が NULL）なら
+ * `SiteGoneError`。要求の始めには使えたトークンがサイトの削除と同時に進んだ窓を閉じる。
+ * 読んだ値で書くので `origin_site_id` の外部キー違反は起きない。トークン以外は `post.origin`（省略は共通）。
+ */
+async function originForInsert(connection: Connection, post: NewSocialPost): Promise<PostOrigin> {
+  const tokenId = post.createdByTokenId ?? null;
+  if (tokenId === null) {
+    return post.origin ?? COMMON_ORIGIN;
+  }
+  const token = UUID_PATTERN.test(tokenId)
+    ? await connection.db
+        .selectFrom('api_tokens')
+        .select(['site_id', 'site_scoped', 'revoked_at'])
+        .where('id', '=', tokenId)
+        .forShare()
+        .executeTakeFirst()
+    : undefined;
+  if (token === undefined || token.revoked_at !== null) {
+    throw new SiteGoneError(tokenId);
+  }
+  const siteGone = token.site_scoped && token.site_id === null;
+  if (siteGone) {
+    throw new SiteGoneError(tokenId);
+  }
+  return { originSiteId: token.site_id, originSiteScoped: token.site_scoped };
 }
 
 /**
@@ -430,7 +508,11 @@ export const socialRepository: SocialRepository = {
     return Number(result.numUpdatedRows) === 1;
   },
 
-  async listPosts(connection: Connection, query: SocialPostListQuery): Promise<SocialPostPage> {
+  async listPosts(
+    connection: Connection,
+    query: SocialPostListQuery,
+    scope: AccessScope = ALL_SCOPE,
+  ): Promise<SocialPostPage> {
     const conditions = (eb: ExpressionBuilder<Schema, 'social_posts'>): Expression<SqlBool>[] => {
       const list: Expression<SqlBool>[] = [];
       if (query.socialAccountId !== null && UUID_PATTERN.test(query.socialAccountId)) {
@@ -442,8 +524,7 @@ export const socialRepository: SocialRepository = {
       return list;
     };
 
-    let rowsQuery = connection.db
-      .selectFrom('social_posts')
+    let rowsQuery = scopedPosts(connection.db.selectFrom('social_posts'), scope)
       .select(POST_COLUMNS)
       .where((eb) => eb.and(conditions(eb)));
 
@@ -459,8 +540,7 @@ export const socialRepository: SocialRepository = {
       .offset((query.page - 1) * query.perPage)
       .execute();
 
-    const counted = await connection.db
-      .selectFrom('social_posts')
+    const counted = await scopedPosts(connection.db.selectFrom('social_posts'), scope)
       .select((eb) => eb.fn.countAll<string>().as('count'))
       .where((eb) => eb.and(conditions(eb)))
       .executeTakeFirstOrThrow();
@@ -468,10 +548,13 @@ export const socialRepository: SocialRepository = {
     return { items: rows.map((row) => toPost(row as PostRow)), total: Number(counted.count) };
   },
 
-  async findPostById(connection: Connection, id: string): Promise<SocialPost | null> {
+  async findPostById(
+    connection: Connection,
+    id: string,
+    scope: AccessScope = ALL_SCOPE,
+  ): Promise<SocialPost | null> {
     if (!UUID_PATTERN.test(id)) return null;
-    const row = await connection.db
-      .selectFrom('social_posts')
+    const row = await scopedPosts(connection.db.selectFrom('social_posts'), scope)
       .select(POST_COLUMNS)
       .where('id', '=', id)
       .executeTakeFirst();
@@ -481,6 +564,7 @@ export const socialRepository: SocialRepository = {
   async findPostsByIds(
     connection: Connection,
     ids: readonly string[],
+    scope: AccessScope = ALL_SCOPE,
   ): Promise<readonly SocialPost[]> {
     // 形の壊れたIDは問い合わせる前に落とす。uuid 列との比較で例外になる。
     const valid = [...new Set(ids)].filter((id) => UUID_PATTERN.test(id));
@@ -488,8 +572,7 @@ export const socialRepository: SocialRepository = {
       return [];
     }
 
-    const rows = await connection.db
-      .selectFrom('social_posts')
+    const rows = await scopedPosts(connection.db.selectFrom('social_posts'), scope)
       .select(POST_COLUMNS)
       .where('id', 'in', valid)
       .orderBy('created_at', 'desc')
@@ -500,9 +583,10 @@ export const socialRepository: SocialRepository = {
   },
 
   async insertPost(connection: Connection, post: NewSocialPost): Promise<SocialPost> {
+    const origin = await originForInsert(connection, post);
     const row = await connection.db
       .insertInto('social_posts')
-      .values(postInsertValues(post) as never)
+      .values(postInsertValues(post, origin) as never)
       .returning(POST_COLUMNS)
       .executeTakeFirstOrThrow();
     return toPost(row as PostRow);
@@ -520,12 +604,14 @@ export const socialRepository: SocialRepository = {
       return { post: await socialRepository.insertPost(connection, post), created: true };
     }
 
+    const origin = await originForInsert(connection, post);
+
     // 同時に来た要求の相手がまだコミットしていないと、INSERT が 0 行でも
     // 既存を引けないことがある。**数回だけ繰り返す**（無限には回さない）。
     for (let attempt = 0; attempt < IDEMPOTENT_INSERT_ATTEMPTS; attempt += 1) {
       const row = await connection.db
         .insertInto('social_posts')
-        .values(postInsertValues(post) as never)
+        .values(postInsertValues(post, origin) as never)
         .onConflict((oc) =>
           oc
             .columns(['created_by_token_id', 'external_ref'])
@@ -642,7 +728,11 @@ export const socialRepository: SocialRepository = {
     return Number(result.numDeletedRows) > 0;
   },
 
-  async listManualPending(connection: Connection, limit: number): Promise<SocialPostPage> {
+  async listManualPending(
+    connection: Connection,
+    limit: number,
+    scope: AccessScope = ALL_SCOPE,
+  ): Promise<SocialPostPage> {
     // 既存の `(status, scheduled_at)` 索引に乗る条件（設計 §6.6）。
     const conditions = (eb: ExpressionBuilder<Schema, 'social_posts'>): Expression<SqlBool>[] => [
       eb('status', '=', 'scheduled'),
@@ -653,8 +743,7 @@ export const socialRepository: SocialRepository = {
       eb('scheduled_at', '<=', sql<Date>`now()`),
     ];
 
-    const rows = await connection.db
-      .selectFrom('social_posts')
+    const rows = await scopedPosts(connection.db.selectFrom('social_posts'), scope)
       .select(POST_COLUMNS)
       .where((eb) => eb.and(conditions(eb)))
       .orderBy('scheduled_at', 'asc')
@@ -664,8 +753,7 @@ export const socialRepository: SocialRepository = {
       .execute();
 
     // **`total` は打ち切る前の全件数。** ダッシュボードは `limit: 1` でこれだけを取る（設計 §7.6）。
-    const counted = await connection.db
-      .selectFrom('social_posts')
+    const counted = await scopedPosts(connection.db.selectFrom('social_posts'), scope)
       .select((eb) => eb.fn.countAll<string>().as('count'))
       .where((eb) => eb.and(conditions(eb)))
       .executeTakeFirstOrThrow();
@@ -705,10 +793,13 @@ export const socialRepository: SocialRepository = {
     return row === undefined ? null : toPost(row as PostRow);
   },
 
-  async listApprovalPending(connection: Connection, limit: number): Promise<SocialPostPage> {
+  async listApprovalPending(
+    connection: Connection,
+    limit: number,
+    scope: AccessScope = ALL_SCOPE,
+  ): Promise<SocialPostPage> {
     // 既存の `(status, scheduled_at, id)` 索引が status の絞り込みに効く（設計 §5.3）。
-    const rows = await connection.db
-      .selectFrom('social_posts')
+    const rows = await scopedPosts(connection.db.selectFrom('social_posts'), scope)
       .select(POST_COLUMNS)
       .where('status', '=', 'awaiting_approval')
       // 古い依頼から捌く（設計 §6.5）。並びが同値のときに揺れないよう id を足す。
@@ -717,8 +808,7 @@ export const socialRepository: SocialRepository = {
       .limit(limit)
       .execute();
 
-    const counted = await connection.db
-      .selectFrom('social_posts')
+    const counted = await scopedPosts(connection.db.selectFrom('social_posts'), scope)
       .select((eb) => eb.fn.countAll<string>().as('count'))
       .where('status', '=', 'awaiting_approval')
       .executeTakeFirstOrThrow();

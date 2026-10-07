@@ -53,3 +53,17 @@ export function isSiteStatus(value: string): value is SiteStatus {
 
 /** 一覧の既定で `archived` を隠す。「もう使わないが記録は残す」状態のため。 */
 export const DEFAULT_LISTED_STATUSES: readonly SiteStatus[] = ['active', 'paused'];
+
+/**
+ * 投稿の登録の直前に、登録元のトークンが使えなくなっていた（053-site-scoped-social 設計 §8.3.1）。
+ *
+ * 挿入のトランザクションの中で読んだトークンの行が失効している、またはサイトのトークンでサイトが消えている
+ * （`site_scoped` で `site_id` が NULL）。要求の始めには使えたトークンがサイトの削除と同時に進んだ窓を閉じる。
+ * API はトークンが使えなくなったのと同じく 401 `UNAUTHENTICATED` に写す（理由は返さない）。
+ */
+export class SiteGoneError extends Error {
+  constructor(readonly tokenId: string) {
+    super('登録元のトークンが使えなくなっています');
+    this.name = 'SiteGoneError';
+  }
+}
