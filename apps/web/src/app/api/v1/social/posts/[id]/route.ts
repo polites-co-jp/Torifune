@@ -12,7 +12,8 @@ import { ensurePluginsStartedAnonymously } from '@/plugin/runtime';
 /** `{id}` の投稿が無いときの応答（042-social-api-input-fixes 設計 §6.4）。 */
 const POST_NOT_FOUND = {
   status: 404,
-  description: '投稿が存在しない（UUID の形でない ID を含む）',
+  description:
+    '投稿が存在しない（UUID の形でない ID を含む。このトークンからは見えない（別のサイトの区画）ものを含む）',
 } as const;
 
 export const GET = defineRoute({

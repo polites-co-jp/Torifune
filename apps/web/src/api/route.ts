@@ -11,6 +11,7 @@ import { bearerTokenOf } from '@/domain/api-token';
 import { JobBusyError } from '@/domain/jobs/job';
 import type { PermissionName } from '@/domain/permission';
 import { ConflictError, NotFoundError, ValidationError } from '@/domain/repository';
+import { SiteGoneError } from '@/domain/site/site';
 import { SocialPostStateChangedError, StaleSocialPostError } from '@/domain/social/social';
 import { unusableTextDetailsOf } from '@/domain/text';
 import { log } from '@/infrastructure/logging';
@@ -418,6 +419,11 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
       const authError = authorizationErrorResponse(error);
       if (authError !== null) {
         return authError;
+      }
+      // 登録の直前に登録元のトークンが使えなくなった（053 設計 §8.3.1）。トークンが使えないのと同じく未認証
+      // （理由は返さない）。409 / 500 と取り違えない。
+      if (error instanceof SiteGoneError) {
+        return errorResponse('UNAUTHENTICATED', undefined, cors);
       }
       if (error instanceof UnknownSortFieldError) {
         return errorResponse('VALIDATION_ERROR', { sort: ['並び替えに使えません。'] }, cors);

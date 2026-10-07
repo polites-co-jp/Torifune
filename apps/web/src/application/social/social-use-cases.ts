@@ -16,6 +16,7 @@ import {
   accountManageable,
   accountVisible,
   checkAccountSiteChange,
+  originOf,
   resolveAccountSiteOnCreate,
   type AccessScope,
 } from '@/domain/social/access-scope';
@@ -502,15 +503,20 @@ export interface ListPostsInput {
 export const listSocialPosts = defineUseCase<ListPostsInput, SocialPostPage>({
   name: 'social.post.list',
   permission: 'social.read',
+  // 区画（053 設計 §8.3.2）。`socialAccountId` の絞り込みも区画の中で掛かる（区画の外のアカウントは空）。
   handler: async (context, input) =>
-    socialRepository.listPosts(context.connection, {
-      page: input.page,
-      perPage: input.perPage,
-      socialAccountId: input.socialAccountId,
-      // 単一指定を配列へ畳む。`listCampaigns` と同じ形。
-      statuses: input.status === null ? [] : [input.status],
-      orderBy: 'created',
-    }),
+    socialRepository.listPosts(
+      context.connection,
+      {
+        page: input.page,
+        perPage: input.perPage,
+        socialAccountId: input.socialAccountId,
+        // 単一指定を配列へ畳む。`listCampaigns` と同じ形。
+        statuses: input.status === null ? [] : [input.status],
+        orderBy: 'created',
+      },
+      scopeOf(context),
+    ),
 });
 
 export interface ListPostHistoryInput {
@@ -534,14 +540,19 @@ export interface ListPostHistoryInput {
 export const listSocialPostHistory = defineUseCase<ListPostHistoryInput, SocialPostPage>({
   name: 'social.post.history',
   permission: 'social.read',
+  // API で届かない（画面だけ）が区画を掛ける。区画の判定を経路に依存させない（053 設計 §8.3.4）。
   handler: async (context, input) =>
-    socialRepository.listPosts(context.connection, {
-      page: input.page,
-      perPage: input.perPage,
-      socialAccountId: null,
-      statuses: input.status === null ? DELIVERED_STATUSES : [input.status],
-      orderBy: 'delivered',
-    }),
+    socialRepository.listPosts(
+      context.connection,
+      {
+        page: input.page,
+        perPage: input.perPage,
+        socialAccountId: null,
+        statuses: input.status === null ? DELIVERED_STATUSES : [input.status],
+        orderBy: 'delivered',
+      },
+      scopeOf(context),
+    ),
 });
 
 /**
@@ -557,14 +568,21 @@ export const listSocialPostsByIds = defineUseCase<
 >({
   name: 'social.post.listByIds',
   permission: 'social.read',
-  handler: async (context, input) => socialRepository.findPostsByIds(context.connection, input.ids),
+  // 区画の外の投稿は含めない（053 設計 §8.3.4）。
+  handler: async (context, input) =>
+    socialRepository.findPostsByIds(context.connection, input.ids, scopeOf(context)),
 });
 
 export const getSocialPost = defineUseCase<{ id: string }, SocialPost>({
   name: 'social.post.get',
   permission: 'social.read',
   handler: async (context, input) => {
-    const post = await socialRepository.findPostById(context.connection, input.id);
+    // 区画の外は存在しないのと同じ 404（053 設計 §8.3.2・§8.7）。
+    const post = await socialRepository.findPostById(
+      context.connection,
+      input.id,
+      scopeOf(context),
+    );
     if (post === null) {
       throw new NotFoundError('SocialPost', input.id);
     }
@@ -965,11 +983,13 @@ export const createSocialPost = defineUseCase<CreatePostInput, CreatePostOutput>
     }
 
     // b: 存在しないアカウントへの投稿を、FK 違反（500）ではなく 422 で返す。
+    //    区画から見えないアカウントも同じ 422・同じ文言（存在を教えない。053 設計 §8.3.1・§8.7）。
+    const scope = scopeOf(context);
     const account = await socialRepository.findAccountById(
       context.connection,
       input.socialAccountId,
     );
-    if (account === null) {
+    if (account === null || !accountVisible(scope, account.siteId)) {
       throw new ValidationError('SocialPost', 'socialAccountId', 'SNSアカウントが見つかりません。');
     }
 
@@ -993,6 +1013,17 @@ export const createSocialPost = defineUseCase<CreatePostInput, CreatePostOutput>
         input.externalRef,
       );
       if (existing !== null) {
+        // 既存が区画から見えなければ（1 回目の後にアカウントが別の区画へ付け替えられた）、
+        // 黙って 2 つ目を作らず、既存を見せもしない（053 設計 §8.3.1）。
+        if (
+          (await socialRepository.findPostById(context.connection, existing.id, scope)) === null
+        ) {
+          throw new ValidationError(
+            'SocialPost',
+            'externalRef',
+            'この externalRef は既に使われています。別の externalRef で登録してください。',
+          );
+        }
         return { post: existing, created: false, approvalForced: false };
       }
     }
@@ -1043,6 +1074,8 @@ export const createSocialPost = defineUseCase<CreatePostInput, CreatePostOutput>
         providerOptions,
         externalRef: input.externalRef ?? null,
         createdByTokenId: tokenId,
+        // トークンの登録は Repository がトークンの行（FOR SHARE）の値で書く（053 設計 §7.3）。
+        origin: originOf(scope),
       }),
     );
 
@@ -1148,7 +1181,9 @@ export const updateSocialPost = defineUseCase<UpdatePostInput, SocialPost>({
       assertScheduledAtInRange(input.scheduledAt);
     }
 
-    const current = await socialRepository.findPostById(context.connection, input.id);
+    // 区画は読み出しの時点で判定する。条件付き更新（048 §6.3.6）には区画の条件を足さない（053 設計 §8.3.3）。
+    const scope = scopeOf(context);
+    const current = await socialRepository.findPostById(context.connection, input.id, scope);
     if (current === null) {
       throw new NotFoundError('SocialPost', input.id);
     }
@@ -1310,7 +1345,7 @@ export const updateSocialPost = defineUseCase<UpdatePostInput, SocialPost>({
 
     if (post === null) {
       // 当たらなかったのは、消えたか、状態か承認の記録が変わったか。読み直して分ける。
-      const latest = await socialRepository.findPostById(context.connection, input.id);
+      const latest = await socialRepository.findPostById(context.connection, input.id, scope);
       if (latest === null) {
         throw new NotFoundError('SocialPost', input.id);
       }
@@ -1345,6 +1380,15 @@ export const deleteSocialPost = defineUseCase<{ id: string }, void>({
   permission: 'social.delete',
   audit: { action: 'deleted', resourceType: 'social_post', resourceId: (input) => input.id },
   handler: async (context, input) => {
+    // 区画の外は 404 で行は残す（053 設計 §8.3.3）。
+    const visible = await socialRepository.findPostById(
+      context.connection,
+      input.id,
+      scopeOf(context),
+    );
+    if (visible === null) {
+      throw new NotFoundError('SocialPost', input.id);
+    }
     const deleted = await context.connection.transaction((tx) =>
       socialRepository.deletePost(tx, input.id),
     );
@@ -1433,9 +1477,10 @@ export const approveSocialPost = defineUseCase<ApprovePostInput, ApprovePostOutp
     }),
   },
   handler: async (context, input) => {
-    // 2〜4: 投稿があり、承認待ちで、見た内容のままか。
+    // 2〜4: 投稿があり（区画の外は 404。053 設計 §8.3.3）、承認待ちで、見た内容のままか。
+    const scope = scopeOf(context);
     const post = assertApprovable(
-      await socialRepository.findPostById(context.connection, input.id),
+      await socialRepository.findPostById(context.connection, input.id, scope),
       input,
     );
 
@@ -1492,7 +1537,10 @@ export const approveSocialPost = defineUseCase<ApprovePostInput, ApprovePostOutp
     );
     if (approved === null) {
       // 間に誰かが承認した・書き換えた・消した。読み直して 404 / 422 / 409 のどれかを返す。
-      assertApprovable(await socialRepository.findPostById(context.connection, input.id), input);
+      assertApprovable(
+        await socialRepository.findPostById(context.connection, input.id, scope),
+        input,
+      );
       // 読み直しても承認できる形に見えるなら、それでも見た内容とは別の行になっている。
       throw new StaleSocialPostError(post.id);
     }
@@ -1526,8 +1574,9 @@ export interface ListApprovalPendingInput {
 export const listApprovalPendingPosts = defineUseCase<ListApprovalPendingInput, SocialPostPage>({
   name: 'social.post.listApprovalPending',
   permission: 'social.read',
+  // 画面（`all`）では全件。トークンの文脈では区画の中だけ（053 設計 §8.3.4）。
   handler: async (context, input) =>
-    socialRepository.listApprovalPending(context.connection, input.limit),
+    socialRepository.listApprovalPending(context.connection, input.limit, scopeOf(context)),
 });
 
 // ---------------------------------------------------------------------------
@@ -1548,8 +1597,9 @@ export interface ListManualPendingInput {
 export const listManualPendingPosts = defineUseCase<ListManualPendingInput, SocialPostPage>({
   name: 'social.post.listManualPending',
   permission: 'social.read',
+  // 画面（`all`）では全件。トークンの文脈では区画の中だけ（053 設計 §8.3.4）。
   handler: async (context, input) =>
-    socialRepository.listManualPending(context.connection, input.limit),
+    socialRepository.listManualPending(context.connection, input.limit, scopeOf(context)),
 });
 
 /**
@@ -1593,7 +1643,11 @@ export const resolveManualHandoff = defineUseCase<ManualHandoffInput, ManualHand
   name: 'social.post.manualHandoff',
   permission: 'social.read',
   handler: async (context, input) => {
-    const post = await socialRepository.findPostById(context.connection, input.id);
+    const post = await socialRepository.findPostById(
+      context.connection,
+      input.id,
+      scopeOf(context),
+    );
     if (post === null) {
       throw new NotFoundError('SocialPost', input.id);
     }
