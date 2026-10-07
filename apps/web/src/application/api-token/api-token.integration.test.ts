@@ -326,6 +326,10 @@ describe('失効', () => {
     const rows = await withConnection(async (connection) =>
       connection.db.selectFrom('audit_logs').select(['action', 'resource_type']).execute(),
     );
-    expect(rows).toEqual([{ action: 'deleted', resource_type: 'api_token' }]);
+    // 発行も監査に残る（053-site-scoped-social 設計 §8.5.5・§14 の 1 行目）。行は created と deleted の 2 つ。
+    // 同じ時刻に並びうるので順序に頼らない。
+    expect(rows).toHaveLength(2);
+    expect(rows).toContainEqual({ action: 'deleted', resource_type: 'api_token' });
+    expect(rows).toContainEqual({ action: 'created', resource_type: 'api_token' });
   });
 });
