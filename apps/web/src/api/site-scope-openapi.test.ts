@@ -11,6 +11,8 @@ import { buildOpenApiDocument } from './openapi';
  * - #59：`getSocialPost` の 404 の `description` が「このトークンからは見えない」を含む（設計 §8.8 のとおり
  *   `updateSocialPost` / `deleteSocialPost` / `approveSocialPost` も）。投稿の応答のキー集合は変わらない（G5）
  * - #58：`deleteSite` の応答のキーに `409` があり、`description` が「SNS アカウント」を含む（G6）
+ * - #91：`changeApiTokenSite` が `PATCH /api-tokens/{id}` にあり、`x-required-permission` が `token.manage`、
+ *   要求に `siteId`（必須・`nullable`）と `scopes`（任意）、応答のキーに `404`、応答に `token` が無い（G7）
  *
  * 実際に登録されているエンドポイント（`@/api/endpoints`）から作った文書を見る（`social-approval-openapi.test.ts` の形）。
  */
@@ -278,5 +280,64 @@ describe('#58 deleteSite の 409', () => {
 
   it("#58 deleteSite の responses['409'] の description が details.socialAccounts に触れる（設計 §8.8）", () => {
     expect(operation('deleteSite').responses['409']?.description ?? '').toContain('socialAccounts');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* #91 changeApiTokenSite                                                        */
+/* -------------------------------------------------------------------------- */
+
+describe('#91 changeApiTokenSite（PATCH /api-tokens/{id}）', () => {
+  /** パスとメソッドで引く（operationId が違っても見つける）。 */
+  function patchOperation(): OpenApiOperation | undefined {
+    return document().paths['/api-tokens/{id}']?.['patch'];
+  }
+
+  it('#91 PATCH /api-tokens/{id} があり、operationId が changeApiTokenSite', () => {
+    expect(patchOperation()?.operationId).toBe('changeApiTokenSite');
+  });
+
+  it('#91 x-required-permission が token.manage', () => {
+    expect(operation('changeApiTokenSite')['x-required-permission']).toBe('token.manage');
+  });
+
+  it('#91 要求の siteId は必須で string | null', () => {
+    expect(typesOf(bodyProperty('changeApiTokenSite', 'siteId'))).toEqual(['null', 'string']);
+    expect(requiredOf('changeApiTokenSite')).toContain('siteId');
+  });
+
+  it('#91 要求の scopes は任意で文字列の配列', () => {
+    const scopes = bodyProperty('changeApiTokenSite', 'scopes');
+
+    expect(typesOf(scopes)).toContain('array');
+    expect(typesOf(scopes['items'])).toEqual(['string']);
+    expect(requiredOf('changeApiTokenSite')).not.toContain('scopes');
+  });
+
+  it("#91 応答のキーに '404' があり、description が「UUID の形でない ID を含む」を含む（設計 §8.8）", () => {
+    const notFound = operation('changeApiTokenSite').responses['404'];
+
+    expect(notFound).toBeDefined();
+    expect(notFound?.description ?? '').toContain('UUID の形でない ID を含む');
+  });
+
+  it('#91 200 応答はトークンの形で、token（平文）が無い', () => {
+    expect(typesOf(responseDataProperty('changeApiTokenSite', '200', 'siteId'))).toEqual([
+      'null',
+      'string',
+    ]);
+    expect(typesOf(responseDataProperty('changeApiTokenSite', '200', 'siteScoped'))).toEqual([
+      'boolean',
+    ]);
+    const schema =
+      operation('changeApiTokenSite').responses['200']?.content?.['application/json']?.schema;
+    expect(findProperty(findProperty(schema, 'data'), 'token')).toBeUndefined();
+  });
+
+  it('#91 セッションだけと宣言する（security が session だけ。設計 §8.5.6）', () => {
+    const operationWithSecurity = patchOperation() as
+      (OpenApiOperation & { readonly security?: unknown }) | undefined;
+
+    expect(operationWithSecurity?.security).toEqual([{ session: [] }]);
   });
 });

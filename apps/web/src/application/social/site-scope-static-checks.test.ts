@@ -17,6 +17,8 @@ import { CORE_PERMISSIONS } from '@/domain/permission';
  * * #61：`social-use-cases.ts` の 17 個の handler が `scopeOf(context)` を呼び、`infrastructure/social-repository.ts` の
  *   区画の条件は `scopePredicate` の 1 か所にだけある（G5）
  * * #62：`application/social/publish.ts` が `access-scope` を import しない（G5。変えないことの固定）
+ * * #60 の後半：`api_tokens` の `site_id` / `site_scoped` / `scopes` と `social_posts` の `origin_*` を
+ *   `UPDATE` するのは `infrastructure/api-token-repository.ts` の `changeSite` だけ（G7）
  *
  * **未実装の値は静的 import にしない**（`approval-static-checks.test.ts` と同じ）。
  * 未実装の段階でこのファイル全体が読めなくなると、他の件まで一緒に落ちて何が壊れたのか読めなくなる。
@@ -577,5 +579,163 @@ describe('#62 application/social/publish.ts は access-scope を import しな�
     expect(importsAccessScope("// import { scopeOf } from './access-scope';\nconst x = 1;")).toBe(
       false,
     );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* #60 の後半 site_id / site_scoped / scopes / origin_* を書き換えるのは changeSite だけ */
+/* -------------------------------------------------------------------------- */
+
+const API_TOKEN_REPOSITORY_FILE = 'infrastructure/api-token-repository.ts';
+
+/** `UPDATE` の対象の表ごとに、`SET` に現れてはいけない列（`changeSite` を除く）。 */
+const GUARDED_COLUMNS: Readonly<Record<string, RegExp>> = {
+  api_tokens: /\b(?:site_id|site_scoped|scopes)\b/,
+  social_posts: /\b(?:origin_site_id|origin_site_scoped)\b/,
+};
+
+interface UpdateSet {
+  readonly table: string;
+  /** `.set( … )` の中身、または生の SQL の `SET … WHERE` の間。 */
+  readonly set: string;
+  /** コメントを落としたソースの中での位置。 */
+  readonly index: number;
+}
+
+/** `open` の位置の `(` に対応する `)` までの中身。対応が取れなければ末尾まで。 */
+function balancedContent(code: string, open: number): string {
+  let depth = 0;
+  for (let index = open; index < code.length; index += 1) {
+    const char = code[index];
+    if (char === '(') depth += 1;
+    if (char === ')') {
+      depth -= 1;
+      if (depth === 0) return code.slice(open + 1, index);
+    }
+  }
+  return code.slice(open + 1);
+}
+
+/**
+ * コメントを落としたソースから、`api_tokens` / `social_posts` への `UPDATE` の `SET` を集める。
+ *
+ * * Kysely：`updateTable('api_tokens')` の後の最初の `.set( … )` の中身（`where` の条件は含めない）
+ * * 生の SQL：`UPDATE api_tokens SET … WHERE`（`RETURNING` かテンプレートの終わりまで）
+ */
+function updateSets(code: string): UpdateSet[] {
+  const found: UpdateSet[] = [];
+  for (const match of code.matchAll(/updateTable\(\s*['"](api_tokens|social_posts)['"]\s*\)/g)) {
+    const from = match.index + match[0].length;
+    const setAt = code.slice(from).search(/\.set\s*\(/);
+    if (setAt === -1) continue;
+    const open = code.indexOf('(', from + setAt);
+    found.push({ table: match[1] ?? '', set: balancedContent(code, open), index: match.index });
+  }
+  for (const match of code.matchAll(
+    /\bUPDATE\s+(api_tokens|social_posts)\s+SET\s+([\s\S]*?)(?=\bWHERE\b|\bRETURNING\b|`|$)/gi,
+  )) {
+    found.push({
+      table: (match[1] ?? '').toLowerCase(),
+      set: match[2] ?? '',
+      index: match.index,
+    });
+  }
+  return found;
+}
+
+/** オブジェクトリテラルのメソッド `  async <name>(` から、次の行頭 `  },` まで（位置つき）。無ければ null。 */
+function methodRange(code: string, name: string): { start: number; end: number } | null {
+  const start = code.search(new RegExp(`^ {2}async ${name}\\(`, 'm'));
+  if (start === -1) return null;
+  const end = code.slice(start).search(/^ {2}\},?$/m);
+  return { start, end: end === -1 ? code.length : start + end };
+}
+
+/** 禁止の列を `SET` に書いている箇所（`api-token-repository.ts` の `changeSite` の中は除く）。 */
+function guardedWrites(files: readonly { path: string; text: string }[]): string[] {
+  const offenders: string[] = [];
+  for (const { path, text } of files) {
+    const code = withoutComments(text.replaceAll('\r\n', '\n'));
+    const allowed = path === API_TOKEN_REPOSITORY_FILE ? methodRange(code, 'changeSite') : null;
+    for (const update of updateSets(code)) {
+      const guard = GUARDED_COLUMNS[update.table];
+      if (guard === undefined || !guard.test(update.set)) continue;
+      if (allowed !== null && update.index >= allowed.start && update.index < allowed.end) continue;
+      offenders.push(`${path}（${update.table}）`);
+    }
+  }
+  return offenders;
+}
+
+function sourceFiles(): { path: string; text: string }[] {
+  return sourceFilesUnder(SRC_DIR).map((path) => ({
+    path,
+    text: readFileSync(join(SRC_DIR, path), 'utf8'),
+  }));
+}
+
+describe('#60 api_tokens の site_id / site_scoped / scopes と social_posts の origin_* を書き換えるのは changeSite だけ', () => {
+  it('#60 apps/web/src（テストを除く）で、changeSite の外に禁止の列を SET する UPDATE が無い', () => {
+    expect(guardedWrites(sourceFiles())).toEqual([]);
+  });
+
+  it('#60 infrastructure/api-token-repository.ts に changeSite があり、api_tokens の site_id と social_posts の origin_site_id を書き換える', () => {
+    const code = withoutComments(
+      readFileSync(join(SRC_DIR, API_TOKEN_REPOSITORY_FILE), 'utf8').replaceAll('\r\n', '\n'),
+    );
+    const range = methodRange(code, 'changeSite');
+
+    expect(range, 'apiTokenRepository に changeSite が無い').not.toBeNull();
+    const inChangeSite = updateSets(code).filter(
+      (update) => range !== null && update.index >= range.start && update.index < range.end,
+    );
+    expect(
+      inChangeSite.some(
+        (update) => update.table === 'api_tokens' && /\bsite_id\b/.test(update.set),
+      ),
+      'changeSite が api_tokens の site_id を書き換えていない',
+    ).toBe(true);
+    expect(
+      inChangeSite.some(
+        (update) => update.table === 'social_posts' && /\borigin_site_id\b/.test(update.set),
+      ),
+      'changeSite が social_posts の origin_site_id を書き換えていない',
+    ).toBe(true);
+  });
+
+  it('#60 判別力：changeSite の外の Kysely・生の SQL の UPDATE を見分け、where の条件と changeSite の中は数えない', () => {
+    const tampered = [
+      'export const apiTokenRepository = {',
+      '  async revokeBySite(connection, siteId, now) {',
+      "    await connection.db.updateTable('api_tokens').set({ revoked_at: now }).where('site_id', '=', siteId).execute();",
+      '  },',
+      '',
+      '  async detach(connection, id) {',
+      "    await connection.db.updateTable('api_tokens').set({ site_id: null }).where('id', '=', id).execute();",
+      '  },',
+      '',
+      '  async changeSite(connection, input) {',
+      "    await connection.db.updateTable('api_tokens').set({ site_id: input.siteId, site_scoped: input.siteScoped, scopes: input.scopes }).execute();",
+      '    await sql`UPDATE social_posts SET origin_site_id = ${input.siteId}, origin_site_scoped = ${input.siteScoped} WHERE created_by_token_id = ${input.id}`.execute(connection.db);',
+      '  },',
+      '};',
+      '',
+    ].join('\n');
+    const otherFile = [
+      'export async function reset(connection) {',
+      '  await sql`UPDATE social_posts SET origin_site_scoped = false WHERE id = ${id}`.execute(connection.db);',
+      '}',
+      '',
+    ].join('\n');
+
+    expect(
+      guardedWrites([
+        { path: API_TOKEN_REPOSITORY_FILE, text: tampered },
+        { path: 'infrastructure/social-repository.ts', text: otherFile },
+      ]),
+    ).toEqual([
+      `${API_TOKEN_REPOSITORY_FILE}（api_tokens）`,
+      'infrastructure/social-repository.ts（social_posts）',
+    ]);
   });
 });

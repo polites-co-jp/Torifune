@@ -28,7 +28,7 @@ interface OpenApiOperation {
   readonly responses: Record<string, OpenApiResponse>;
 }
 
-/** 設計 §6.4 の表（SNS 以外の 27 操作）：操作 ID → 追加の status。 */
+/** 設計 §6.4 の表（SNS 以外の 27 操作）と 053 の `changeApiTokenSite` の計 28 操作：操作 ID → 追加の status。 */
 const REST_ADDITIONAL: Readonly<Record<string, readonly number[]>> = {
   getSite: [404],
   updateSite: [404],
@@ -43,6 +43,8 @@ const REST_ADDITIONAL: Readonly<Record<string, readonly number[]>> = {
   updateCampaign: [404],
   deleteCampaign: [404],
   revokeApiToken: [404],
+  // 053 で足した（トークンが無い・自分のトークンでない。053-site-scoped-social 設計 §8.5.6・§8.8）。
+  changeApiTokenSite: [404],
   deleteWebhook: [404],
   getPluginOperation: [404],
   installPlugin: [404],
@@ -150,10 +152,10 @@ describe('#38 設計 §6.4 の表の 404 / 409 / 401 はエラーの形', () => 
 /* -------------------------------------------------------------------------- */
 
 describe('#39 全公開操作の追加の応答が表とちょうど一致する', () => {
-  it('#39 表は設計 §6.4 の 27 操作と 042・048 の 9 操作の計 36 行', () => {
-    expect(Object.keys(REST_ADDITIONAL)).toHaveLength(27);
+  it('#39 表は設計 §6.4 の 27 操作と 053 の 1 操作、042・048 の 9 操作の計 37 行', () => {
+    expect(Object.keys(REST_ADDITIONAL)).toHaveLength(28);
     expect(Object.keys(SOCIAL_ADDITIONAL)).toHaveLength(9);
-    expect(Object.keys(ADDITIONAL)).toHaveLength(36);
+    expect(Object.keys(ADDITIONAL)).toHaveLength(37);
   });
 
   it('#39 表の操作はすべて文書に載っている公開操作', () => {
@@ -164,13 +166,13 @@ describe('#39 全公開操作の追加の応答が表とちょうど一致する
     );
   });
 
-  it('#39 公開操作は 66 で、表の 36 と何も足さない 30 に分かれる', () => {
+  it('#39 公開操作は 67 で、表の 37 と何も足さない 30 に分かれる', () => {
     const endpoints = listDocumentedEndpoints();
     const withoutAdditional = endpoints.filter(
       (endpoint) => ADDITIONAL[endpoint.operationId] === undefined,
     );
 
-    expect(endpoints).toHaveLength(66);
+    expect(endpoints).toHaveLength(67);
     expect(withoutAdditional).toHaveLength(30);
   });
 
