@@ -560,8 +560,8 @@ export function SocialAccounts(props: SocialAccountsProps) {
     {
       key: 'actions',
       header: '操作',
-      // 3 つのボタンが収まる幅（039 設計 §7.3.1、053 設計 §9.1.3）。狭い画面では表の中で横に動く。
-      width: '20rem',
+      // 2 つのボタンが収まる幅（039 設計 §7.3.1）。狭い画面では表の中で横に動く。
+      width: '16rem',
       render: (account) =>
         canWrite || canDelete ? (
           <div style={{ display: 'flex', gap: 'var(--tf-space-2)' }}>
