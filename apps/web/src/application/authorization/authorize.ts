@@ -62,8 +62,16 @@ export interface AuthorizationContext {
    *
    * `permissions` と同じく**サーバー側で引いた Token 行からだけ**積む。
    * リクエストの値をここへ入れる経路は作らない（04_認証設計.md §28）。
+   *
+   * `siteId` はサイトのトークンのサイト、共通のトークンは null（053-site-scoped-social 設計 §8.1）。
+   * SNS の区画（`application/social/access-scope.ts` の `scopeOf`）はこれだけから決める。
+   * サイトの消えたサイトのトークンは文脈を作る段で未認証にするので、ここが null なのは共通のトークンだけ。
    */
-  readonly apiToken?: { readonly id: string; readonly name: string };
+  readonly apiToken?: {
+    readonly id: string;
+    readonly name: string;
+    readonly siteId: string | null;
+  };
 }
 
 /** その文脈が Permission を持つか。 */

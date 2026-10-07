@@ -2,11 +2,19 @@ import { getCurrentUser } from '../auth/current-user';
 import type { RequestInfo } from '../auth/context';
 import type { UserIdentity } from '../../authentication/identity';
 import type { Connection } from '../../database/provider';
-import { effectiveTokenPermissions, hashApiToken, isUsable } from '../../domain/api-token';
+import {
+  effectiveSiteTokenPermissions,
+  effectiveTokenPermissions,
+  hashApiToken,
+  isUsable,
+  siteTokenUsable,
+  type ApiToken,
+} from '../../domain/api-token';
 import type { PermissionName } from '../../domain/permission';
 import { apiTokenRepository } from '../../infrastructure/api-token-repository';
 import { log } from '../../infrastructure/logging';
 import { roleRepository } from '../../infrastructure/role-repository';
+import { siteRepository } from '../../infrastructure/site-repository';
 import { userRepository } from '../../infrastructure/user-repository';
 import { withConnection } from '../transaction';
 import type { AuthorizationContext } from './authorize';
@@ -86,6 +94,12 @@ export async function buildApiTokenContext(
       return anonymous;
     }
 
+    // サイトのトークンは、サイトが消えた・無い・アーカイブされたら使えない（053 設計 §8.5.3）。
+    // **`touch` の前に判定する。** 使えないトークンの最終利用時刻を進めない（失効・期限切れと同じ）。
+    if (!(await isSiteOfTokenUsable(connection, token))) {
+      return anonymous;
+    }
+
     const ownerPermissions = await effectivePermissions(connection, owner.id);
 
     // 最終利用時刻の更新に失敗しても認証は通す。
@@ -108,12 +122,29 @@ export async function buildApiTokenContext(
         providerId: 'api-token',
         externalUserId: null,
       },
-      permissions: effectiveTokenPermissions(ownerPermissions, token.scopes),
+      // サイトのトークンは SNS の権限だけ（DB の CHECK と二重に守る。053 設計 §7.2）。
+      permissions: token.siteScoped
+        ? effectiveSiteTokenPermissions(ownerPermissions, token.scopes)
+        : effectiveTokenPermissions(ownerPermissions, token.scopes),
       connection,
       request,
       // **Token 行から積む。** リクエストの値ではない（04_認証設計.md §28）。
-      apiToken: { id: token.id, name: token.name },
+      apiToken: { id: token.id, name: token.name, siteId: token.siteId },
     };
+  });
+}
+
+/** サイトのトークンなら、紐づいたサイトの状態を引いて使えるかを決める。共通のトークンは常に真。 */
+async function isSiteOfTokenUsable(connection: Connection, token: ApiToken): Promise<boolean> {
+  if (!token.siteScoped) {
+    return true;
+  }
+  const site =
+    token.siteId === null ? null : await siteRepository.findById(connection, token.siteId);
+  return siteTokenUsable({
+    siteScoped: token.siteScoped,
+    siteId: token.siteId,
+    siteStatus: site?.status ?? null,
   });
 }
 
