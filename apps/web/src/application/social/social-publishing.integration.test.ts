@@ -209,7 +209,8 @@ describe('#31 登録した Token が残る', () => {
 
     const context = await buildApiTokenContext(created.plaintext, REQUEST);
 
-    expect(context.apiToken).toEqual({ id: created.token.id, name: 'CI' });
+    // 053 で siteId が加わった（サイトに紐づけていないトークンは null。053-site-scoped-social 設計 §8.5.3）。
+    expect(context.apiToken).toEqual({ id: created.token.id, name: 'CI', siteId: null });
   });
 
   it('#31 buildAuthorizationContext の文脈は apiToken を持たない', async () => {
