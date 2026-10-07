@@ -61,6 +61,10 @@ export interface ApiToken {
   readonly lastUsedAt: Date | null;
   readonly revokedAt: Date | null;
   readonly createdAt: Date;
+  /** 紐づいたサイト。サイトのトークンでもサイトが消えると null（053 設計 §7.1）。 */
+  readonly siteId: string | null;
+  /** サイトのトークンか。発行時に決まり、画面の変更の操作（053 設計 §8.5.6）でだけ変わる。 */
+  readonly siteScoped: boolean;
 }
 
 export const API_TOKEN_NAME_MAX_LENGTH = 100;

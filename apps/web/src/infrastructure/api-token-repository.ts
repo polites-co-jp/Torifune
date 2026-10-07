@@ -18,6 +18,8 @@ interface Row {
   last_used_at: Date | null;
   revoked_at: Date | null;
   created_at: Date;
+  site_id: string | null;
+  site_scoped: boolean;
 }
 
 function toApiToken(row: Row): ApiToken {
@@ -31,6 +33,8 @@ function toApiToken(row: Row): ApiToken {
     lastUsedAt: row.last_used_at,
     revokedAt: row.revoked_at,
     createdAt: row.created_at,
+    siteId: row.site_id,
+    siteScoped: row.site_scoped,
   };
 }
 
@@ -44,6 +48,8 @@ const COLUMNS = [
   'last_used_at',
   'revoked_at',
   'created_at',
+  'site_id',
+  'site_scoped',
 ] as const;
 
 export interface InsertApiTokenInput {
@@ -54,6 +60,11 @@ export interface InsertApiTokenInput {
   readonly prefix: string;
   readonly scopes: readonly PermissionName[];
   readonly expiresAt: Date | null;
+  /**
+   * 紐づけるサイト。省略・null は共通のトークン（053 設計 §8.5.1）。
+   * 値があれば `site_scoped = true` で書く（`026` の CHECK `api_tokens_site_scoped_check`）。
+   */
+  readonly siteId?: string | null;
 }
 
 /** UUID の形をしているか。不正な値で 500 にせず、見つからない扱いにする。 */
@@ -71,6 +82,8 @@ export const apiTokenRepository = {
         prefix: input.prefix,
         scopes: [...input.scopes],
         expires_at: input.expiresAt,
+        site_id: input.siteId ?? null,
+        site_scoped: (input.siteId ?? null) !== null,
       })
       .returning(COLUMNS)
       .executeTakeFirstOrThrow();

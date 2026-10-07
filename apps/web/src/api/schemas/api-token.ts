@@ -35,6 +35,15 @@ export const apiTokenResponseSchema = z.object({
   lastUsedAt: z.string().nullable(),
   revokedAt: z.string().nullable(),
   createdAt: z.string(),
+  siteId: z
+    .guid()
+    .nullable()
+    .describe('紐づいたサイト。null は共通のトークン（サイトに紐づかない）。'),
+  siteScoped: z
+    .boolean()
+    .describe(
+      'サイトのトークンか。true で siteId が null はサイトが削除されたトークン（使えない）。',
+    ),
 });
 
 /** 発行時だけ平文を返す。**ここでしか返らない。** */
@@ -55,6 +64,8 @@ export interface ApiTokenResponse {
   readonly lastUsedAt: string | null;
   readonly revokedAt: string | null;
   readonly createdAt: string;
+  readonly siteId: string | null;
+  readonly siteScoped: boolean;
 }
 
 export function toApiTokenResponse(token: ApiToken): ApiTokenResponse {
@@ -67,6 +78,8 @@ export function toApiTokenResponse(token: ApiToken): ApiTokenResponse {
     lastUsedAt: token.lastUsedAt?.toISOString() ?? null,
     revokedAt: token.revokedAt?.toISOString() ?? null,
     createdAt: token.createdAt.toISOString(),
+    siteId: token.siteId,
+    siteScoped: token.siteScoped,
   };
 }
 
