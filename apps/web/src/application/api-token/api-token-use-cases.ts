@@ -4,13 +4,17 @@ import { requireAuthenticated } from '@/application/authorization/authorize';
 import { defineUseCase } from '@/application/authorization/use-case';
 import {
   generateApiToken,
+  isSiteTokenScope,
   isValidApiTokenName,
   type ApiToken,
   API_TOKEN_NAME_MAX_LENGTH,
+  SITE_TOKEN_SCOPES,
 } from '@/domain/api-token';
 import { isValidPermissionName, type PermissionName } from '@/domain/permission';
 import { NotFoundError, ValidationError } from '@/domain/repository';
+import type { Connection } from '@/database/provider';
 import { apiTokenRepository } from '@/infrastructure/api-token-repository';
+import { siteRepository } from '@/infrastructure/site-repository';
 
 /**
  * API Token の発行・一覧・失効（05_API設計.md §37-38）。
@@ -27,6 +31,11 @@ export interface CreateApiTokenInput {
   readonly scopes: readonly string[];
   /** null は無期限。 */
   readonly expiresAt: Date | null;
+  /**
+   * 紐づけるサイト。省略・null は共通のトークン（053-site-scoped-social 設計 §8.5.1）。
+   * サイトのトークンの Scope は `SITE_TOKEN_SCOPES` に限る。
+   */
+  readonly siteId?: string | null;
 }
 
 export interface CreatedApiToken {
@@ -35,9 +44,24 @@ export interface CreatedApiToken {
   readonly plaintext: string;
 }
 
+/** 設計 §8.5.1 の 1・4：サイトが無い（挿入の時点で消えていた場合を含む）。 */
+const MESSAGE_SITE_NOT_FOUND = 'Webサイトが見つかりません。';
+
 export const createApiToken = defineUseCase<CreateApiTokenInput, CreatedApiToken>({
   name: 'apiToken.create',
   permission: 'token.manage',
+  // 発行も残す（053 設計 §8.5.5）。サイトを消すとトークンの site_id は NULL になるので、
+  // 「どの外部アプリにどのサイトを任せたか」を後から追えるようにする。**平文・ハッシュ・prefix は入れない。**
+  audit: {
+    action: 'created',
+    resourceType: 'api_token',
+    resourceId: (_input, output) => output.token.id,
+    detail: (_input, output) => ({
+      siteId: output.token.siteId,
+      scopes: [...output.token.scopes],
+      expiresAt: output.token.expiresAt?.toISOString() ?? null,
+    }),
+  },
   handler: async (context, input) => {
     const identity = requireAuthenticated(context);
 
@@ -69,23 +93,70 @@ export const createApiToken = defineUseCase<CreateApiTokenInput, CreatedApiToken
       throw new ValidationError('ApiToken', 'expiresAt', '有効期限が過去です。');
     }
 
+    const siteId = input.siteId ?? null;
+    if (siteId !== null) {
+      await assertSiteTokenIssuable(context.connection, siteId, input.scopes);
+    }
+
     const generated = generateApiToken();
 
-    const token = await context.connection.transaction((tx) =>
-      apiTokenRepository.insert(tx, {
-        id: uuidv7(),
-        userId: identity.userId,
-        name: input.name.trim(),
-        tokenHash: generated.tokenHash,
-        prefix: generated.prefix,
-        scopes: input.scopes as PermissionName[],
-        expiresAt: input.expiresAt,
-      }),
-    );
+    let token: ApiToken;
+    try {
+      token = await context.connection.transaction((tx) =>
+        apiTokenRepository.insert(tx, {
+          id: uuidv7(),
+          userId: identity.userId,
+          name: input.name.trim(),
+          tokenHash: generated.tokenHash,
+          prefix: generated.prefix,
+          scopes: input.scopes as PermissionName[],
+          expiresAt: input.expiresAt,
+          siteId,
+        }),
+      );
+    } catch (error) {
+      // 検査の後、挿入までにサイトが消えた（設計 §8.5.1 の 4）。
+      if (error instanceof NotFoundError && error.resource === 'Site') {
+        throw new ValidationError('ApiToken', 'siteId', MESSAGE_SITE_NOT_FOUND);
+      }
+      throw error;
+    }
 
     return { token, plaintext: generated.plaintext };
   },
 });
+
+/**
+ * サイトのトークンを発行できるか（設計 §8.5.1 の 1〜3）。
+ *
+ * サイトの存在 → アーカイブされていない（裁定 8）→ Scope が `SITE_TOKEN_SCOPES` に収まる（裁定 6）の順。
+ * サイトの存在の確認に `site.read` は要求しない（発行は `token.manage` の操作）。
+ */
+async function assertSiteTokenIssuable(
+  connection: Connection,
+  siteId: string,
+  scopes: readonly string[],
+): Promise<void> {
+  const site = await siteRepository.findById(connection, siteId);
+  if (site === null) {
+    throw new ValidationError('ApiToken', 'siteId', MESSAGE_SITE_NOT_FOUND);
+  }
+  if (site.status === 'archived') {
+    throw new ValidationError(
+      'ApiToken',
+      'siteId',
+      'アーカイブしたサイトにはトークンを発行できません。',
+    );
+  }
+  const outside = scopes.find((scope) => !isSiteTokenScope(scope));
+  if (outside !== undefined) {
+    throw new ValidationError(
+      'ApiToken',
+      'scopes',
+      `サイトに紐づけるトークンには SNS の権限（${SITE_TOKEN_SCOPES.join('・')}）だけを指定できます: ${outside}`,
+    );
+  }
+}
 
 /** 自分の Token だけを返す。他人のものは見せない（設計 §7）。 */
 export const listApiTokens = defineUseCase<Record<string, never>, readonly ApiToken[]>({

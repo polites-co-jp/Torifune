@@ -18,6 +18,13 @@ export const createApiTokenSchema = z.object({
   scopes: z.array(z.string()).default([]),
   /** ISO8601。省略・null で無期限。 */
   expiresAt: z.string().datetime({ message: '日時の形式が不正です。' }).nullish(),
+  siteId: z
+    .guid('UUID の形で指定してください。')
+    .nullable()
+    .optional()
+    .describe(
+      '紐づけるサイト。省略・null は共通のトークン。サイトのトークンの scopes は SNS の権限（social.read・social.write・social.delete・social.approve）だけ。アーカイブしたサイトには発行できない。',
+    ),
   csrfToken: z.string().optional(),
 });
 

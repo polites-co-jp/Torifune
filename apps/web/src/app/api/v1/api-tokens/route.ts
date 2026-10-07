@@ -42,6 +42,7 @@ export const POST = defineRoute({
       name: body.name,
       scopes: body.scopes,
       expiresAt: body.expiresAt == null ? null : new Date(body.expiresAt),
+      siteId: body.siteId ?? null,
     });
 
     const response: CreatedApiTokenResponse = {

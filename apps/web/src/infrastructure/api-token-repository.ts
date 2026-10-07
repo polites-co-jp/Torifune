@@ -1,6 +1,7 @@
 import type { Connection } from '../database/provider';
 import type { ApiToken } from '../domain/api-token';
 import type { PermissionName } from '../domain/permission';
+import { NotFoundError } from '../domain/repository';
 
 /**
  * API Token の保存（05_API設計.md §37）。
@@ -70,25 +71,46 @@ export interface InsertApiTokenInput {
 /** UUID の形をしているか。不正な値で 500 にせず、見つからない扱いにする。 */
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export const apiTokenRepository = {
-  async insert(connection: Connection, input: InsertApiTokenInput): Promise<ApiToken> {
-    const row = await connection.db
-      .insertInto('api_tokens')
-      .values({
-        id: input.id,
-        user_id: input.userId,
-        name: input.name,
-        token_hash: input.tokenHash,
-        prefix: input.prefix,
-        scopes: [...input.scopes],
-        expires_at: input.expiresAt,
-        site_id: input.siteId ?? null,
-        site_scoped: (input.siteId ?? null) !== null,
-      })
-      .returning(COLUMNS)
-      .executeTakeFirstOrThrow();
+/** PostgreSQL の外部キー違反（23503）で、制約名が `constraint` のものか。 */
+function isForeignKeyViolationOf(error: unknown, constraint: string): boolean {
+  if (typeof error !== 'object' || error === null) {
+    return false;
+  }
+  const { code, constraint: name } = error as { code?: unknown; constraint?: unknown };
+  return code === '23503' && name === constraint;
+}
 
-    return toApiToken(row as Row);
+export const apiTokenRepository = {
+  /**
+   * 挿入する。`siteId` のサイトが無ければ（外部キー違反）`NotFoundError('Site')` を投げる
+   * （呼び出し側が 422 に写す。053 設計 §8.5.1 の 4）。
+   */
+  async insert(connection: Connection, input: InsertApiTokenInput): Promise<ApiToken> {
+    const siteId = input.siteId ?? null;
+    try {
+      const row = await connection.db
+        .insertInto('api_tokens')
+        .values({
+          id: input.id,
+          user_id: input.userId,
+          name: input.name,
+          token_hash: input.tokenHash,
+          prefix: input.prefix,
+          scopes: [...input.scopes],
+          expires_at: input.expiresAt,
+          site_id: siteId,
+          site_scoped: siteId !== null,
+        })
+        .returning(COLUMNS)
+        .executeTakeFirstOrThrow();
+
+      return toApiToken(row as Row);
+    } catch (error) {
+      if (siteId !== null && isForeignKeyViolationOf(error, 'api_tokens_site_id_fkey')) {
+        throw new NotFoundError('Site', siteId);
+      }
+      throw error;
+    }
   },
 
   /** ハッシュで引く。**失効・期限の判定は呼び出し側**（Domain の `isUsable`）。 */
