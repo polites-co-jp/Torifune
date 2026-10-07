@@ -19,7 +19,7 @@ import type {
 } from '../domain/social/social';
 import { NotFoundError } from '../domain/repository';
 import { SiteGoneError } from '../domain/site/site';
-import { ALL_SCOPE, type AccessScope, type PostOrigin } from '../domain/social/access-scope';
+import type { AccessScope, PostOrigin } from '../domain/social/access-scope';
 import type { PublishVerdict, SkipReason, SkipVerdict } from '../domain/social/publishing';
 import { isSkipReason } from '../domain/social/publishing';
 import type {
@@ -131,16 +131,41 @@ function scopedPosts(
   if (predicate === null) {
     return query;
   }
-  return query
-    .innerJoin(
-      (eb) =>
-        eb
-          .selectFrom('social_accounts')
-          .select(['id as account_id', 'site_id'])
-          .as('scope_account'),
-      (join) => join.onRef('scope_account.account_id', '=', 'social_posts.social_account_id'),
-    )
-    .where(predicate) as unknown as SelectQueryBuilder<Schema, 'social_posts', object>;
+  return withScopeAccount(query).where(predicate) as unknown as SelectQueryBuilder<
+    Schema,
+    'social_posts',
+    object
+  >;
+}
+
+/**
+ * 区画の**外**の投稿に絞る（053 ユーザー裁定 11。`lockAccountForScopedChange` が使う）。
+ *
+ * `scopePredicate` の投稿の述語の否定。述語が NULL になる行（`site` の区画で、共通のアカウントの `origin_site_id` が NULL）を
+ * 落とさないよう `IS NOT TRUE` で否定する（見えないものは外に数える）。区画 `all` に外は無い（null を返す）。
+ */
+function postsOutsideScope(
+  query: SelectQueryBuilder<Schema, 'social_posts', object>,
+  scope: AccessScope,
+): SelectQueryBuilder<Schema, 'social_posts', object> | null {
+  const predicate = scopePredicate(scope).post;
+  if (predicate === null) {
+    return null;
+  }
+  return withScopeAccount(query).where(
+    sql<SqlBool>`(${predicate}) IS NOT TRUE`,
+  ) as unknown as SelectQueryBuilder<Schema, 'social_posts', object>;
+}
+
+/** 投稿先のアカウントを、`id`（`account_id`）と `site_id` だけを出す派生表 `scope_account` として内部結合する。 */
+function withScopeAccount(
+  query: SelectQueryBuilder<Schema, 'social_posts', object>,
+): SelectQueryBuilder<Schema, 'social_posts', object> {
+  return query.innerJoin(
+    (eb) =>
+      eb.selectFrom('social_accounts').select(['id as account_id', 'site_id']).as('scope_account'),
+    (join) => join.onRef('scope_account.account_id', '=', 'social_posts.social_account_id'),
+  ) as unknown as SelectQueryBuilder<Schema, 'social_posts', object>;
 }
 
 /** `social_accounts.site_id` の外部キー違反（PostgreSQL の 23503）か。 */
@@ -342,7 +367,7 @@ export const socialRepository: SocialRepository = {
   async listAccounts(
     connection: Connection,
     query: SocialAccountListQuery,
-    scope: AccessScope = ALL_SCOPE,
+    scope: AccessScope,
   ): Promise<SocialAccountPage> {
     const inScope = scopePredicate(scope).account;
     const conditions = (
@@ -382,6 +407,36 @@ export const socialRepository: SocialRepository = {
       .where('id', '=', id)
       .executeTakeFirst();
     return row === undefined ? null : toAccount(row as AccountRow);
+  },
+
+  async lockAccountForScopedChange(
+    connection: Connection,
+    id: string,
+    scope: AccessScope,
+  ): Promise<{ readonly siteId: string | null; readonly hasPostsOutsideScope: boolean } | null> {
+    if (!UUID_PATTERN.test(id)) return null;
+
+    // **`FOR UPDATE` は投稿の挿入の外部キーの検査（`FOR KEY SHARE`）と衝突する。** 同時に進んだ登録はここで
+    // コミットを待ち、次の文（READ COMMITTED の新しいスナップショット）でその投稿も数える。ロックを取った後の
+    // 登録は、この呼び出し側のトランザクションが終わるまで外部キーの検査で待つ（053 ユーザー裁定 11）。
+    const account = await connection.db
+      .selectFrom('social_accounts')
+      .select(['id', 'site_id'])
+      .where('id', '=', id)
+      .forUpdate()
+      .executeTakeFirst();
+    if (account === undefined) return null;
+
+    const outside = postsOutsideScope(connection.db.selectFrom('social_posts'), scope);
+    if (outside === null) {
+      return { siteId: account.site_id, hasPostsOutsideScope: false };
+    }
+    const found = await outside
+      .select('social_posts.id')
+      .where('social_posts.social_account_id', '=', id)
+      .limit(1)
+      .executeTakeFirst();
+    return { siteId: account.site_id, hasPostsOutsideScope: found !== undefined };
   },
 
   async findAccountWithCredential(
@@ -511,7 +566,7 @@ export const socialRepository: SocialRepository = {
   async listPosts(
     connection: Connection,
     query: SocialPostListQuery,
-    scope: AccessScope = ALL_SCOPE,
+    scope: AccessScope,
   ): Promise<SocialPostPage> {
     const conditions = (eb: ExpressionBuilder<Schema, 'social_posts'>): Expression<SqlBool>[] => {
       const list: Expression<SqlBool>[] = [];
@@ -551,7 +606,7 @@ export const socialRepository: SocialRepository = {
   async findPostById(
     connection: Connection,
     id: string,
-    scope: AccessScope = ALL_SCOPE,
+    scope: AccessScope,
   ): Promise<SocialPost | null> {
     if (!UUID_PATTERN.test(id)) return null;
     const row = await scopedPosts(connection.db.selectFrom('social_posts'), scope)
@@ -564,7 +619,7 @@ export const socialRepository: SocialRepository = {
   async findPostsByIds(
     connection: Connection,
     ids: readonly string[],
-    scope: AccessScope = ALL_SCOPE,
+    scope: AccessScope,
   ): Promise<readonly SocialPost[]> {
     // 形の壊れたIDは問い合わせる前に落とす。uuid 列との比較で例外になる。
     const valid = [...new Set(ids)].filter((id) => UUID_PATTERN.test(id));
@@ -731,7 +786,7 @@ export const socialRepository: SocialRepository = {
   async listManualPending(
     connection: Connection,
     limit: number,
-    scope: AccessScope = ALL_SCOPE,
+    scope: AccessScope,
   ): Promise<SocialPostPage> {
     // 既存の `(status, scheduled_at)` 索引に乗る条件（設計 §6.6）。
     const conditions = (eb: ExpressionBuilder<Schema, 'social_posts'>): Expression<SqlBool>[] => [
@@ -796,7 +851,7 @@ export const socialRepository: SocialRepository = {
   async listApprovalPending(
     connection: Connection,
     limit: number,
-    scope: AccessScope = ALL_SCOPE,
+    scope: AccessScope,
   ): Promise<SocialPostPage> {
     // 既存の `(status, scheduled_at, id)` 索引が status の絞り込みに効く（設計 §5.3）。
     const rows = await scopedPosts(connection.db.selectFrom('social_posts'), scope)

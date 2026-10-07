@@ -66,11 +66,15 @@ export interface AuthorizationContext {
    * `siteId` はサイトのトークンのサイト、共通のトークンは null（053-site-scoped-social 設計 §8.1）。
    * SNS の区画（`application/social/access-scope.ts` の `scopeOf`）はこれだけから決める。
    * サイトの消えたサイトのトークンは文脈を作る段で未認証にするので、ここが null なのは共通のトークンだけ。
+   *
+   * `siteScoped` はサイトのトークンか（トークン行の `site_scoped`）。`siteId` が null でも `siteScoped` が真なら
+   * サイトの消えたサイトのトークンで、`scopeOf` は共通の区画に化けさせず未認証にする（fail closed。053 受け入れ条件 #101）。
    */
   readonly apiToken?: {
     readonly id: string;
     readonly name: string;
     readonly siteId: string | null;
+    readonly siteScoped: boolean;
   };
 }
 

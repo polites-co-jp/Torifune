@@ -151,7 +151,8 @@ export interface DueCursor {
 
 export interface SocialRepository {
   /**
-   * 区画（053 設計 §7.4）で絞った一覧。`total` も同じ条件で数える。省略は `ALL_SCOPE`（絞らない）。
+   * 区画（053 設計 §7.4）で絞った一覧。`total` も同じ条件で数える。
+   * **区画は必須**（省略で `ALL_SCOPE` に倒さない。画面・ジョブは `ALL_SCOPE` を明示して渡す。053 受け入れ条件 #100）。
    *
    * **ID 指定（`findAccountById`）は区画を取らない。** 404 と 403 を分けるため、UseCase が
    * `accountVisible` / `accountManageable` で判定する（053 設計 §8.3.4）。
@@ -159,9 +160,22 @@ export interface SocialRepository {
   listAccounts(
     connection: Connection,
     query: SocialAccountListQuery,
-    scope?: AccessScope,
+    scope: AccessScope,
   ): Promise<SocialAccountPage>;
   findAccountById(connection: Connection, id: string): Promise<SocialAccount | null>;
+  /**
+   * トークンからの削除・資格情報の変更の前に、アカウントの行を `FOR UPDATE` でロックして読む
+   * （053 ユーザー裁定 11。設計 §8.2.4・§8.2.5）。呼び出し側のトランザクションの中で呼ぶ。行が無ければ（id の形が不正を含む）null。
+   *
+   * `hasPostsOutsideScope` は、そのアカウントに区画から見えない投稿（設計 §5.2 の投稿の表で見えないもの）があるか。
+   * ロックは投稿の挿入（外部キーの検査の `FOR KEY SHARE`）と衝突するので、同時に進んだ登録はコミットを待ってから数える。
+   * `siteId` はロックした時点のアカウントのサイト（区画で変えられるかを、ロックした行で判定し直すため）。
+   */
+  lockAccountForScopedChange(
+    connection: Connection,
+    id: string,
+    scope: AccessScope,
+  ): Promise<{ readonly siteId: string | null; readonly hasPostsOutsideScope: boolean } | null>;
   /**
    * 資格情報つきで取得する。
    *
@@ -192,16 +206,16 @@ export interface SocialRepository {
   ): Promise<boolean>;
 
   /**
-   * 投稿の読み出しの `scope` は区画（053 設計 §7.4）。省略は `ALL_SCOPE`（絞らない）。
+   * 投稿の読み出しの `scope` は区画（053 設計 §7.4）。**必須**（省略で `ALL_SCOPE` に倒さない。053 受け入れ条件 #100）。
    * `listPosts` / `listManualPending` / `listApprovalPending` の `total` も同じ条件で数える。
    */
   listPosts(
     connection: Connection,
     query: SocialPostListQuery,
-    scope?: AccessScope,
+    scope: AccessScope,
   ): Promise<SocialPostPage>;
   /** 区画の外の投稿は null（存在しないのと同じ。053 設計 §8.3.2）。 */
-  findPostById(connection: Connection, id: string, scope?: AccessScope): Promise<SocialPost | null>;
+  findPostById(connection: Connection, id: string, scope: AccessScope): Promise<SocialPost | null>;
   /**
    * IDでまとめて引く。
    *
@@ -211,7 +225,7 @@ export interface SocialRepository {
   findPostsByIds(
     connection: Connection,
     ids: readonly string[],
-    scope?: AccessScope,
+    scope: AccessScope,
   ): Promise<readonly SocialPost[]>;
   insertPost(connection: Connection, post: NewSocialPost): Promise<SocialPost>;
   /**
@@ -259,7 +273,7 @@ export interface SocialRepository {
   listManualPending(
     connection: Connection,
     limit: number,
-    scope?: AccessScope,
+    scope: AccessScope,
   ): Promise<SocialPostPage>;
 
   // -------------------------------------------------------------------------
@@ -292,7 +306,7 @@ export interface SocialRepository {
   listApprovalPending(
     connection: Connection,
     limit: number,
-    scope?: AccessScope,
+    scope: AccessScope,
   ): Promise<SocialPostPage>;
 
   // -------------------------------------------------------------------------

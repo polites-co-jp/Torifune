@@ -10,6 +10,7 @@ import {
   type RegisteredPublisher,
 } from '@/application/social/publisher-registry';
 import { assertUsableText } from '@/application/text-input';
+import type { Connection } from '@/database/provider';
 import { NotFoundError, ValidationError } from '@/domain/repository';
 import type { Secret } from '@/domain/secret';
 import {
@@ -223,6 +224,13 @@ export const getSocialAccount = defineUseCase<{ id: string }, SocialAccount>({
   },
 });
 
+/**
+ * 冪等キーの既存の投稿が区画の外にある（053 設計 §8.3.1）。既存を見せず、2 つ目も作らない。
+ * 再送の検査（d）と、同時の再送で挿入が既存を返した経路の 2 か所で使う。
+ */
+const MESSAGE_EXTERNAL_REF_USED =
+  'この externalRef は既に使われています。別の externalRef で登録してください。';
+
 /** サイトが見つからない（存在しない・挿入までに消えた。053 設計 §8.2.3・§8.2.4）。 */
 const MESSAGE_SITE_NOT_FOUND = 'Webサイトが見つかりません。';
 
@@ -255,6 +263,36 @@ function assertAccountManageable(
     throw new NotFoundError('SocialAccount', id);
   }
   if (verdict === 'forbidden') {
+    throw new ForbiddenError();
+  }
+}
+
+/**
+ * トークンからの削除・資格情報の変更を、区画から見えない投稿が載ったアカウントには許さない（053 ユーザー裁定 11）。
+ *
+ * 共通のアカウントは共通のトークンから変えられる（設計 §5.2）が、サイトのトークンが登録した投稿（共通のトークンからは
+ * 見えない）が載っていると、削除は見えない投稿まで `CASCADE` で消し、資格情報の差し替えは見えない投稿の配信先を変える。
+ * その場合だけ 403（サイトのトークンから見た共通のアカウントと同じ形。件数も理由も返さない。設計 §8.7）。
+ * 画面（区画 `all`）は絞らない。
+ *
+ * **呼び出し側のトランザクションの中で呼ぶ。** アカウントの行を `FOR UPDATE` でロックしてから数えるので、同時に進んだ
+ * 投稿の登録はコミットを待ってから数え、ロックの後の登録は書き込みが終わるまで待つ。ロックした行のサイトで
+ * 区画の判定（`accountManageable`）もし直す（判定の後に画面でサイトを付け替えられた窓を閉じる）。
+ */
+async function assertNoPostsOutsideScope(
+  tx: Connection,
+  scope: AccessScope,
+  id: string,
+): Promise<void> {
+  if (scope.kind === 'all') {
+    return;
+  }
+  const locked = await socialRepository.lockAccountForScopedChange(tx, id, scope);
+  if (locked === null) {
+    throw new NotFoundError('SocialAccount', id);
+  }
+  assertAccountManageable(scope, id, locked.siteId);
+  if (locked.hasPostsOutsideScope) {
     throw new ForbiddenError();
   }
 }
@@ -418,15 +456,19 @@ export const updateSocialAccount = defineUseCase<UpdateAccountInput, SocialAccou
     );
 
     const account = await context.connection
-      .transaction((tx) =>
-        socialRepository.updateAccount(tx, input.id, {
+      .transaction(async (tx) => {
+        // 資格情報の差し替え・消去は、区画から見えない投稿の配信先まで変える（053 ユーザー裁定 11）。
+        if (encryptedCredential !== undefined) {
+          await assertNoPostsOutsideScope(tx, scope, input.id);
+        }
+        return socialRepository.updateAccount(tx, input.id, {
           ...(input.displayName === undefined ? {} : { displayName: input.displayName.trim() }),
           ...(input.handle === undefined ? {} : { handle: input.handle }),
           ...(input.status === undefined ? {} : { status: input.status }),
           ...(encryptedCredential === undefined ? {} : { encryptedCredential }),
           ...(input.siteId === undefined ? {} : { siteId: input.siteId }),
-        }),
-      )
+        });
+      })
       .catch(rethrowSiteGoneAsValidation);
 
     if (account === null) {
@@ -447,11 +489,14 @@ export const deleteSocialAccount = defineUseCase<{ id: string }, void>({
     }
     // 区画の外は 404、サイトのトークンから見た共通のアカウントは 403（053 設計 §8.2.5）。
     // 共通のアカウントを消すと、他の区画の投稿まで CASCADE で消える（§5.5）。
-    assertAccountManageable(scopeOf(context), input.id, current.siteId);
+    const scope = scopeOf(context);
+    assertAccountManageable(scope, input.id, current.siteId);
 
-    const deleted = await context.connection.transaction((tx) =>
-      socialRepository.deleteAccount(tx, input.id),
-    );
+    const deleted = await context.connection.transaction(async (tx) => {
+      // 区画から見えない投稿まで CASCADE で消さない（053 ユーザー裁定 11）。
+      await assertNoPostsOutsideScope(tx, scope, input.id);
+      return socialRepository.deleteAccount(tx, input.id);
+    });
     if (!deleted) {
       throw new NotFoundError('SocialAccount', input.id);
     }
@@ -1018,11 +1063,7 @@ export const createSocialPost = defineUseCase<CreatePostInput, CreatePostOutput>
         if (
           (await socialRepository.findPostById(context.connection, existing.id, scope)) === null
         ) {
-          throw new ValidationError(
-            'SocialPost',
-            'externalRef',
-            'この externalRef は既に使われています。別の externalRef で登録してください。',
-          );
+          throw new ValidationError('SocialPost', 'externalRef', MESSAGE_EXTERNAL_REF_USED);
         }
         return { post: existing, created: false, approvalForced: false };
       }
@@ -1061,8 +1102,8 @@ export const createSocialPost = defineUseCase<CreatePostInput, CreatePostOutput>
       CREATE_PREFLIGHT,
     );
 
-    const result = await context.connection.transaction((tx) =>
-      socialRepository.insertPostIdempotent(tx, {
+    const result = await context.connection.transaction(async (tx) => {
+      const inserted = await socialRepository.insertPostIdempotent(tx, {
         id: uuidv7(),
         socialAccountId: input.socialAccountId,
         body: input.body,
@@ -1076,8 +1117,17 @@ export const createSocialPost = defineUseCase<CreatePostInput, CreatePostOutput>
         createdByTokenId: tokenId,
         // トークンの登録は Repository がトークンの行（FOR SHARE）の値で書く（053 設計 §7.3）。
         origin: originOf(scope),
-      }),
-    );
+      });
+      // 同時の再送で既存が返った（相手のコミットが d の検査の後だった）ときも、d と同じく区画の外の既存は
+      // 見せない（053 設計 §8.3.1）。返す前に区画で引き直す。
+      if (
+        !inserted.created &&
+        (await socialRepository.findPostById(tx, inserted.post.id, scope)) === null
+      ) {
+        throw new ValidationError('SocialPost', 'externalRef', MESSAGE_EXTERNAL_REF_USED);
+      }
+      return inserted;
+    });
 
     // **作成したときだけ発火する。** 再送で 2 回流れると、購読側が二重に動く。
     if (result.created) {
