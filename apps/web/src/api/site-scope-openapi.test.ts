@@ -10,6 +10,7 @@ import { buildOpenApiDocument } from './openapi';
  *   `updateSocialAccount` の要求に `siteId`（`nullable`・必須でない）（G4）
  * - #59：`getSocialPost` の 404 の `description` が「このトークンからは見えない」を含む（設計 §8.8 のとおり
  *   `updateSocialPost` / `deleteSocialPost` / `approveSocialPost` も）。投稿の応答のキー集合は変わらない（G5）
+ * - #58：`deleteSite` の応答のキーに `409` があり、`description` が「SNS アカウント」を含む（G6）
  *
  * 実際に登録されているエンドポイント（`@/api/endpoints`）から作った文書を見る（`social-approval-openapi.test.ts` の形）。
  */
@@ -259,5 +260,23 @@ describe('#59 SNS 投稿の 404 の説明と、投稿の応答の形', () => {
       operation('getSocialPost').responses['200']?.content?.['application/json']?.schema;
 
     expect(findProperty(findProperty(schema, 'data'), 'siteId')).toBeUndefined();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* #58 deleteSite の 409                                                          */
+/* -------------------------------------------------------------------------- */
+
+describe('#58 deleteSite の 409', () => {
+  it("#58 deleteSite の responses に '409' がある", () => {
+    expect(Object.keys(operation('deleteSite').responses)).toContain('409');
+  });
+
+  it("#58 deleteSite の responses['409'] の description が「SNS アカウント」を含む", () => {
+    expect(operation('deleteSite').responses['409']?.description ?? '').toContain('SNS アカウント');
+  });
+
+  it("#58 deleteSite の responses['409'] の description が details.socialAccounts に触れる（設計 §8.8）", () => {
+    expect(operation('deleteSite').responses['409']?.description ?? '').toContain('socialAccounts');
   });
 });

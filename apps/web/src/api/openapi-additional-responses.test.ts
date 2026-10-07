@@ -32,7 +32,8 @@ interface OpenApiOperation {
 const REST_ADDITIONAL: Readonly<Record<string, readonly number[]>> = {
   getSite: [404],
   updateSite: [404],
-  deleteSite: [404],
+  // 053 で 409 を足した（このサイトに紐づいた SNS アカウントがある。053-site-scoped-social 設計 §8.6・§8.8）。
+  deleteSite: [404, 409],
   regenerateSitePublicKey: [404],
   getUser: [404],
   deleteUser: [404],
