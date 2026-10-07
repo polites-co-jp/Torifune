@@ -221,6 +221,14 @@ export interface PluginDataApi {
     get(id: string): Promise<SiteView | null>;
     create(input: SiteInput): Promise<SiteView>;
     update(id: string, input: Partial<SiteInput>): Promise<SiteView>;
+    /**
+     * サイトを削除する。
+     *
+     * そのサイトに SNS アカウントが紐づいていれば削除せず、返す `Promise` が reject される（サイトは残る。
+     * 例外は Core の内部のもので、種類に頼らず失敗として扱う）。削除できたときは、そのサイトに紐づいた
+     * API トークンも同時に失効する。どちらも、SNS アカウント・API トークンをサイトに紐づけて使っている場合だけ起きる
+     * （053-site-scoped-social 設計 §8.6）。
+     */
     delete(id: string): Promise<void>;
   };
 

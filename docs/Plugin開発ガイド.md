@@ -249,6 +249,12 @@ const campaigns = await data.campaigns.list({ siteId: site.id });
 
 `sites.create` / `sites.update`・`campaigns.create` / `campaigns.update` の `status` は列挙の値だけを渡す。列挙外の値は `ValidationError`（`field` は `'status'`）になる。
 
+### サイトの削除（`sites.delete`）
+
+そのサイトに **SNS アカウントが紐づいていれば削除されず**、返す `Promise` が reject される（サイトは残る。例外は Core の内部のもので、種類に頼らず失敗として扱う）。
+削除できたときは、そのサイトに紐づいた **API トークンも同時に失効**する。
+どちらも、運用者が SNS アカウント・API トークンを Web サイトに紐づけて使っている場合だけ起きる（053-site-scoped-social 設計 §8.6）。
+
 ### SNS 投稿の状態（`SocialPostView.status`）
 
 `socialPosts.list` / `get` が返す投稿の `status` は `'draft'`（下書き）/ `'awaiting_approval'`（承認待ち。048-social-post-approval で追加）/
