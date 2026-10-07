@@ -12,6 +12,7 @@ import {
   type Column,
   type ToastMessage,
 } from '@/ui/components';
+import { siteDeleteErrorText } from '@/ui/site/site-delete-error';
 import { AsyncState } from '@/ui/states/async-state';
 
 /**
@@ -63,7 +64,8 @@ export function SiteList(props: SiteListProps) {
       setSites((current) => current.filter((site) => site.id !== target.id));
       setToast({ id: target.id, text: '削除しました。', tone: 'success' });
     } else {
-      setToast({ id: target.id, text: result.error.message, tone: 'danger' });
+      // 紐づいた SNS アカウントがあるときの 409 は、直し方を含むサーバの文を出す（053 設計 §9.3）。
+      setToast({ id: target.id, text: siteDeleteErrorText(result.error), tone: 'danger' });
     }
   }
 
