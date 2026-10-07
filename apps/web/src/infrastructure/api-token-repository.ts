@@ -164,6 +164,23 @@ export const apiTokenRepository = {
     return (result.numUpdatedRows ?? 0n) > 0n;
   },
 
+  /**
+   * サイトに紐づいた失効していないトークンを失効させ、失効させた数を返す（053 設計 §8.6 の 3）。
+   *
+   * `revoked_at` だけを書く。既に失効しているものの時刻は変えず、`site_id` / `site_scoped` には触れない
+   * （サイトの削除で `site_id` は外部キーが NULL にし、`site_scoped` は残る）。
+   */
+  async revokeBySite(connection: Connection, siteId: string, now: Date): Promise<number> {
+    const result = await connection.db
+      .updateTable('api_tokens')
+      .set({ revoked_at: now })
+      .where('site_id', '=', siteId)
+      .where('revoked_at', 'is', null)
+      .executeTakeFirst();
+
+    return Number(result.numUpdatedRows ?? 0n);
+  },
+
   async touch(connection: Connection, id: string, now: Date): Promise<void> {
     await connection.db
       .updateTable('api_tokens')

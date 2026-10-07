@@ -1,7 +1,7 @@
 import { sql, type Expression, type ExpressionBuilder, type SqlBool } from 'kysely';
 import type { Connection } from '../database/provider';
 import type { Schema } from '../database/schema';
-import type { Site, SiteStatus } from '../domain/site/site';
+import { SiteInUseError, type Site, type SiteStatus } from '../domain/site/site';
 import type {
   NewSite,
   SiteListQuery,
@@ -179,7 +179,39 @@ export const siteRepository: SiteRepository = {
     if (!UUID_PATTERN.test(id)) {
       return false;
     }
-    const result = await connection.db.deleteFrom('sites').where('id', '=', id).executeTakeFirst();
-    return Number(result.numDeletedRows) > 0;
+    try {
+      const result = await connection.db
+        .deleteFrom('sites')
+        .where('id', '=', id)
+        .executeTakeFirst();
+      return Number(result.numDeletedRows) > 0;
+    } catch (error) {
+      // 紐づいた SNS アカウントがある（053 設計 §8.6 の 4）。素の例外（500）にしない。
+      if (isLinkedAccountViolation(error)) {
+        throw new SiteInUseError(null);
+      }
+      throw error;
+    }
+  },
+
+  async countLinkedAccounts(connection: Connection, siteId: string): Promise<number> {
+    if (!UUID_PATTERN.test(siteId)) {
+      return 0;
+    }
+    const counted = await connection.db
+      .selectFrom('social_accounts')
+      .select((eb) => eb.fn.countAll<string>().as('count'))
+      .where('site_id', '=', siteId)
+      .executeTakeFirstOrThrow();
+    return Number(counted.count);
   },
 };
+
+/** `social_accounts.site_id`（`ON DELETE RESTRICT`）の外部キー違反（PostgreSQL の 23503）か。 */
+function isLinkedAccountViolation(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) {
+    return false;
+  }
+  const { code, constraint } = error as { code?: unknown; constraint?: unknown };
+  return code === '23503' && constraint === 'social_accounts_site_id_fkey';
+}
