@@ -6,6 +6,7 @@ import {
   generateApiToken,
   isSiteTokenScope,
   isValidApiTokenName,
+  resolveTokenSiteChange,
   type ApiToken,
   API_TOKEN_NAME_MAX_LENGTH,
   SITE_TOKEN_SCOPES,
@@ -186,3 +187,112 @@ export const revokeApiToken = defineUseCase<{ id: string }, void>({
     );
   },
 });
+
+export interface ChangeApiTokenSiteInput {
+  readonly id: string;
+  /** 変更後のサイト。null は共通のトークンにする。 */
+  readonly siteId: string | null;
+  /** 変更後の Scope。省略すると今のまま。今の Scope の部分集合だけ（狭めるだけ）。 */
+  readonly scopes?: readonly string[];
+}
+
+/**
+ * トークンのサイトの変更の結果。監査に残す値を運ぶ（監査の `detail` は `context` を見られない）。
+ * ルートは `token` だけを応答にする（平文は無い）。
+ */
+export interface ChangedApiTokenSiteOutput {
+  readonly token: ApiToken;
+  readonly previousSiteId: string | null;
+  /** 今の Scope のうち、変更で外れたもの。 */
+  readonly removedScopes: readonly PermissionName[];
+  /** `origin_*` を書き換えた投稿（そのトークンが登録したもの）の数。 */
+  readonly movedPosts: number;
+}
+
+/**
+ * トークンのサイトを変える（053-site-scoped-social 設計 §8.5.6。ユーザー裁定 7・10）。
+ *
+ * 発行・失効と同じく**セッションだけ**（ルートの `sessionOnly`）・**自分のトークンだけ**。他人のトークン・存在しない・
+ * UUID の形でない ID は 404（存在を教えない）。判定（失効・Scope を広げない・サイトの存在とアーカイブ・サイトのトークンは
+ * SNS の Scope だけ）は Domain の `resolveTokenSiteChange`。トークンの行と、そのトークンが登録した投稿の `origin_*` を
+ * 1 つのトランザクションで書き換える（`apiTokenRepository.changeSite`）。
+ */
+export const changeApiTokenSite = defineUseCase<ChangeApiTokenSiteInput, ChangedApiTokenSiteOutput>(
+  {
+    name: 'apiToken.changeSite',
+    permission: 'token.manage',
+    // 設計 §8.5.7。**平文・ハッシュ・prefix は入れない。**
+    audit: {
+      action: 'updated',
+      resourceType: 'api_token',
+      resourceId: (input) => input.id,
+      detail: (_input, output) => ({
+        siteId: output.token.siteId,
+        previousSiteId: output.previousSiteId,
+        scopes: [...output.token.scopes],
+        removedScopes: [...output.removedScopes],
+        movedPosts: output.movedPosts,
+      }),
+    },
+    handler: async (context, input) => {
+      const identity = requireAuthenticated(context);
+
+      // 1: 無い・他人のものは 404（`revokeApiToken` と同じく存在を教えない）。
+      const current = await apiTokenRepository.findById(context.connection, input.id);
+      if (current === null || current.userId !== identity.userId) {
+        throw new NotFoundError('ApiToken', input.id);
+      }
+
+      // 2〜6: 判定は Domain。サイトの存在の確認に `site.read` は要求しない（`token.manage` の操作）。
+      const site =
+        input.siteId === null
+          ? null
+          : await siteRepository.findById(context.connection, input.siteId);
+      const resolution = resolveTokenSiteChange({
+        current: { revokedAt: current.revokedAt, scopes: current.scopes },
+        requestedSiteId: input.siteId,
+        ...(input.scopes === undefined ? {} : { requestedScopes: input.scopes }),
+        site: site === null ? null : { status: site.status },
+      });
+      if (!resolution.ok) {
+        throw new ValidationError('ApiToken', resolution.field, resolution.message);
+      }
+
+      // 7: トークンの行と、そのトークンが登録した投稿の origin_* を 1 つのトランザクションで書き換える。
+      let changed: Awaited<ReturnType<typeof apiTokenRepository.changeSite>>;
+      try {
+        changed = await context.connection.transaction((tx) =>
+          apiTokenRepository.changeSite(tx, {
+            id: current.id,
+            userId: identity.userId,
+            siteId: resolution.siteId,
+            siteScoped: resolution.siteScoped,
+            scopes: resolution.scopes,
+          }),
+        );
+      } catch (error) {
+        // 検査の後、書き込みまでにサイトが消えた。
+        if (error instanceof NotFoundError && error.resource === 'Site') {
+          throw new ValidationError('ApiToken', 'siteId', MESSAGE_SITE_NOT_FOUND);
+        }
+        throw error;
+      }
+
+      if (changed === null) {
+        // 読んだ後に失効した（失効と同時に進んだ）か、消えた。読み直して 404 / 422 に分ける。
+        const latest = await apiTokenRepository.findById(context.connection, input.id);
+        if (latest === null || latest.userId !== identity.userId) {
+          throw new NotFoundError('ApiToken', input.id);
+        }
+        throw new ValidationError('ApiToken', 'siteId', '失効したトークンは変えられません。');
+      }
+
+      return {
+        token: changed.token,
+        previousSiteId: current.siteId,
+        removedScopes: resolution.removedScopes,
+        movedPosts: changed.movedPosts,
+      };
+    },
+  },
+);

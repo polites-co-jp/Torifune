@@ -29,6 +29,25 @@ export const createApiTokenSchema = z.object({
 });
 
 /**
+ * トークンのサイトの変更（`PATCH /api-tokens/{id}`。053-site-scoped-social 設計 §8.5.6・§8.8）。
+ *
+ * `siteId` は必須（null は共通にする）。`scopes` は省略すると今のまま。
+ */
+export const changeApiTokenSiteSchema = z.object({
+  siteId: z
+    .guid('UUID の形で指定してください。')
+    .nullable()
+    .describe(
+      '紐づけるサイト。null は共通のトークンにする。サイトのトークンの scopes は SNS の権限だけ。アーカイブしたサイトには紐づけられない。',
+    ),
+  scopes: z
+    .array(z.string())
+    .optional()
+    .describe('いまの Scope の部分集合だけ。狭めるだけで広げられない。'),
+  csrfToken: z.string().optional(),
+});
+
+/**
  * API が返す形（OpenAPI 用）。
  *
  * **平文（`token`）を含めない。** 発行時だけ別のスキーマで返す。
@@ -59,6 +78,8 @@ export const createdApiTokenResponseSchema = apiTokenResponseSchema.extend({
 });
 
 export const apiTokenListSchema = listEnvelope(apiTokenResponseSchema);
+/** トークンのサイトの変更の応答。**平文（`token`）を含めない。** */
+export const apiTokenEnvelopeSchema = dataEnvelope(apiTokenResponseSchema);
 export const createdApiTokenEnvelopeSchema = dataEnvelope(createdApiTokenResponseSchema);
 
 export interface ApiTokenResponse {
