@@ -107,6 +107,11 @@ export interface ApiTokensTable {
   last_used_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   revoked_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   created_at: CreatedAt;
+  // ここから 026_site_scoped_social.sql（053-site-scoped-social 設計 §7.1）。
+  /** 紐づいたサイト。サイトを消すと NULL になる（`site_scoped` は残る）。 */
+  site_id: string | null;
+  /** サイトのトークンか。`true` で `site_id` が NULL はサイトが消えたトークン（使えない）。 */
+  site_scoped: Generated<boolean>;
 }
 
 /** システム設定（06_画面設計.md §16）。設計は docs/設計/015b-settings/。 */
@@ -194,6 +199,9 @@ export interface SocialAccountsTable {
   status: Generated<string>;
   created_at: CreatedAt;
   updated_at: UpdatedAt;
+  // ここから 026_site_scoped_social.sql（053-site-scoped-social 設計 §7.1）。
+  /** 属するサイト。NULL は共通（どのサイトのトークンからも使える）。 */
+  site_id: string | null;
 }
 
 export interface SocialPostsTable {
@@ -239,6 +247,11 @@ export interface SocialPostsTable {
   // ここから 025_social_post_approval.sql（048-social-post-approval 設計 §5.4）。
   /** 承認して予約にした時刻。承認を経ていなければ NULL。誰が承認したかは監査ログが持つ。 */
   approved_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  // ここから 026_site_scoped_social.sql（053-site-scoped-social 設計 §7.3）。
+  /** 登録したトークンのサイト。登録したサイトが消えると NULL（`origin_site_scoped` は残る）。 */
+  origin_site_id: string | null;
+  /** サイトのトークンが登録したか（共通のアカウントの投稿の区画に使う）。 */
+  origin_site_scoped: Generated<boolean>;
 }
 
 export interface PluginsTable {
