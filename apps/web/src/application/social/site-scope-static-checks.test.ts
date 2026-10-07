@@ -12,6 +12,7 @@ import { CORE_PERMISSIONS } from '@/domain/permission';
  *
  * * `025` の SHA-256 の固定（G1。受け入れ条件の番号は無い。実装プラン §8 の 2）
  * * #63：公開 Plugin API の `SocialAccountView` / `SocialPostView` のキー、`PLUGIN_API_VERSION`、Core の Permission の数（G1）
+ * * #60 の前半：`026` の `api_tokens_site_scopes_check` の配列と Domain の `SITE_TOKEN_SCOPES`（G2）
  *
  * **未実装の値は静的 import にしない**（`approval-static-checks.test.ts` と同じ）。
  * 未実装の段階でこのファイル全体が読めなくなると、他の件まで一緒に落ちて何が壊れたのか読めなくなる。
@@ -173,5 +174,86 @@ describe('#63 公開 Plugin API の型と版、Core の Permission を変えな�
     expect(
       interfaceKeys('export interface Other {\n  readonly id: string;\n}\n', 'SocialPostView'),
     ).toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* #60 の前半 026 の api_tokens_site_scopes_check と SITE_TOKEN_SCOPES             */
+/* -------------------------------------------------------------------------- */
+
+const MIGRATION_026 = '026_site_scoped_social.sql';
+
+/** SQL のコメント（`-- …` の行末まで）を落とす。戻す手順のコメントに書いた SQL を拾わない。 */
+function withoutSqlComments(source: string): string {
+  return source.replace(/--.*$/gm, '');
+}
+
+/**
+ * `ADD CONSTRAINT api_tokens_site_scopes_check CHECK ( … ARRAY[…] … )` の配列の値を、書いた順に取り出す。
+ *
+ * 戻す手順のコメント（`DROP CONSTRAINT api_tokens_site_scopes_check`）を拾わないよう、コメントを先に落とす。
+ * `DROP CONSTRAINT …` の直後は `CHECK` ではないので、コメントの外にあっても拾わない。無ければ null。
+ */
+function siteScopesCheckValues(sql: string): string[] | null {
+  const match = withoutSqlComments(sql).match(
+    /api_tokens_site_scopes_check\s+CHECK\s*\(([\s\S]*?)ARRAY\s*\[([^\]]*)\]/i,
+  );
+  if (match === null) return null;
+  return [...(match[2] ?? '').matchAll(/'([^']*)'/g)].map((value) => value[1] ?? '');
+}
+
+/** 未実装の値を型検査に掛けないため、指定子は定数に置く。 */
+const API_TOKEN_MODULE: string = '@/domain/api-token';
+
+async function siteTokenScopes(): Promise<readonly string[] | undefined> {
+  const domain = (await import(/* @vite-ignore */ API_TOKEN_MODULE)) as {
+    readonly SITE_TOKEN_SCOPES?: readonly string[];
+  };
+  return domain.SITE_TOKEN_SCOPES;
+}
+
+describe('#60 026 の api_tokens_site_scopes_check と SITE_TOKEN_SCOPES', () => {
+  it('#60 026 の api_tokens_site_scopes_check の配列が SITE_TOKEN_SCOPES と順まで一致する', async () => {
+    const inSql = siteScopesCheckValues(migrationSource(MIGRATION_026));
+    const inDomain = await siteTokenScopes();
+
+    expect(
+      inSql,
+      '026 に api_tokens_site_scopes_check の CHECK ( … ARRAY[…] ) が無い',
+    ).not.toBeNull();
+    expect(inDomain, 'domain/api-token.ts に SITE_TOKEN_SCOPES が無い').toBeDefined();
+    expect([...(inDomain ?? [])]).toEqual(inSql);
+  });
+
+  it('#60 026 の api_tokens_site_scopes_check の配列は SNS の 4 つ', () => {
+    expect(siteScopesCheckValues(migrationSource(MIGRATION_026))).toEqual([
+      'social.read',
+      'social.write',
+      'social.delete',
+      'social.approve',
+    ]);
+  });
+
+  it('#60 判別力：配列に site.read を足した写しでは SNS の 4 つと一致しない', () => {
+    const tampered = `ALTER TABLE api_tokens
+    ADD CONSTRAINT api_tokens_site_scopes_check CHECK (
+        NOT site_scoped
+        OR scopes <@ ARRAY['social.read', 'social.write', 'social.delete', 'social.approve', 'site.read']::text[]
+    );`;
+
+    expect(siteScopesCheckValues(tampered)).toEqual([
+      'social.read',
+      'social.write',
+      'social.delete',
+      'social.approve',
+      'site.read',
+    ]);
+  });
+
+  it('#60 判別力：戻す手順のコメントにある DROP CONSTRAINT は拾わない', () => {
+    const onlyComment = `-- ALTER TABLE api_tokens DROP CONSTRAINT api_tokens_site_scopes_check CHECK (ARRAY['x']);
+ALTER TABLE api_tokens DROP CONSTRAINT api_tokens_site_scopes_check;`;
+
+    expect(siteScopesCheckValues(onlyComment)).toBeNull();
   });
 });
