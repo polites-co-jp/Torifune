@@ -14,6 +14,9 @@ import { CORE_PERMISSIONS } from '@/domain/permission';
  * * #63：公開 Plugin API の `SocialAccountView` / `SocialPostView` のキー、`PLUGIN_API_VERSION`、Core の Permission の数（G1）
  * * #60 の前半：`026` の `api_tokens_site_scopes_check` の配列と Domain の `SITE_TOKEN_SCOPES`（G2）
  * * #64：`AccessScope` を組み立てるのは `application/social/access-scope.ts` の `scopeOf` だけ（G4）
+ * * #61：`social-use-cases.ts` の 17 個の handler が `scopeOf(context)` を呼び、`infrastructure/social-repository.ts` の
+ *   区画の条件は `scopePredicate` の 1 か所にだけある（G5）
+ * * #62：`application/social/publish.ts` が `access-scope` を import しない（G5。変えないことの固定）
  *
  * **未実装の値は静的 import にしない**（`approval-static-checks.test.ts` と同じ）。
  * 未実装の段階でこのファイル全体が読めなくなると、他の件まで一緒に落ちて何が壊れたのか読めなくなる。
@@ -375,5 +378,204 @@ export function fromQuery(siteId) {
 
     expect(siteScopeLiteralCount(exportedFunctionBody(tampered, 'scopeOf'))).toBe(1);
     expect(siteScopeLiteralCount(tampered)).toBe(2);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* #61 17 個の handler が scopeOf(context) を呼ぶ・述語は scopePredicate の 1 か所     */
+/* -------------------------------------------------------------------------- */
+
+const SOCIAL_USE_CASES_FILE = 'application/social/social-use-cases.ts';
+const SOCIAL_REPOSITORY_FILE = 'infrastructure/social-repository.ts';
+
+/** 設計 §8.3.4 の 17 個（`name` の値）。 */
+const SCOPED_USE_CASE_NAMES = [
+  'social.account.list',
+  'social.account.get',
+  'social.account.create',
+  'social.account.update',
+  'social.account.delete',
+  'social.account.readCredential',
+  'social.post.list',
+  'social.post.history',
+  'social.post.listByIds',
+  'social.post.get',
+  'social.post.create',
+  'social.post.update',
+  'social.post.delete',
+  'social.post.approve',
+  'social.post.listApprovalPending',
+  'social.post.listManualPending',
+  'social.post.manualHandoff',
+];
+
+interface UseCaseHandler {
+  readonly name: string;
+  /** `handler:` から `defineUseCase` の呼び出しの終わり（行頭の `});`）まで。 */
+  readonly handler: string;
+}
+
+/**
+ * `defineUseCase<…>({ … });` / `defineUseCase({ … });` を順に切り出し、`name` と `handler:` 以降の本文を返す。
+ *
+ * 呼び出しの終わりは行頭の `});`（`export const x = defineUseCase…` の閉じ）。コメントは先に落とす。
+ */
+function useCaseHandlers(source: string): UseCaseHandler[] {
+  const code = withoutComments(source.replaceAll('\r\n', '\n'));
+  const found: UseCaseHandler[] = [];
+  for (const match of code.matchAll(/\bdefineUseCase\s*[<(]/g)) {
+    const rest = code.slice(match.index);
+    const end = rest.search(/^\}\);$/m);
+    const chunk = end === -1 ? rest : rest.slice(0, end);
+    const name = /\bname:\s*['"]([^'"]+)['"]/.exec(chunk)?.[1] ?? '';
+    const at = chunk.indexOf('handler:');
+    found.push({ name, handler: at === -1 ? '' : chunk.slice(at) });
+  }
+  return found;
+}
+
+/**
+ * 区画の条件の語：`site_id` / `site_scoped` / `origin_site_id` / `origin_site_scoped` の比較。
+ *
+ * SQL の `site_id IS NULL`・`site_id = …`・`origin_site_scoped = false` と、Kysely の `eb('site_id', '=', …)`・
+ * `.where('social_accounts.site_id', 'is', null)` を拾う。挿入の `values`（`site_id: …`）・JS の `===` は拾わない。
+ */
+const SCOPE_CONDITION =
+  /\b(?:origin_)?site_(?:id|scoped)\b\s*(?:=(?!=)|<>|!=(?!=)|\bIS\b)|['"](?:[a-z_]+\.)?(?:origin_)?site_(?:id|scoped)['"]\s*,\s*['"](?:=|<>|!=|is|is not)['"]/gi;
+
+function scopeConditionCount(source: string): number {
+  return [...withoutComments(source).matchAll(SCOPE_CONDITION)].length;
+}
+
+describe('#61 SNS の UseCase は scopeOf(context) を呼び、区画の述語は scopePredicate の 1 か所にだけある', () => {
+  const handlers = (): UseCaseHandler[] =>
+    useCaseHandlers(readFileSync(join(SRC_DIR, SOCIAL_USE_CASES_FILE), 'utf8'));
+
+  it('#61 social-use-cases.ts の defineUseCase は設計 §8.3.4 の 17 個', () => {
+    expect(handlers().map((entry) => entry.name)).toEqual(SCOPED_USE_CASE_NAMES);
+  });
+
+  it.each(SCOPED_USE_CASE_NAMES)('#61 %s の handler が scopeOf(context) を呼ぶ', (name) => {
+    const entry = handlers().find((candidate) => candidate.name === name);
+
+    expect(entry, `${name} の defineUseCase が無い`).toBeDefined();
+    expect(entry?.handler, `${name} に handler が無い`).not.toBe('');
+    expect(entry?.handler).toContain('scopeOf(context)');
+  });
+
+  it('#61 infrastructure/social-repository.ts の区画の条件はすべて scopePredicate の本文にある', () => {
+    const source = readFileSync(join(SRC_DIR, SOCIAL_REPOSITORY_FILE), 'utf8');
+    const body = exportedFunctionBody(source, 'scopePredicate');
+
+    expect(body, 'scopePredicate の定義が無い').not.toBe('');
+    expect(scopeConditionCount(body)).toBeGreaterThan(0);
+    expect(scopeConditionCount(source)).toBe(scopeConditionCount(body));
+  });
+
+  it('#61 scopePredicate は投稿の述語も持つ（origin_site_scoped・origin_site_id が本文にある）', () => {
+    const body = withoutComments(
+      exportedFunctionBody(
+        readFileSync(join(SRC_DIR, SOCIAL_REPOSITORY_FILE), 'utf8'),
+        'scopePredicate',
+      ),
+    );
+
+    expect(body).toMatch(/origin_site_scoped/);
+    expect(body).toMatch(/origin_site_id/);
+  });
+
+  it('#61 判別力：scopeOf を呼ばない handler を見分ける（コメントの中の scopeOf は数えない）', () => {
+    const tampered = [
+      'export const getThing = defineUseCase<{ id: string }, Thing>({',
+      "  name: 'social.post.get',",
+      "  permission: 'social.read',",
+      '  handler: async (context, input) => {',
+      '    // scopeOf(context) はコメントなので数えない',
+      '    return repository.findPostById(context.connection, input.id);',
+      '  },',
+      '});',
+      '',
+      'export const listThings = defineUseCase<Input, Page>({',
+      "  name: 'social.post.list',",
+      "  permission: 'social.read',",
+      '  handler: async (context, input) =>',
+      '    repository.listPosts(context.connection, input, scopeOf(context)),',
+      '});',
+      '',
+    ].join('\n');
+    const found = useCaseHandlers(tampered);
+
+    expect(found.map((entry) => entry.name)).toEqual(['social.post.get', 'social.post.list']);
+    expect(found[0]?.handler).not.toContain('scopeOf(context)');
+    expect(found[1]?.handler).toContain('scopeOf(context)');
+  });
+
+  it('#61 判別力：scopePredicate の外にある区画の条件（SQL・Kysely）を数える。values と === は数えない', () => {
+    const tampered = [
+      'function scopePredicate(scope) {',
+      '  return sql`social_accounts.site_id IS NULL AND social_posts.origin_site_scoped = false`;',
+      '}',
+      '',
+      'export const repo = {',
+      '  async listPosts(connection) {',
+      "    return connection.db.selectFrom('social_posts').where('social_accounts.site_id', '=', siteId);",
+      '  },',
+      '  async insertPost(connection, post) {',
+      '    if (row.site_scoped && row.site_id === null) throw new SiteGoneError();',
+      "    return connection.db.insertInto('social_posts').values({ origin_site_id: siteId, origin_site_scoped: true });",
+      '  },',
+      '  async listOther(connection) {',
+      '    return sql`SELECT * FROM social_posts WHERE origin_site_id = ${siteId}`;',
+      '  },',
+      '};',
+      '',
+    ].join('\n');
+
+    expect(scopeConditionCount(exportedFunctionBody(tampered, 'scopePredicate'))).toBe(2);
+    expect(scopeConditionCount(tampered)).toBe(4);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* #62 配信ジョブは区画で絞らない                                                   */
+/* -------------------------------------------------------------------------- */
+
+const PUBLISH_FILE = 'application/social/publish.ts';
+
+/** `access-scope` のモジュール（`application/social/access-scope` / `domain/social/access-scope`）を読むか。 */
+function importsAccessScope(source: string): boolean {
+  const code = withoutComments(source);
+  return (
+    /\bfrom\s*['"][^'"]*access-scope['"]/.test(code) ||
+    /\bimport\s*\(\s*['"][^'"]*access-scope['"]\s*\)/.test(code) ||
+    /\bimport\s*['"][^'"]*access-scope['"]/.test(code)
+  );
+}
+
+describe('#62 application/social/publish.ts は access-scope を import しない（配信ジョブは区画で絞らない）', () => {
+  it('#62 publish.ts が access-scope を import しない', () => {
+    const path = join(SRC_DIR, PUBLISH_FILE);
+    expect(existsSync(path), `${PUBLISH_FILE} が無い`).toBe(true);
+
+    expect(importsAccessScope(readFileSync(path, 'utf8'))).toBe(false);
+  });
+
+  it('#62 publish.ts が scopeOf を呼ばない', () => {
+    const source = withoutComments(readFileSync(join(SRC_DIR, PUBLISH_FILE), 'utf8'));
+
+    expect(source).not.toMatch(/\bscopeOf\s*\(/);
+  });
+
+  it('#62 判別力：import を足した写しを見分ける（静的・型だけ・動的。コメントは数えない）', () => {
+    expect(importsAccessScope("import { scopeOf } from '@/application/social/access-scope';")).toBe(
+      true,
+    );
+    expect(
+      importsAccessScope("import type { AccessScope } from '../../domain/social/access-scope';"),
+    ).toBe(true);
+    expect(importsAccessScope("const m = await import('./access-scope');")).toBe(true);
+    expect(importsAccessScope("// import { scopeOf } from './access-scope';\nconst x = 1;")).toBe(
+      false,
+    );
   });
 });

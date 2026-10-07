@@ -8,6 +8,8 @@ import { buildOpenApiDocument } from './openapi';
  * - #57：`createApiToken` の要求に `siteId`、`listApiTokens` / `createApiToken` の応答に `siteId` と `siteScoped`（boolean）（G3）
  * - #56：`getSocialAccount` の応答の `data` に `siteId`（`string`・`nullable`）。`createSocialAccount` /
  *   `updateSocialAccount` の要求に `siteId`（`nullable`・必須でない）（G4）
+ * - #59：`getSocialPost` の 404 の `description` が「このトークンからは見えない」を含む（設計 §8.8 のとおり
+ *   `updateSocialPost` / `deleteSocialPost` / `approveSocialPost` も）。投稿の応答のキー集合は変わらない（G5）
  *
  * 実際に登録されているエンドポイント（`@/api/endpoints`）から作った文書を見る（`social-approval-openapi.test.ts` の形）。
  */
@@ -184,5 +186,78 @@ describe('#56 SNS アカウントの siteId', () => {
       'null',
       'string',
     ]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* #59 SNS 投稿の 404 と応答の形                                                   */
+/* -------------------------------------------------------------------------- */
+
+/** 053 の時点の投稿の応答のキー（設計 §8.8：投稿の応答は変えない）。 */
+const POST_RESPONSE_KEYS = [
+  'id',
+  'socialAccountId',
+  'body',
+  'scheduledAt',
+  'status',
+  'publishedAt',
+  'failedAt',
+  'failureReason',
+  'createdAt',
+  'updatedAt',
+  'deliveryMode',
+  'media',
+  'link',
+  'providerOptions',
+  'externalRef',
+  'externalId',
+  'externalUrl',
+  'attemptCount',
+  'nextAttemptAt',
+  'skipCount',
+  'skipReason',
+  'approvedAt',
+];
+
+/** 応答（`{ data: … }`）の `data` の `properties` のキー（昇順）。 */
+function responseDataKeys(operationId: string, status: string): string[] {
+  const schema = operation(operationId).responses[status]?.content?.['application/json']?.schema;
+  const data = findProperty(schema, 'data');
+  const properties = isObject(data) ? data['properties'] : undefined;
+  if (!isObject(properties)) throw new Error(`${operationId} の ${status} 応答に data が無い`);
+  return Object.keys(properties).sort();
+}
+
+describe('#59 SNS 投稿の 404 の説明と、投稿の応答の形', () => {
+  it("#59 getSocialPost の responses['404'] の description が「このトークンからは見えない」を含む", () => {
+    expect(operation('getSocialPost').responses['404']?.description ?? '').toContain(
+      'このトークンからは見えない',
+    );
+  });
+
+  it.each(['updateSocialPost', 'deleteSocialPost', 'approveSocialPost'])(
+    "#59 %s の responses['404'] の description も「このトークンからは見えない」を含む（設計 §8.8）",
+    (operationId) => {
+      expect(operation(operationId).responses['404']?.description ?? '').toContain(
+        'このトークンからは見えない',
+      );
+    },
+  );
+
+  it.each([
+    ['getSocialPost', '200'],
+    ['createSocialPost', '201'],
+  ])(
+    '#59 %s の %s 応答の data のキー集合は変わらない（siteId・origin_* を出さない）',
+    (operationId, status) => {
+      expect(responseDataKeys(operationId, status)).toEqual([...POST_RESPONSE_KEYS].sort());
+    },
+  );
+
+  it('#59 getSocialPost の応答に siteId が無い', () => {
+    const schema =
+      operation('getSocialPost').responses['200']?.content?.['application/json']?.schema;
+
+    expect(findProperty(findProperty(schema, 'data'), 'siteId')).toBeUndefined();
   });
 });
