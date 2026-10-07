@@ -11,12 +11,30 @@ import {
   EmptyState,
   FormField,
   Input,
+  Modal,
   Select,
   Table,
   Toast,
   type Column,
   type ToastMessage,
 } from '@/ui/components';
+import {
+  changeTokenSiteRequestBody,
+  removedTokenScopes,
+  TOKEN_SITE_CHANGE_LABEL,
+  TOKEN_SITE_CHANGE_SUBMIT,
+  TOKEN_SITE_CHANGE_TITLE,
+  TOKEN_SITE_CHANGED,
+  TOKEN_SITE_COMMON_INFO,
+  TOKEN_SITE_COMMON_OPTION,
+  TOKEN_SITE_DESCRIPTION,
+  TOKEN_SITE_EMPTY_SCOPES_NOTE,
+  TOKEN_SITE_MOVE_NOTE,
+  tokenSiteLabel,
+  tokenSiteRemovedScopesWarning,
+  type TokenSiteOption,
+} from '@/ui/settings/api-token-site';
+import { SITE_COLUMN_HEADER } from '@/ui/social/labels';
 
 /**
  * 設定 → API（06_画面設計.md §16、05_API設計.md §37-38）。
@@ -29,6 +47,20 @@ import {
  * どちらが効いているのか分からなくなる。
  */
 
+/** サイトの `Select` の「共通」の値（送るときは null）。 */
+const SITE_COMMON_VALUE = '';
+
+/** 「サイトを変える」の Modal を開いたときの選択（今の値。選択肢に無ければ「共通」）。 */
+function initialTokenSiteChoice(
+  choices: readonly TokenSiteOption[],
+  token: ApiTokenResponse | undefined,
+): string {
+  const current = token?.siteId ?? null;
+  return current !== null && choices.some((site) => site.id === current)
+    ? current
+    : SITE_COMMON_VALUE;
+}
+
 const EXPIRY_OPTIONS = [
   { value: '30', label: '30日' },
   { value: '90', label: '90日' },
@@ -39,12 +71,33 @@ const EXPIRY_OPTIONS = [
 export function ApiSettings({
   scopeCandidates,
   corsOrigins,
+  sites,
+  siteTokenScopes,
+  initialSiteId,
+  initialTokens,
+  initialChangingTokenId,
 }: {
   /** 発行者が持っている Permission。これを超える Scope は指定できない。 */
   readonly scopeCandidates: readonly string[];
   readonly corsOrigins: readonly string[];
+  /**
+   * サイトの一覧（053-site-scoped-social 設計 §9.2）。`site.read` が無ければ空で、「サイト」は「共通」だけ。
+   * `active` / `paused` を名前順、続けてアーカイブを名前順に並べて渡す。部品は並べ替えない。
+   */
+  readonly sites: readonly TokenSiteOption[];
+  /**
+   * サイトのトークンに付けられる Scope（Domain の `SITE_TOKEN_SCOPES`）。
+   * **部品に一覧を持たない。** Server Component が渡す（設計 §9.2）。
+   */
+  readonly siteTokenScopes: readonly string[];
+  /** 発行フォームの「サイト」の初期値。既定は共通（単体テストのため。Server Component は渡さない）。 */
+  readonly initialSiteId?: string | null;
+  /** 一覧の初期値。渡されたら最初の読み込みをしない（単体テストのため。設計 §9.2）。 */
+  readonly initialTokens?: readonly ApiTokenResponse[];
+  /** 「サイトを変える」の Modal を、このトークンについて開いた状態で描く（単体テストのため）。 */
+  readonly initialChangingTokenId?: string;
 }) {
-  const [tokens, setTokens] = useState<readonly ApiTokenResponse[] | null>(null);
+  const [tokens, setTokens] = useState<readonly ApiTokenResponse[] | null>(initialTokens ?? null);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const [issued, setIssued] = useState<string | null>(null);
@@ -55,6 +108,37 @@ export function ApiSettings({
   const [expiresInDays, setExpiresInDays] = useState<string>('90');
   const [scopes, setScopes] = useState<readonly string[]>([]);
 
+  // サイト（053 設計 §9.2）。発行フォームと「サイトを変える」の選択肢は `active` / `paused` のサイト。
+  const siteChoices = sites.filter((site) => site.status !== 'archived');
+  const [siteId, setSiteId] = useState<string>(initialSiteId ?? SITE_COMMON_VALUE);
+  const siteSelected = siteId !== SITE_COMMON_VALUE;
+
+  // 「サイトを変える」（設計 §9.2.1）。開くときに要求を出さない。行の値とサイトの一覧だけを使う。
+  const [changingId, setChangingId] = useState<string | null>(initialChangingTokenId ?? null);
+  const [changeSiteId, setChangeSiteId] = useState(() =>
+    initialTokenSiteChoice(
+      siteChoices,
+      initialTokens?.find((token) => token.id === initialChangingTokenId),
+    ),
+  );
+  const [changeError, setChangeError] = useState<string | null>(null);
+  const [changeBusy, setChangeBusy] = useState(false);
+  const changing =
+    changingId === null ? null : (tokens?.find((token) => token.id === changingId) ?? null);
+  const changeTarget = changeSiteId === SITE_COMMON_VALUE ? null : changeSiteId;
+  const changeRemoved =
+    changing === null
+      ? []
+      : removedTokenScopes({
+          siteId: changeTarget,
+          currentScopes: changing.scopes,
+          siteTokenScopes,
+        });
+  const changeEmptiesScopes =
+    changing !== null &&
+    changeRemoved.length > 0 &&
+    changeRemoved.length === changing.scopes.length;
+
   const reload = useCallback(async () => {
     const result = await apiRequest<readonly ApiTokenResponse[]>('/api/v1/api-tokens');
     if (result.ok) {
@@ -64,9 +148,61 @@ export function ApiSettings({
     }
   }, []);
 
+  // 一覧の初期値を受け取ったら最初の読み込みをしない（設計 §9.2）。
+  const loadOnMount = initialTokens === undefined;
   useEffect(() => {
-    void reload();
-  }, [reload]);
+    if (loadOnMount) {
+      void reload();
+    }
+  }, [reload, loadOnMount]);
+
+  /** 発行フォームのサイトを選ぶ。サイトを選んだら、サイトのトークンに付けられない権限を外す（設計 §9.2）。 */
+  function selectSite(value: string): void {
+    setSiteId(value);
+    if (value !== SITE_COMMON_VALUE) {
+      setScopes((current) => current.filter((scope) => siteTokenScopes.includes(scope)));
+    }
+  }
+
+  function openChange(token: ApiTokenResponse): void {
+    setChangeSiteId(initialTokenSiteChoice(siteChoices, token));
+    setChangeError(null);
+    setChangingId(token.id);
+  }
+
+  function closeChange(): void {
+    setChangingId(null);
+    setChangeError(null);
+  }
+
+  /** 「サイトを変える」の送信（設計 §9.2.1）。失敗したら Modal は開いたまま。 */
+  async function onChangeSite(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    const target = changing;
+    if (target === null) return;
+    setChangeError(null);
+    setChangeBusy(true);
+
+    const result = await apiRequest(`/api/v1/api-tokens/${target.id}`, {
+      method: 'PATCH',
+      body: changeTokenSiteRequestBody({
+        siteId: changeTarget,
+        currentScopes: target.scopes,
+        siteTokenScopes,
+      }),
+    });
+
+    setChangeBusy(false);
+
+    if (!result.ok) {
+      setChangeError(result.error.message);
+      return;
+    }
+
+    closeChange();
+    setToast({ id: crypto.randomUUID(), tone: 'success', text: TOKEN_SITE_CHANGED });
+    await reload();
+  }
 
   async function onIssue(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -80,7 +216,7 @@ export function ApiSettings({
 
     const result = await apiRequest<{ token: string }>('/api/v1/api-tokens', {
       method: 'POST',
-      body: { name, scopes, expiresAt },
+      body: { name, scopes, expiresAt, siteId: siteSelected ? siteId : null },
     });
 
     setBusy(false);
@@ -93,6 +229,7 @@ export function ApiSettings({
     setIssued(result.data.token);
     setName('');
     setScopes([]);
+    setSiteId(SITE_COMMON_VALUE);
     await reload();
   }
 
@@ -111,6 +248,12 @@ export function ApiSettings({
 
   const columns: readonly Column<ApiTokenResponse>[] = [
     { key: 'name', header: '名前', render: (token) => token.name },
+    {
+      key: 'site',
+      header: SITE_COLUMN_HEADER,
+      // サイトの名前／共通／削除されたサイト／サイト専用（053 設計 §9.2）。
+      render: (token) => tokenSiteLabel(token, sites),
+    },
     {
       key: 'prefix',
       header: '識別子',
@@ -140,9 +283,15 @@ export function ApiSettings({
         token.revokedAt !== null ? (
           <span style={{ color: 'var(--tf-color-text-muted)' }}>失効済み</span>
         ) : (
-          <Button variant="danger" onClick={() => setRevoking(token)}>
-            失効させる
-          </Button>
+          // 「サイトを変える」は失効していないトークンだけ。「失効させる」の左（053 設計 §9.2.1）。
+          <span style={{ display: 'flex', gap: 'var(--tf-space-2)' }}>
+            <Button variant="ghost" onClick={() => openChange(token)}>
+              {TOKEN_SITE_CHANGE_LABEL}
+            </Button>
+            <Button variant="danger" onClick={() => setRevoking(token)}>
+              失効させる
+            </Button>
+          </span>
         ),
     },
   ];
@@ -188,6 +337,29 @@ export function ApiSettings({
             )}
           </FormField>
 
+          <FormField label={SITE_COLUMN_HEADER} description={TOKEN_SITE_DESCRIPTION}>
+            {(fieldProps) => (
+              <Select
+                {...fieldProps}
+                value={siteId}
+                onChange={(event) => selectSite(event.target.value)}
+              >
+                <option value={SITE_COMMON_VALUE}>{TOKEN_SITE_COMMON_OPTION}</option>
+                {siteChoices.map((site) => (
+                  <option key={site.id} value={site.id}>
+                    {site.name}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </FormField>
+
+          {!siteSelected && (
+            <div style={{ marginBottom: 'var(--tf-space-4)' }}>
+              <Alert tone="info">{TOKEN_SITE_COMMON_INFO}</Alert>
+            </div>
+          )}
+
           <FormField label="有効期限">
             {(fieldProps) => (
               <Select
@@ -210,22 +382,27 @@ export function ApiSettings({
           >
             {() => (
               <div style={{ display: 'grid', gap: 'var(--tf-space-1)' }}>
-                {scopeCandidates.map((scope) => (
-                  <label key={scope} style={{ display: 'flex', gap: 'var(--tf-space-2)' }}>
-                    <input
-                      type="checkbox"
-                      checked={scopes.includes(scope)}
-                      onChange={(event) =>
-                        setScopes((current) =>
-                          event.target.checked
-                            ? [...current, scope]
-                            : current.filter((value) => value !== scope),
-                        )
-                      }
-                    />
-                    <code>{scope}</code>
-                  </label>
-                ))}
+                {scopeCandidates.map((scope) => {
+                  // サイトを選んでいる間、サイトのトークンに付けられない権限は選ばせない（設計 §9.2）。
+                  const unavailable = siteSelected && !siteTokenScopes.includes(scope);
+                  return (
+                    <label key={scope} style={{ display: 'flex', gap: 'var(--tf-space-2)' }}>
+                      <input
+                        type="checkbox"
+                        checked={!unavailable && scopes.includes(scope)}
+                        disabled={unavailable}
+                        onChange={(event) =>
+                          setScopes((current) =>
+                            event.target.checked
+                              ? [...current, scope]
+                              : current.filter((value) => value !== scope),
+                          )
+                        }
+                      />
+                      <code>{scope}</code>
+                    </label>
+                  );
+                })}
               </div>
             )}
           </FormField>
@@ -276,6 +453,61 @@ export function ApiSettings({
           onCancel={() => setRevoking(null)}
         />
       )}
+
+      <Modal open={changing !== null} title={TOKEN_SITE_CHANGE_TITLE} onClose={closeChange}>
+        {changing !== null && (
+          <form onSubmit={onChangeSite}>
+            {changeError !== null && (
+              <div style={{ marginBottom: 'var(--tf-space-4)' }}>
+                <Alert tone="danger">{changeError}</Alert>
+              </div>
+            )}
+
+            <FormField label={SITE_COLUMN_HEADER}>
+              {(fieldProps) => (
+                <Select
+                  {...fieldProps}
+                  value={changeSiteId}
+                  onChange={(event) => setChangeSiteId(event.target.value)}
+                >
+                  <option value={SITE_COMMON_VALUE}>{TOKEN_SITE_COMMON_OPTION}</option>
+                  {siteChoices.map((site) => (
+                    <option key={site.id} value={site.id}>
+                      {site.name}
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </FormField>
+
+            {changeRemoved.length > 0 && (
+              <div style={{ marginBottom: 'var(--tf-space-4)' }}>
+                <Alert tone="warning">
+                  <span style={{ display: 'block' }}>
+                    {tokenSiteRemovedScopesWarning(changeRemoved)}
+                  </span>
+                  {changeEmptiesScopes && (
+                    <span style={{ display: 'block' }}>{TOKEN_SITE_EMPTY_SCOPES_NOTE}</span>
+                  )}
+                </Alert>
+              </div>
+            )}
+
+            <div style={{ marginBottom: 'var(--tf-space-4)' }}>
+              <Alert tone="info">{TOKEN_SITE_MOVE_NOTE}</Alert>
+            </div>
+
+            <div style={{ display: 'flex', gap: 'var(--tf-space-2)', justifyContent: 'flex-end' }}>
+              <Button variant="secondary" onClick={closeChange}>
+                キャンセル
+              </Button>
+              <Button type="submit" variant="primary" disabled={changeBusy}>
+                {TOKEN_SITE_CHANGE_SUBMIT}
+              </Button>
+            </div>
+          </form>
+        )}
+      </Modal>
 
       {toast !== null && <Toast message={toast} onDismiss={() => setToast(null)} />}
     </div>

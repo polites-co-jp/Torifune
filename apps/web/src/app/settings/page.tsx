@@ -14,6 +14,7 @@ import { authenticationProviderId } from '@/authentication/registry';
 import { listUsers } from '@/application/user/user-use-cases';
 import { listRoleGrants, listRoles } from '@/application/authorization/role-use-cases';
 import { formatDateTimeInTimeZone } from '@/domain/analytics/day';
+import { SITE_TOKEN_SCOPES } from '@/domain/api-token';
 import { normalizeClientIp } from '@/domain/analytics/ip-exclusion';
 import { timeZoneOptions } from '@/domain/analytics/time-zone';
 import { normalizePage } from '@/domain/repository';
@@ -149,7 +150,12 @@ export default async function SettingsPage({
         />
       )}
       {tab === 'api' && (
-        <ApiSettings scopeCandidates={[...permissions].sort()} corsOrigins={allowedOrigins()} />
+        <ApiSettings
+          scopeCandidates={[...permissions].sort()}
+          corsOrigins={allowedOrigins()}
+          sites={[]}
+          siteTokenScopes={SITE_TOKEN_SCOPES}
+        />
       )}
 
       {/*
