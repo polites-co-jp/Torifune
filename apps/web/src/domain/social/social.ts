@@ -76,6 +76,8 @@ export interface SocialAccount {
   readonly status: AccountStatus;
   readonly createdAt: Date;
   readonly updatedAt: Date;
+  /** 属するサイト。null は共通（どのサイトのトークンからも使える。053 設計 §5.1）。 */
+  readonly siteId: string | null;
 }
 
 /** 内部処理が資格情報を必要とするときだけ使う形。 */

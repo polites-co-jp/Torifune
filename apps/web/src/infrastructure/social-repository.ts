@@ -1,4 +1,10 @@
-import { sql, type Expression, type ExpressionBuilder, type SqlBool } from 'kysely';
+import {
+  sql,
+  type Expression,
+  type ExpressionBuilder,
+  type RawBuilder,
+  type SqlBool,
+} from 'kysely';
 import type { Connection } from '../database/provider';
 import type { Schema } from '../database/schema';
 import { decryptSecret } from './crypto/cipher';
@@ -10,6 +16,8 @@ import type {
   SocialAccountWithCredential,
   SocialPost,
 } from '../domain/social/social';
+import { NotFoundError } from '../domain/repository';
+import { ALL_SCOPE, type AccessScope } from '../domain/social/access-scope';
 import type { PublishVerdict, SkipReason, SkipVerdict } from '../domain/social/publishing';
 import { isSkipReason } from '../domain/social/publishing';
 import type {
@@ -37,6 +45,7 @@ interface AccountRow {
   status: string;
   created_at: Date;
   updated_at: Date;
+  site_id: string | null;
 }
 
 /**
@@ -55,6 +64,7 @@ function toAccount(row: AccountRow): SocialAccount {
     status: row.status as AccountStatus,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    siteId: row.site_id,
   };
 }
 
@@ -67,7 +77,41 @@ const ACCOUNT_COLUMNS = [
   'status',
   'created_at',
   'updated_at',
+  'site_id',
 ] as const;
+
+/** 区画の SQL の条件（053 設計 §7.4）。null は条件なし。 */
+interface ScopePredicates {
+  /** `social_accounts` の行に掛ける条件。 */
+  readonly account: RawBuilder<SqlBool> | null;
+}
+
+/**
+ * 区画の SQL の述語（053 設計 §7.4 の表）。**区画の条件はここ 1 か所にだけ書く**（受け入れ条件 #61）。
+ *
+ * Domain の `accountVisible` と同じ表を実装する。区画 `all` は条件を付けない（画面・ジョブの問い合わせを変えない）。
+ */
+function scopePredicate(scope: AccessScope): ScopePredicates {
+  switch (scope.kind) {
+    case 'all':
+      return { account: null };
+    case 'common':
+      return { account: sql<SqlBool>`social_accounts.site_id IS NULL` };
+    case 'site':
+      return {
+        account: sql<SqlBool>`(social_accounts.site_id IS NULL OR social_accounts.site_id = ${scope.siteId})`,
+      };
+  }
+}
+
+/** `social_accounts.site_id` の外部キー違反（PostgreSQL の 23503）か。 */
+function isAccountSiteForeignKeyViolation(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) {
+    return false;
+  }
+  const { code, constraint } = error as { code?: unknown; constraint?: unknown };
+  return code === '23503' && constraint === 'social_accounts_site_id_fkey';
+}
 
 interface PostRow {
   id: string;
@@ -220,9 +264,15 @@ export const socialRepository: SocialRepository = {
   async listAccounts(
     connection: Connection,
     query: SocialAccountListQuery,
+    scope: AccessScope = ALL_SCOPE,
   ): Promise<SocialAccountPage> {
-    const conditions = (eb: ExpressionBuilder<Schema, 'social_accounts'>): Expression<SqlBool>[] =>
-      query.provider === null ? [] : [eb('provider', '=', query.provider)];
+    const inScope = scopePredicate(scope).account;
+    const conditions = (
+      eb: ExpressionBuilder<Schema, 'social_accounts'>,
+    ): Expression<SqlBool>[] => [
+      ...(query.provider === null ? [] : [eb('provider', '=', query.provider)]),
+      ...(inScope === null ? [] : [inScope]),
+    ];
 
     const rows = await connection.db
       .selectFrom('social_accounts')
@@ -289,19 +339,29 @@ export const socialRepository: SocialRepository = {
   },
 
   async insertAccount(connection: Connection, account: NewSocialAccount): Promise<SocialAccount> {
-    const row = await connection.db
-      .insertInto('social_accounts')
-      .values({
-        id: account.id,
-        provider: account.provider,
-        display_name: account.displayName,
-        handle: account.handle,
-        credential: account.encryptedCredential,
-        status: account.status,
-      })
-      .returning(ACCOUNT_COLUMNS)
-      .executeTakeFirstOrThrow();
-    return toAccount(row as AccountRow);
+    const siteId = account.siteId ?? null;
+    try {
+      const row = await connection.db
+        .insertInto('social_accounts')
+        .values({
+          id: account.id,
+          provider: account.provider,
+          display_name: account.displayName,
+          handle: account.handle,
+          credential: account.encryptedCredential,
+          status: account.status,
+          site_id: siteId,
+        })
+        .returning(ACCOUNT_COLUMNS)
+        .executeTakeFirstOrThrow();
+      return toAccount(row as AccountRow);
+    } catch (error) {
+      // 検査の後、挿入までにサイトが消えた（053 設計 §8.2.3）。呼び出し側が 422 に写す。
+      if (siteId !== null && isAccountSiteForeignKeyViolation(error)) {
+        throw new NotFoundError('Site', siteId);
+      }
+      throw error;
+    }
   },
 
   async updateAccount(
@@ -319,15 +379,26 @@ export const socialRepository: SocialRepository = {
     if (patch.encryptedCredential !== undefined) {
       values['credential'] = patch.encryptedCredential;
     }
+    // undefined は「変えない」、null は「共通にする」（053 設計 §8.2.4）。
+    const siteValues = patch.siteId === undefined ? {} : { site_id: patch.siteId };
 
-    const row = await connection.db
-      .updateTable('social_accounts')
-      .set(values as never)
-      .where('id', '=', id)
-      .returning(ACCOUNT_COLUMNS)
-      .executeTakeFirst();
+    let row: AccountRow | undefined;
+    try {
+      row = (await connection.db
+        .updateTable('social_accounts')
+        .set({ ...values, ...siteValues } as never)
+        .where('id', '=', id)
+        .returning(ACCOUNT_COLUMNS)
+        .executeTakeFirst()) as AccountRow | undefined;
+    } catch (error) {
+      // 検査の後、書き込みまでにサイトが消えた。呼び出し側が 422 に写す。
+      if (typeof patch.siteId === 'string' && isAccountSiteForeignKeyViolation(error)) {
+        throw new NotFoundError('Site', patch.siteId);
+      }
+      throw error;
+    }
 
-    return row === undefined ? null : toAccount(row as AccountRow);
+    return row === undefined ? null : toAccount(row);
   },
 
   async deleteAccount(connection: Connection, id: string): Promise<boolean> {

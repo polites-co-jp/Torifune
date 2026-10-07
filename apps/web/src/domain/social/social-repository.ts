@@ -1,4 +1,5 @@
 import type { Connection } from '../../database/provider';
+import type { AccessScope } from './access-scope';
 import type { PublishVerdict, SkipVerdict } from './publishing';
 import type {
   AccountStatus,
@@ -18,6 +19,11 @@ export interface NewSocialAccount {
   /** **暗号化済みの文字列**。平文を渡さない。 */
   readonly encryptedCredential: string | null;
   readonly status: AccountStatus;
+  /**
+   * 属するサイト。省略・null は共通（053 設計 §7.5）。
+   * サイトが無ければ（外部キー違反）`insertAccount` は `NotFoundError('Site')` を投げる。
+   */
+  readonly siteId?: string | null | undefined;
 }
 
 export interface SocialAccountUpdate {
@@ -29,6 +35,11 @@ export interface SocialAccountUpdate {
    * `null` を明示すると消す。**「指定しない」と「消す」を区別する。**
    */
   readonly encryptedCredential?: string | null | undefined;
+  /**
+   * `undefined` なら変えない。`null` は共通にする（053 設計 §8.2.4）。
+   * サイトが無ければ（外部キー違反）`updateAccount` は `NotFoundError('Site')` を投げる。
+   */
+  readonly siteId?: string | null | undefined;
 }
 
 export interface SocialAccountListQuery {
@@ -131,7 +142,17 @@ export interface DueCursor {
 }
 
 export interface SocialRepository {
-  listAccounts(connection: Connection, query: SocialAccountListQuery): Promise<SocialAccountPage>;
+  /**
+   * 区画（053 設計 §7.4）で絞った一覧。`total` も同じ条件で数える。省略は `ALL_SCOPE`（絞らない）。
+   *
+   * **ID 指定（`findAccountById`）は区画を取らない。** 404 と 403 を分けるため、UseCase が
+   * `accountVisible` / `accountManageable` で判定する（053 設計 §8.3.4）。
+   */
+  listAccounts(
+    connection: Connection,
+    query: SocialAccountListQuery,
+    scope?: AccessScope,
+  ): Promise<SocialAccountPage>;
   findAccountById(connection: Connection, id: string): Promise<SocialAccount | null>;
   /**
    * 資格情報つきで取得する。
