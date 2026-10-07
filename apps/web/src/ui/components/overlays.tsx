@@ -45,6 +45,9 @@ export function Modal({ open, title, onClose, children, footer }: ModalProps) {
         display: 'grid',
         placeItems: 'center',
         padding: 'var(--tf-space-4)',
+        // 画面より背の高い Modal は、背景の中で縦に動かして下のボタンまで届くようにする。
+        // grid の行は中身に合わせて伸びるので、上端が画面の外へ切れることもない。
+        overflowY: 'auto',
       }}
     >
       <div
