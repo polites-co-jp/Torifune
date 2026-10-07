@@ -454,7 +454,12 @@ describe('#61 SNS の UseCase は scopeOf(context) を呼び、区画の述語�
     useCaseHandlers(readFileSync(join(SRC_DIR, SOCIAL_USE_CASES_FILE), 'utf8'));
 
   it('#61 social-use-cases.ts の defineUseCase は設計 §8.3.4 の 17 個', () => {
-    expect(handlers().map((entry) => entry.name)).toEqual(SCOPED_USE_CASE_NAMES);
+    // 並びは問わない（定義の順を変えても落とさない）。数と名前の集合を見る。
+    expect(
+      handlers()
+        .map((entry) => entry.name)
+        .sort(),
+    ).toEqual([...SCOPED_USE_CASE_NAMES].sort());
   });
 
   it.each(SCOPED_USE_CASE_NAMES)('#61 %s の handler が scopeOf(context) を呼ぶ', (name) => {
