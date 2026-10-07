@@ -160,12 +160,17 @@ export interface CreateAccountRequest extends CreateCredentialRequest {
   readonly provider: string;
   readonly displayName: string;
   readonly handle: string;
+  /** 属するサイト。null は共通（053-site-scoped-social 設計 §9.1.2）。省略はキーごと送らない。 */
+  readonly siteId?: string | null;
 }
 
 /**
  * アカウント追加の要求の本文（設計 §7.2 / §7.7.1）。選んだ provider の入力の形を `providers` から決める。
  *
  * `displayName` / `handle` は加工しない（整えるのはサーバの UseCase）。
+ *
+ * `siteId`（053-site-scoped-social 設計 §9.1.2）は、`null` なら共通、値ならそのサイト。
+ * **`undefined`（渡さない）ならキーを足さない**（既存の呼び出しの本文を変えない。053 実装プラン §8 の 10）。
  */
 export function buildCreateAccountRequest(
   providers: readonly ProviderOption[],
@@ -175,6 +180,7 @@ export function buildCreateAccountRequest(
     readonly handle: string;
     readonly values: Readonly<Record<string, string>>;
     readonly credential: string;
+    readonly siteId?: string | null;
   },
 ): CreateAccountRequest {
   const shape = credentialShapeOf(providers, input.provider);
@@ -183,6 +189,7 @@ export function buildCreateAccountRequest(
     displayName: input.displayName,
     handle: input.handle,
     ...createCredentialBody(shape.input, shape.fields, input.values, input.credential),
+    ...(input.siteId === undefined ? {} : { siteId: input.siteId }),
   };
 }
 
