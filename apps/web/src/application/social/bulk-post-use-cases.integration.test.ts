@@ -31,6 +31,8 @@ import { useScratchDatabase, type ScratchDatabase } from '@/test-support/databas
  *   G5 は今すぐ送るの分）
  * * #28：`social.write` だけ（`social.approve` なし）の文脈で `publishSocialPostNow`：承認済みの予約は `approval_required`、
  *   承認を経ていない予約は成功（G5）
+ * * #42：読んでから消すまでに着手された・状態が変わった行は `stale` で残る。`deletePostIf` を直接呼んでも 0 行（G6）
+ * * #51 の取り消しの分（G6）
  *
  * 一括の UseCase（`application/social/bulk-post-use-cases.ts`）と `publishSocialPostNow`（`social-use-cases.ts`）の
  * 未実装の口は、指定子を `string` の定数に置いた動的 import で読む（053 実装プラン §8 の 19）。入出力の型は設計 §8.1・
@@ -98,6 +100,26 @@ async function bulkPublishSocialPostsNow(
     );
   }
   return module.bulkPublishSocialPostsNow(context, input);
+}
+
+interface BulkDeleteInput {
+  readonly ids: readonly string[];
+  readonly budgetMs?: number;
+}
+
+type BulkDelete = (context: AuthorizationContext, input: BulkDeleteInput) => Promise<BulkOutput>;
+
+async function bulkDeleteSocialPosts(
+  context: AuthorizationContext,
+  input: BulkDeleteInput,
+): Promise<BulkOutput> {
+  const module = (await import(/* @vite-ignore */ BULK_USE_CASES_MODULE)) as {
+    readonly bulkDeleteSocialPosts?: BulkDelete;
+  };
+  if (module.bulkDeleteSocialPosts === undefined) {
+    throw new Error('application/social/bulk-post-use-cases.ts に bulkDeleteSocialPosts が無い');
+  }
+  return module.bulkDeleteSocialPosts(context, input);
 }
 
 /** `publishSocialPostNow` の入出力（設計 §8.3・実装プラン T15）。 */
@@ -555,5 +577,179 @@ describe('#51 bulkPublishSocialPostsNow を social.write の無い文脈で呼�
     expect(find).not.toHaveBeenCalled();
     expect(await rowOf(post.id)).toEqual(before);
     expect(await auditCount('updated')).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #42 読んでから消すまでの変化（G6）
+// ---------------------------------------------------------------------------
+
+/**
+ * 項目の UseCase が投稿を読んだ**後に** `interrupt` を差し込み、読んだ時点の投稿を返す（読んでから消すまでの間。
+ * 実装プラン §2 のテストの方法）。0 行のときの読み直しでは差し込まない（1 回目だけ）。
+ */
+function interruptAfterPostRead(interrupt: () => Promise<void>): void {
+  const original = socialRepository.findPostById.bind(socialRepository);
+  let calls = 0;
+  vi.spyOn(socialRepository, 'findPostById').mockImplementation(async (...args) => {
+    calls += 1;
+    const post = await original(...args);
+    if (calls === 1) {
+      await interrupt();
+    }
+    return post;
+  });
+}
+
+async function execute(statement: ReturnType<typeof sql>): Promise<void> {
+  await withConnection(async (connection) => {
+    await statement.execute(connection.db);
+  });
+}
+
+/** 行が残っているか（状態と着手印）。無ければ null。 */
+async function remaining(
+  id: string,
+): Promise<{ readonly status: string; readonly publish_started_at: Date | null } | null> {
+  return withConnection(async (connection) => {
+    const result = await sql<{ status: string; publish_started_at: Date | null }>`
+      SELECT status, publish_started_at FROM social_posts WHERE id = ${id}`.execute(connection.db);
+    return result.rows[0] ?? null;
+  });
+}
+
+type DeletePostIf = (
+  connection: unknown,
+  id: string,
+  condition: { readonly status: string },
+) => Promise<boolean>;
+
+/** Repository の `deletePostIf` を直接呼ぶ（まだ無いので型を写して読む。設計 §8.4 の 3）。 */
+async function deletePostIf(id: string, status: string): Promise<boolean> {
+  const method = (socialRepository as unknown as { readonly deletePostIf?: DeletePostIf })
+    .deletePostIf;
+  if (method === undefined) {
+    throw new Error('infrastructure/social-repository.ts に deletePostIf が無い');
+  }
+  return withConnection((connection) =>
+    connection.transaction((tx) => method.call(socialRepository, tx, id, { status })),
+  );
+}
+
+/** 状態が変わった項目の `stale` の文言（1 件の操作の 409 の文言。実装プラン §8 の 7）。 */
+const POST_STATE_CHANGED_MESSAGE = '投稿の状態が変わっています。読み直してからやり直してください。';
+
+describe('#42 (B) 読んでから消すまでに着手された・状態が変わった行は stale で、行は残る', () => {
+  it('#42 予約を読んだ後に配信ジョブが着手する → stale（field: null・409 の文言）、行と着手印は残る', async () => {
+    const post = await makeScheduled();
+    interruptAfterPostRead(() =>
+      execute(sql`UPDATE social_posts SET publish_started_at = now() WHERE id = ${post.id}`),
+    );
+
+    const output = await bulkDeleteSocialPosts(admin, { ids: [post.id] });
+
+    expect(output.results[0]).toEqual({
+      id: post.id,
+      ok: false,
+      reason: 'stale',
+      field: null,
+      message: POST_STATE_CHANGED_MESSAGE,
+    });
+    const row = await remaining(post.id);
+    expect(row?.status).toBe('scheduled');
+    expect(row?.publish_started_at).not.toBeNull();
+  });
+
+  it('#42 下書きを読んだ後に状態が変わる（承認待ち）→ stale、行は変わった状態のまま残る', async () => {
+    const { post } = await createSocialPost(appContext, {
+      socialAccountId: accountId,
+      body: '下書きの投稿です。',
+      scheduledAt: null,
+    });
+    interruptAfterPostRead(() =>
+      execute(
+        sql`UPDATE social_posts SET status = 'awaiting_approval', updated_at = now() WHERE id = ${post.id}`,
+      ),
+    );
+
+    const output = await bulkDeleteSocialPosts(admin, { ids: [post.id] });
+
+    expect(output.results[0]).toMatchObject({ id: post.id, ok: false, reason: 'stale' });
+    expect((await remaining(post.id))?.status).toBe('awaiting_approval');
+  });
+
+  it('#42 stale の項目は監査 deleted を残さない', async () => {
+    const post = await makeScheduled();
+    interruptAfterPostRead(() =>
+      execute(sql`UPDATE social_posts SET publish_started_at = now() WHERE id = ${post.id}`),
+    );
+
+    await bulkDeleteSocialPosts(admin, { ids: [post.id] });
+
+    expect(await auditCount('deleted')).toBe(0);
+  });
+
+  it('#42 deletePostIf を直接呼んでも、読んだのと違う状態なら 0 行（false）で行は残る', async () => {
+    const post = await makeScheduled();
+
+    const deleted = await deletePostIf(post.id, 'draft');
+
+    expect(deleted).toBe(false);
+    expect(await remaining(post.id)).not.toBeNull();
+  });
+
+  it('#42 deletePostIf を直接呼んでも、着手印があれば 0 行（false）で行は残る', async () => {
+    const post = await makeScheduled();
+    await execute(sql`UPDATE social_posts SET publish_started_at = now() WHERE id = ${post.id}`);
+
+    const deleted = await deletePostIf(post.id, 'scheduled');
+
+    expect(deleted).toBe(false);
+    expect(await remaining(post.id)).not.toBeNull();
+  });
+
+  it('#42 deletePostIf は UUID の形でない ID で false（例外を投げない）', async () => {
+    expect(await deletePostIf('abc', 'draft')).toBe(false);
+  });
+
+  it('#42 判別力：状態が同じで着手印が無ければ deletePostIf は true で行が消える', async () => {
+    const post = await makeScheduled();
+
+    const deleted = await deletePostIf(post.id, 'scheduled');
+
+    expect(deleted).toBe(true);
+    expect(await remaining(post.id)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #51 Permission の無い文脈（取り消しの分。G6）
+// ---------------------------------------------------------------------------
+
+describe('#51 bulkDeleteSocialPosts を social.delete の無い文脈で呼ぶ', () => {
+  function withoutDelete(): AuthorizationContext {
+    return {
+      ...admin,
+      permissions: new Set<PermissionName>(['social.read', 'social.write', 'social.approve']),
+    };
+  }
+
+  it('#51 ForbiddenError', async () => {
+    const post = await makeScheduled();
+
+    const error = await rejectionOf(bulkDeleteSocialPosts(withoutDelete(), { ids: [post.id] }));
+
+    expect(error).toBeInstanceOf(ForbiddenError);
+  });
+
+  it('#51 項目は 1 件も処理されない（投稿を読まず、行は残り、監査 deleted も残らない）', async () => {
+    const post = await makeScheduled();
+    const find = vi.spyOn(socialRepository, 'findPostById');
+
+    await rejectionOf(bulkDeleteSocialPosts(withoutDelete(), { ids: [post.id] }));
+
+    expect(find).not.toHaveBeenCalled();
+    expect(await remaining(post.id)).not.toBeNull();
+    expect(await auditCount('deleted')).toBe(0);
   });
 });

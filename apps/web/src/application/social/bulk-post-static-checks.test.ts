@@ -20,6 +20,7 @@ import { CORE_PERMISSIONS } from '@/domain/permission';
  * * #56：`application/social/bulk-post-use-cases.ts` があり、`socialRepository` も `infrastructure/` も import しない（G4）
  * * #58 の一部：`publishNow` は区画の条件を持たない（`scopedPosts`・`scopePredicate`・区画の語を本文に書かない。
  *   区画は読み出しの時点で判定済み。設計 §8.3.1）（G5）
+ * * #58 の一部：`deletePostIf` も区画の条件を持たない（設計 §8.4 の 3）（G6）
  *
  * **未実装の値は静的 import にしない**（`site-scope-static-checks.test.ts` と同じ）。
  * 未実装の段階でこのファイル全体が読めなくなると、他の件まで一緒に落ちて何が壊れたのか読めなくなる。
@@ -535,5 +536,62 @@ describe('#58 publishNow は区画の条件を持たない', () => {
     );
 
     expect(parameters).toMatch(/\bscope\s*\??\s*:/);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* #58 deletePostIf は区画の条件を持たない（G6）                                    */
+/* -------------------------------------------------------------------------- */
+
+describe('#58 deletePostIf は区画の条件を持たない', () => {
+  const repository = (): string =>
+    readSource(join(SRC_DIR, SOCIAL_REPOSITORY_FILE), SOCIAL_REPOSITORY_FILE);
+
+  it('#58 infrastructure/social-repository.ts に deletePostIf がある', () => {
+    expect(
+      methodBody(repository(), 'deletePostIf'),
+      'socialRepository に deletePostIf が無い',
+    ).not.toBeNull();
+  });
+
+  it('#58 deletePostIf の本文に scopedPosts・scopePredicate・区画の条件の語が無い', () => {
+    const body = methodBody(repository(), 'deletePostIf');
+
+    expect(body, 'socialRepository に deletePostIf が無い').not.toBeNull();
+    expect(regionReferences(body ?? '')).toEqual(NO_REGION);
+  });
+
+  it('#58 Domain の宣言の deletePostIf があり、区画の引数（scope）を取らない', () => {
+    const parameters = declarationParameters(
+      readSource(
+        join(SRC_DIR, SOCIAL_REPOSITORY_DECLARATION_FILE),
+        SOCIAL_REPOSITORY_DECLARATION_FILE,
+      ),
+      'deletePostIf',
+    );
+
+    expect(parameters, 'deletePostIf の宣言が無い').not.toBeNull();
+    expect(parameters).not.toMatch(/\bscope\s*\??\s*:/);
+  });
+
+  it('#58 判別力：deletePostIf の本文の区画の条件を見分け、次のメソッドの本文は数えない', () => {
+    const tampered = [
+      'export const socialRepository = {',
+      '  async deletePostIf(connection, id, condition) {',
+      "    return connection.db.deleteFrom('social_posts').where('origin_site_id', 'is', null);",
+      '  },',
+      '',
+      '  async deletePost(connection, id) {',
+      "    return scopedPosts(connection.db.deleteFrom('social_posts'), scope);",
+      '  },',
+      '};',
+      '',
+    ].join('\n');
+
+    expect(regionReferences(methodBody(tampered, 'deletePostIf') ?? '')).toEqual({
+      scopedPosts: false,
+      scopePredicate: false,
+      conditions: 1,
+    });
   });
 });

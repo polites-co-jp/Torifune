@@ -168,15 +168,15 @@ describe('#39 全公開操作の追加の応答が表とちょうど一致する
 
   // 054 で一括の操作を足した（054-bulk-post-actions 設計 §8.9）。生成器が出す応答（200・401・403・422・429・500）
   // だけで追加の応答が無いので、表は変えず、公開操作と何も足さない操作が 1 つずつ増える（054 実装プラン §8 の 1）。
-  // G4：bulkApproveSocialPosts。G5：bulkPublishSocialPostsNow。
-  it('#39 公開操作は 69 で、表の 37 と何も足さない 32 に分かれる', () => {
+  // G4：bulkApproveSocialPosts。G5：bulkPublishSocialPostsNow。G6：bulkDeleteSocialPosts。
+  it('#39 公開操作は 70 で、表の 37 と何も足さない 33 に分かれる', () => {
     const endpoints = listDocumentedEndpoints();
     const withoutAdditional = endpoints.filter(
       (endpoint) => ADDITIONAL[endpoint.operationId] === undefined,
     );
 
-    expect(endpoints).toHaveLength(69);
-    expect(withoutAdditional).toHaveLength(32);
+    expect(endpoints).toHaveLength(70);
+    expect(withoutAdditional).toHaveLength(33);
   });
 
   it.each(listDocumentedEndpoints().map((endpoint) => ({ operationId: endpoint.operationId })))(

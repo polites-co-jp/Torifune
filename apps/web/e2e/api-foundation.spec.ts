@@ -130,6 +130,8 @@ test('OpenAPI に登録済みエンドポイントが含まれる', async ({ req
     '/social/posts',
     // 054-bulk-post-actions 設計 §8.2。画面（セッション）専用の一括承認。
     '/social/posts/bulk/approve',
+    // 054-bulk-post-actions 設計 §8.4。画面（セッション）専用の一括取り消し。
+    '/social/posts/bulk/delete',
     // 054-bulk-post-actions 設計 §8.3。画面（セッション）専用の今すぐ送る。
     '/social/posts/bulk/publish-now',
     '/social/posts/{id}',
