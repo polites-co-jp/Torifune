@@ -32,6 +32,7 @@ import {
   VALIDATE_TIMEOUT_MS,
 } from '@/domain/social/publishing';
 import {
+  ApprovalScheduleError,
   canApprove,
   canTransition,
   DELIVERED_STATUSES,
@@ -681,6 +682,20 @@ const VALIDATE_FIELD_PATTERN = /^[A-Za-z][A-Za-z0-9_.]{0,63}$/;
  */
 function safeMessage(error: unknown): string {
   return redactSecrets(error instanceof Error ? error.message : String(error));
+}
+
+/**
+ * 一括の操作の項目の想定外の失敗をサーバのログに残す（054-bulk-post-actions 設計 §8.1.1）。
+ *
+ * 応答には載せない（項目は `internal_error` と既定の文言だけを返す）。一括の UseCase は `infrastructure/` を
+ * import しないので（受け入れ条件 #56）、ログはここが引き受ける。例外の文言は秘密を伏せてから残す。
+ */
+export function logBulkItemFailure(operation: string, postId: string, error: unknown): void {
+  log.error('social bulk item failed', {
+    operation,
+    postId,
+    reason: safeMessage(error),
+  });
 }
 
 /** Plugin の関数を 1 回呼んだ結果。例外も制限時間超過も観測できる形に畳む。 */
@@ -1477,6 +1492,11 @@ export interface ApprovePostInput {
   readonly scheduledAt?: Date | null | undefined;
   /** 画面（または `GET`）で読んだ投稿の `updatedAt`。合わなければ 409（設計 §6.4.3）。 */
   readonly expectedUpdatedAt: Date;
+  /**
+   * 一括の承認の要求の ID（054-bulk-post-actions 設計 §8.10）。あるときだけ監査の `detail.bulkId` に残す
+   * （1 件の承認の `detail` は変えない）。
+   */
+  readonly bulkId?: string | undefined;
 }
 
 /**
@@ -1534,13 +1554,14 @@ export const approveSocialPost = defineUseCase<ApprovePostInput, ApprovePostOutp
     resourceType: 'social_post',
     resourceId: (input) => input.id,
     // 本文は残さない。承認した人は actorUserId に残る。
-    detail: (_input, output) => ({
+    detail: (input, output) => ({
       requestedTiming: output.requestedTiming,
       effectiveTiming: output.effectiveTiming,
       scheduledAt: output.post.scheduledAt?.toISOString() ?? null,
       deliveryMode: output.post.deliveryMode,
       approvalForced: output.approvalForced,
       via: output.via,
+      ...(input.bulkId === undefined ? {} : { bulkId: input.bulkId }),
     }),
   },
   handler: async (context, input) => {
@@ -1571,7 +1592,8 @@ export const approveSocialPost = defineUseCase<ApprovePostInput, ApprovePostOutp
       now,
     });
     if (!schedule.ok) {
-      throw new ValidationError('SocialPost', schedule.field, schedule.message);
+      // 1 件の承認の応答（422 `details.scheduledAt` と文言）は変わらない。一括の承認は `reason` を項目の理由に写す。
+      throw new ApprovalScheduleError(schedule.field, schedule.message, schedule.reason);
     }
 
     // 8: 予約になった後の値に配信 Plugin の検査を掛ける。**承認は出口ではない**（設計 §6.4.4 の 8）。
