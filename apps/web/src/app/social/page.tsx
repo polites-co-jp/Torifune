@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { helpLinkOfPlugin } from '@/application/plugin/plugin-help-use-cases';
+import { listSites } from '@/application/site/site-use-cases';
 import {
   findPublisher,
   isManualOnlyProvider,
@@ -23,7 +24,11 @@ import { requirePageSession } from '@/ui/server/page-session';
 import { ApprovalPending, type ApprovalPendingRow } from '@/ui/social/approval-pending';
 import { ManualPending, type ManualPendingRow } from '@/ui/social/manual-pending';
 import { buildProviderOptions } from '@/ui/social/provider-options';
-import { SocialAccounts, type SocialAccountsProps } from '@/ui/social/social-accounts';
+import {
+  SocialAccounts,
+  type SiteOption,
+  type SocialAccountsProps,
+} from '@/ui/social/social-accounts';
 import {
   SocialPosts,
   type AccountProvider,
@@ -205,6 +210,25 @@ export default async function SocialPage({
     };
   });
 
+  // サイトの一覧（053-site-scoped-social 設計 §9.1.5）。`site.read` があるときだけ引く。
+  // 既定（active / paused）とアーカイブを 2 回に分けて名前順で引き、この順で渡す（部品は並べ替えない）。
+  const canReadSites = permissions.has('site.read');
+  const sites: SiteOption[] = [];
+  if (canReadSites) {
+    for (const status of [null, 'archived'] as const) {
+      const page = await listSites(context, {
+        page: 1,
+        perPage: 100,
+        status,
+        keyword: null,
+        sort: [{ field: 'name', direction: 'asc' }],
+      });
+      sites.push(
+        ...page.items.map((site) => ({ id: site.id, name: site.name, status: site.status })),
+      );
+    }
+  }
+
   const accountProps: SocialAccountsProps = {
     initialAccounts: accounts.items.map((account) => ({
       id: account.id,
@@ -213,9 +237,12 @@ export default async function SocialPage({
       handle: account.handle,
       status: account.status,
       credentialConfigured: account.credentialConfigured,
+      siteId: account.siteId,
     })),
     permissions: [...permissions],
     providers,
+    sites,
+    canReadSites,
   };
 
   return (

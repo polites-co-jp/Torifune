@@ -60,6 +60,15 @@ const FORBIDDEN_DETAIL_KEYS = [
 ];
 
 /**
+ * 禁止の語を含むが、**数だけ**を残すと決まっているキー（キー名の完全一致・値が数のときだけ通す）。
+ *
+ * * `revokedApiTokens`：サイトの削除と同時に失効させたトークンの数（053-site-scoped-social 設計 §8.6・§8.9）
+ *
+ * 数は資格情報になりえないので、値が数でなければ（文字列などを誤って入れたら）今までどおり落とす。
+ */
+const COUNT_DETAIL_KEYS: readonly string[] = ['revokedApiTokens'];
+
+/**
  * 詳細情報から機密になりうるキーを落とす。
  *
  * 「入れない」を規約に頼ると、いつか入る。機械的に落とす。
@@ -67,6 +76,10 @@ const FORBIDDEN_DETAIL_KEYS = [
 export function sanitizeAuditDetail(detail: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(detail)) {
+    if (COUNT_DETAIL_KEYS.includes(key) && typeof value === 'number') {
+      result[key] = value;
+      continue;
+    }
     const normalized = key.toLowerCase().replace(/[_-]/g, '');
     if (FORBIDDEN_DETAIL_KEYS.some((forbidden) => normalized.includes(forbidden))) {
       continue;

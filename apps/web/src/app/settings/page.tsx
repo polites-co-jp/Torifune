@@ -8,12 +8,14 @@ import {
 } from '@/application/analytics/timezone';
 import { listPermissions } from '@/application/authorization/permission-registry';
 import { listJobStatuses } from '@/application/jobs/job-use-cases';
+import { listSites } from '@/application/site/site-use-cases';
 import { schedulerSnapshot } from '@/application/jobs/scheduler';
 import { getSystemSettings } from '@/application/system-settings/system-settings-use-cases';
 import { authenticationProviderId } from '@/authentication/registry';
 import { listUsers } from '@/application/user/user-use-cases';
 import { listRoleGrants, listRoles } from '@/application/authorization/role-use-cases';
 import { formatDateTimeInTimeZone } from '@/domain/analytics/day';
+import { SITE_TOKEN_SCOPES } from '@/domain/api-token';
 import { normalizeClientIp } from '@/domain/analytics/ip-exclusion';
 import { timeZoneOptions } from '@/domain/analytics/time-zone';
 import { normalizePage } from '@/domain/repository';
@@ -24,6 +26,7 @@ import { ExtensionPoint } from '@/ui/plugin/plugin-slot';
 import { requirePageSession } from '@/ui/server/page-session';
 import { AccessLogIpSettings } from '@/ui/settings/access-log-ip-settings';
 import { ApiSettings } from '@/ui/settings/api-settings';
+import type { TokenSiteOption } from '@/ui/settings/api-token-site';
 import { AuthSettings } from '@/ui/settings/auth-settings';
 import { GeneralSettings } from '@/ui/settings/general-settings';
 import { JobStatusCard, type JobStatusCardData } from '@/ui/settings/job-status';
@@ -148,9 +151,7 @@ export default async function SettingsPage({
           authProviderId={authenticationProviderId()}
         />
       )}
-      {tab === 'api' && (
-        <ApiSettings scopeCandidates={[...permissions].sort()} corsOrigins={allowedOrigins()} />
-      )}
+      {tab === 'api' && <ApiTab context={context} permissions={permissions} />}
 
       {/*
         Plugin が追加するタブ（06_画面設計.md §27）。
@@ -165,6 +166,46 @@ export default async function SettingsPage({
 
 type PageContext = Awaited<ReturnType<typeof requirePageSession>>['context'];
 type RoleList = Awaited<ReturnType<typeof listRoles>>;
+
+/**
+ * API のタブ（015b-settings、053-site-scoped-social 設計 §9.2）。
+ *
+ * サイトの一覧は `site.read` があるときだけ引く（`/social` と同じ 2 回。既定とアーカイブを名前順）。
+ * 無ければ空で、発行フォームの「サイト」は「共通」だけになる。
+ * サイトのトークンに付けられる Scope は Domain の定数を渡す（部品に一覧を持たない）。
+ */
+async function ApiTab({
+  context,
+  permissions,
+}: {
+  context: PageContext;
+  permissions: ReadonlySet<string>;
+}) {
+  const sites: TokenSiteOption[] = [];
+  if (permissions.has('site.read')) {
+    for (const status of [null, 'archived'] as const) {
+      const page = await listSites(context, {
+        page: 1,
+        perPage: 100,
+        status,
+        keyword: null,
+        sort: [{ field: 'name', direction: 'asc' }],
+      });
+      sites.push(
+        ...page.items.map((site) => ({ id: site.id, name: site.name, status: site.status })),
+      );
+    }
+  }
+
+  return (
+    <ApiSettings
+      scopeCandidates={[...permissions].sort()}
+      corsOrigins={allowedOrigins()}
+      sites={sites}
+      siteTokenScopes={SITE_TOKEN_SCOPES}
+    />
+  );
+}
 
 async function UsersTab({
   context,

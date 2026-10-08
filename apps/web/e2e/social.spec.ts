@@ -55,6 +55,8 @@ test('アカウントを作成でき、応答に資格情報が含まれない',
     'handle',
     'id',
     'provider',
+    // 053 で足した（アカウントを紐づけたサイト。053-site-scoped-social 設計 §8.2.1）。
+    'siteId',
     'status',
     'updatedAt',
   ]);

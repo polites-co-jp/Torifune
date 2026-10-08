@@ -197,6 +197,7 @@ describe('#39 宣言どおりの credentials で登録する', () => {
       accountInput({ credentials: { identifier: 'a', appPassword: 'b' } }),
     );
 
+    // 053-site-scoped-social 設計 §8.2.1・§14 の 3 行目：siteId が増えて 9 個。credentials は今までどおり返さない。
     expect(Object.keys(dataOf(result)).sort()).toEqual(
       [
         'createdAt',
@@ -205,6 +206,7 @@ describe('#39 宣言どおりの credentials で登録する', () => {
         'handle',
         'id',
         'provider',
+        'siteId',
         'status',
         'updatedAt',
       ].sort(),

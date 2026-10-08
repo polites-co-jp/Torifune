@@ -10,6 +10,13 @@ import {
   type ApiToken,
 } from './api-token';
 
+/**
+ * 共通のトークン（サイトに紐づかない）。053-site-scoped-social 設計 §7.5・§14 の 2 行目で
+ * `ApiToken` に `siteId` / `siteScoped` が増える。型に項目が入る前後どちらでも型検査が通るよう、
+ * 変数を展開して足す。
+ */
+const COMMON_TOKEN_SITE = { siteId: null, siteScoped: false } as const;
+
 function token(overrides: Partial<ApiToken> = {}): ApiToken {
   return {
     id: 'id',
@@ -21,6 +28,7 @@ function token(overrides: Partial<ApiToken> = {}): ApiToken {
     lastUsedAt: null,
     revokedAt: null,
     createdAt: new Date('2026-01-01T00:00:00Z'),
+    ...COMMON_TOKEN_SITE,
     ...overrides,
   };
 }

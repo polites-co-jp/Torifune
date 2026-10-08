@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { Fragment, useState } from 'react';
 import { ownValue } from '@/domain/own-value';
+import type { SiteStatus } from '@/domain/site/site';
 import type { AccountStatus } from '@/domain/social/social';
 import { apiRequest } from '@/ui/client/api-client';
 import { copyText } from '@/ui/client/clipboard';
@@ -50,6 +51,19 @@ import {
   CREDENTIAL_STATE_NOT_CONFIGURED,
   credentialClearMessage,
   credentialTargetLabel,
+  SITE_CHANGE_LABEL,
+  SITE_CHANGE_TITLE,
+  SITE_CHANGE_WARNING,
+  SITE_CHANGED,
+  SITE_COLUMN_HEADER,
+  SITE_COMMON_LABEL,
+  SITE_COMMON_OPTION,
+  SITE_FILTER_ALL,
+  SITE_FILTER_LABEL,
+  SITE_SELECT_DESCRIPTION,
+  SITE_SELECT_NO_PERMISSION,
+  SITE_UNNAMED_LABEL,
+  siteNameLabel,
 } from '@/ui/social/labels';
 import { HelpLink } from '@/ui/help/help-link';
 import { AsyncState } from '@/ui/states/async-state';
@@ -63,6 +77,25 @@ export interface AccountRow {
   readonly handle: string;
   readonly status: string;
   readonly credentialConfigured: boolean;
+}
+
+/**
+ * 一覧が受け取る行（053-site-scoped-social 設計 §9.1.5）。`AccountRow` に属するサイトを足したもの。
+ *
+ * `siteId` は null で共通、**省略も共通と同じ**（既存の行の組み立てを壊さない）。
+ * `AccountRow` のキーは資格情報を混ぜないための検査（039 #24）が型でちょうど固定しているので、
+ * 資格情報ではないサイトは別の型で足す。
+ */
+export type AccountRowWithSite = AccountRow & { readonly siteId?: string | null };
+
+/**
+ * 部品が受け取るサイト（053 設計 §9.1.5）。Server Component が `listSites` から組み、
+ * `active` / `paused` を名前順、続けてアーカイブを名前順に並べて渡す。部品は並べ替えない。
+ */
+export interface SiteOption {
+  readonly id: string;
+  readonly name: string;
+  readonly status: SiteStatus;
 }
 
 /**
@@ -99,7 +132,7 @@ export interface ProviderOption {
 }
 
 export interface SocialAccountsProps {
-  readonly initialAccounts: readonly AccountRow[];
+  readonly initialAccounts: readonly AccountRowWithSite[];
   readonly permissions: readonly string[];
   readonly providers: readonly ProviderOption[];
   /**
@@ -113,6 +146,54 @@ export interface SocialAccountsProps {
    * 既定は閉じる（Server Component は渡さない）。`initialCreating` と同じ理由（039 設計 §10.4）。
    */
   readonly initialEditingAccountId?: string;
+  /** サイトの一覧（053 設計 §9.1.5）。`site.read` が無ければ空。既定は空。 */
+  readonly sites?: readonly SiteOption[];
+  /** `site.read` を持つか。無ければサイトを選ばせない（設計 §9.1.2・§9.1.3）。既定は false。 */
+  readonly canReadSites?: boolean;
+  /**
+   * 「サイトの紐づけを変える」の Modal を、このアカウントについて開いた状態で描く。
+   * 既定は閉じる（Server Component は渡さない）。`initialCreating` と同じ理由（053 設計 §9.1.5）。
+   */
+  readonly initialSiteEditingAccountId?: string;
+  /** 「サイトで絞り込む」の初期値。既定は「すべて」（Server Component は渡さない）。 */
+  readonly initialSiteFilter?: string;
+}
+
+/** 絞り込みの「すべて」と「共通」の値（サイトの ID は UUID なので重ならない）。 */
+const SITE_FILTER_ALL_VALUE = '';
+const SITE_FILTER_COMMON_VALUE = 'common';
+
+/** サイトの `Select` の「共通」の値（送るときは null）。 */
+const SITE_COMMON_VALUE = '';
+
+/** 行のサイト。省略は共通と同じ（設計 §9.1.5）。 */
+function siteIdOf(account: AccountRowWithSite): string | null {
+  return account.siteId ?? null;
+}
+
+/**
+ * 「サイトの紐づけを変える」の選択肢（設計 §9.1.3）：追加の Modal と同じ `active` / `paused` のサイトに、
+ * 今の値がアーカイブしたサイトならそれも足す。
+ */
+function siteChoicesFor(
+  sites: readonly SiteOption[],
+  currentSiteId: string | null,
+): readonly SiteOption[] {
+  return sites.filter(
+    (site) => site.status !== 'archived' || (currentSiteId !== null && site.id === currentSiteId),
+  );
+}
+
+/** Modal を開いたときの選択（今の値。選択肢に無ければ「共通」）。 */
+function initialSiteChoice(
+  sites: readonly SiteOption[],
+  account: AccountRowWithSite | undefined,
+): string {
+  const current = account === undefined ? null : siteIdOf(account);
+  if (current === null) return SITE_COMMON_VALUE;
+  return siteChoicesFor(sites, current).some((site) => site.id === current)
+    ? current
+    : SITE_COMMON_VALUE;
 }
 
 /** 空文字の説明は「無い」として渡す（039 設計 §7.1.2。空の要素や空の参照を残さない）。 */
@@ -180,7 +261,7 @@ export function SocialAccounts(props: SocialAccountsProps) {
   const router = useRouter();
   const [accounts, setAccounts] = useState(props.initialAccounts);
   const [creating, setCreating] = useState(props.initialCreating === true);
-  const [deleting, setDeleting] = useState<AccountRow | null>(null);
+  const [deleting, setDeleting] = useState<AccountRowWithSite | null>(null);
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [credential, setCredential] = useState('');
@@ -193,6 +274,22 @@ export function SocialAccounts(props: SocialAccountsProps) {
   const [editCredential, setEditCredential] = useState('');
   const [editError, setEditError] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
+
+  // サイト（053 設計 §9.1）。開くときに要求を出さない。行の値とサイトの一覧だけを使う。
+  const sites = props.sites ?? [];
+  const canReadSites = props.canReadSites === true;
+  const [createSiteId, setCreateSiteId] = useState(SITE_COMMON_VALUE);
+  const [siteEditingId, setSiteEditingId] = useState<string | null>(
+    props.initialSiteEditingAccountId ?? null,
+  );
+  const [siteEditValue, setSiteEditValue] = useState(() =>
+    initialSiteChoice(
+      sites,
+      props.initialAccounts.find((account) => account.id === props.initialSiteEditingAccountId),
+    ),
+  );
+  const [siteEditError, setSiteEditError] = useState<string | null>(null);
+  const [siteFilter, setSiteFilter] = useState(props.initialSiteFilter ?? SITE_FILTER_ALL_VALUE);
 
   const permissions = new Set(props.permissions);
   // 表示制御であって認可ではない。サーバー側で必ず検証している。
@@ -216,11 +313,47 @@ export function SocialAccounts(props: SocialAccountsProps) {
   const editHelp = helpOfInput(editOption, editInput);
   const editFields = editInput === 'fields' ? (editOption?.credentialFields ?? []) : [];
 
+  const siteEditing =
+    siteEditingId === null ? null : (accounts.find((a) => a.id === siteEditingId) ?? null);
+  const siteEditChoices = siteEditing === null ? [] : siteChoicesFor(sites, siteIdOf(siteEditing));
+  // 追加の Modal はアーカイブしたサイトを選ばせない（設計 §9.1.2）。
+  const createSiteChoices = canReadSites ? siteChoicesFor(sites, null) : [];
+
+  /** 行の「サイト」列の表示（設計 §9.1.1）。 */
+  function siteLabelOf(account: AccountRowWithSite): string {
+    const siteId = siteIdOf(account);
+    if (siteId === null) return SITE_COMMON_LABEL;
+    const site = sites.find((candidate) => candidate.id === siteId);
+    return site === undefined ? SITE_UNNAMED_LABEL : siteNameLabel(site);
+  }
+
+  // 絞り込み（設計 §9.1.4。裁定 9）。**手元で絞る。** 要求を出さず、URL も変えない。
+  // 選択肢は「すべて」「共通」と、アカウントが紐づいているサイト（渡された順＝名前順）。
+  const linkedSiteIds = new Set(
+    accounts.map(siteIdOf).filter((siteId): siteId is string => siteId !== null),
+  );
+  const filterSites = sites.filter((site) => linkedSiteIds.has(site.id));
+  const showSiteFilter = linkedSiteIds.size > 0;
+  // 選んでいたサイトのアカウントが無くなったら「すべて」に戻す（空の一覧にしない）。
+  const activeFilter =
+    siteFilter === SITE_FILTER_COMMON_VALUE || filterSites.some((site) => site.id === siteFilter)
+      ? siteFilter
+      : SITE_FILTER_ALL_VALUE;
+  const shownAccounts =
+    !showSiteFilter || activeFilter === SITE_FILTER_ALL_VALUE
+      ? accounts
+      : accounts.filter((account) =>
+          activeFilter === SITE_FILTER_COMMON_VALUE
+            ? siteIdOf(account) === null
+            : siteIdOf(account) === activeFilter,
+        );
+
   /** **入力値を持ち越さない。** 閉じたら捨てる（設計 §7.5）。 */
   function closeCreate(): void {
     setCreating(false);
     setCredential('');
     setCredentialValues({});
+    setCreateSiteId(SITE_COMMON_VALUE);
     setFormError(null);
   }
 
@@ -233,7 +366,7 @@ export function SocialAccounts(props: SocialAccountsProps) {
     // （API が 422 にする。035 設計 §6.4）。資格情報を使わない provider には何も送らない。
     // 入力の形の判断は `buildCreateAccountRequest` が `providers` から行う（039 設計 §7.7.1）。
     // 平文はここでだけ扱う。応答には含まれない。
-    const result = await apiRequest<AccountRow>('/api/v1/social/accounts', {
+    const result = await apiRequest<AccountRowWithSite>('/api/v1/social/accounts', {
       method: 'POST',
       body: buildCreateAccountRequest(props.providers, {
         provider: String(form.get('provider') ?? provider),
@@ -241,6 +374,8 @@ export function SocialAccounts(props: SocialAccountsProps) {
         handle: String(form.get('handle') ?? ''),
         values: credentialValues,
         credential,
+        // 共通なら null（053 設計 §9.1.2）。`site.read` が無ければ常に共通。
+        siteId: canReadSites && createSiteId !== SITE_COMMON_VALUE ? createSiteId : null,
       }),
     });
 
@@ -272,7 +407,7 @@ export function SocialAccounts(props: SocialAccountsProps) {
     }
   }
 
-  function openEdit(account: AccountRow): void {
+  function openEdit(account: AccountRowWithSite): void {
     setEditValues({});
     setEditCredential('');
     setEditError(null);
@@ -291,9 +426,9 @@ export function SocialAccounts(props: SocialAccountsProps) {
 
   /**
    * 応答のうち `credentialConfigured` と `status` だけを行に重ねる。
-   * **応答をそのまま行にしない**（行が持つのは `AccountRow` のキーだけ。039 設計 #24）。
+   * **応答をそのまま行にしない**（行が持つのは `AccountRow` のキーと `siteId` だけ。039 設計 #24）。
    */
-  function applyUpdate(id: string, updated: AccountRow): void {
+  function applyUpdate(id: string, updated: AccountRowWithSite): void {
     setAccounts((current) =>
       current.map((account) =>
         account.id === id
@@ -305,6 +440,43 @@ export function SocialAccounts(props: SocialAccountsProps) {
           : account,
       ),
     );
+  }
+
+  function openSiteEdit(account: AccountRowWithSite): void {
+    setSiteEditValue(initialSiteChoice(sites, account));
+    setSiteEditError(null);
+    setSiteEditingId(account.id);
+  }
+
+  function closeSiteEdit(): void {
+    setSiteEditingId(null);
+    setSiteEditError(null);
+  }
+
+  /** 「サイトの紐づけを変える」の保存（設計 §9.1.3）。失敗したら Modal は開いたまま。 */
+  async function submitSiteEdit(event: React.FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    const target = siteEditing;
+    if (target === null) return;
+    setSiteEditError(null);
+
+    const result = await apiRequest<AccountRowWithSite>(`/api/v1/social/accounts/${target.id}`, {
+      method: 'PATCH',
+      body: { siteId: siteEditValue === SITE_COMMON_VALUE ? null : siteEditValue },
+    });
+
+    if (!result.ok) {
+      setSiteEditError(result.error.message);
+      return;
+    }
+
+    // 応答のうち `siteId` だけを行に重ねる（応答をそのまま行にしない）。
+    const siteId = result.data.siteId ?? null;
+    setAccounts((current) =>
+      current.map((account) => (account.id === target.id ? { ...account, siteId } : account)),
+    );
+    closeSiteEdit();
+    setToast({ id: `${target.id}:site`, text: SITE_CHANGED, tone: 'success' });
   }
 
   async function submitEdit(event: React.FormEvent<HTMLFormElement>): Promise<void> {
@@ -320,7 +492,7 @@ export function SocialAccounts(props: SocialAccountsProps) {
       return;
     }
 
-    const result = await apiRequest<AccountRow>(`/api/v1/social/accounts/${target.id}`, {
+    const result = await apiRequest<AccountRowWithSite>(`/api/v1/social/accounts/${target.id}`, {
       method: 'PATCH',
       body: built.body,
     });
@@ -343,7 +515,7 @@ export function SocialAccounts(props: SocialAccountsProps) {
     setClearing(false);
     if (target === null) return;
 
-    const result = await apiRequest<AccountRow>(`/api/v1/social/accounts/${target.id}`, {
+    const result = await apiRequest<AccountRowWithSite>(`/api/v1/social/accounts/${target.id}`, {
       method: 'PATCH',
       body: buildClearCredentialRequest(props.providers, target),
     });
@@ -422,7 +594,7 @@ export function SocialAccounts(props: SocialAccountsProps) {
     );
   }
 
-  const columns: Column<AccountRow>[] = [
+  const columns: Column<AccountRowWithSite>[] = [
     {
       key: 'provider',
       header: 'サービス',
@@ -435,6 +607,13 @@ export function SocialAccounts(props: SocialAccountsProps) {
     { key: 'handle', header: 'ハンドル', render: (account) => account.handle },
     // 外部アプリへ渡す ID（051 設計 §7.1）。`social.read` で見える・押せる。幅は指定しない。
     { key: 'accountId', header: ACCOUNT_ID_HEADER, render: renderAccountId },
+    {
+      key: 'site',
+      header: SITE_COLUMN_HEADER,
+      width: '9rem',
+      // 閲覧者にも見せる（053 設計 §9.1.1）。名前を引けなければ「サイト専用」。
+      render: (account) => siteLabelOf(account),
+    },
     {
       key: 'credential',
       header: '資格情報',
@@ -459,6 +638,12 @@ export function SocialAccounts(props: SocialAccountsProps) {
             {canWrite && (
               <Button variant="ghost" onClick={() => openEdit(account)}>
                 {CREDENTIAL_SET_LABEL}
+              </Button>
+            )}
+            {/* サイトの一覧を見られなければ選びようがないので出さない（053 設計 §9.1.3）。 */}
+            {canWrite && canReadSites && (
+              <Button variant="ghost" onClick={() => openSiteEdit(account)}>
+                {SITE_CHANGE_LABEL}
               </Button>
             )}
             {canDelete && (
@@ -510,8 +695,27 @@ export function SocialAccounts(props: SocialAccountsProps) {
           ) : undefined
         }
       >
+        {showSiteFilter && (
+          <FormField label={SITE_FILTER_LABEL}>
+            {(fieldProps) => (
+              <Select
+                {...fieldProps}
+                value={activeFilter}
+                onChange={(event) => setSiteFilter(event.target.value)}
+              >
+                <option value={SITE_FILTER_ALL_VALUE}>{SITE_FILTER_ALL}</option>
+                <option value={SITE_FILTER_COMMON_VALUE}>{SITE_COMMON_LABEL}</option>
+                {filterSites.map((site) => (
+                  <option key={site.id} value={site.id}>
+                    {siteNameLabel(site)}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </FormField>
+        )}
         <Card>
-          <Table columns={columns} rows={accounts} rowKey={(account) => account.id} />
+          <Table columns={columns} rows={shownAccounts} rowKey={(account) => account.id} />
         </Card>
       </AsyncState>
 
@@ -550,6 +754,29 @@ export function SocialAccounts(props: SocialAccountsProps) {
               <HelpLink href={createHelp.href} title={createHelp.title} />
             </div>
           )}
+
+          {/* 「表示名」の上（053 設計 §9.1.2）。`site.read` が無ければ「共通」だけで選ばせない。 */}
+          <FormField
+            label={SITE_COLUMN_HEADER}
+            description={canReadSites ? SITE_SELECT_DESCRIPTION : SITE_SELECT_NO_PERMISSION}
+          >
+            {(fieldProps) => (
+              <Select
+                {...fieldProps}
+                name="siteId"
+                value={canReadSites ? createSiteId : SITE_COMMON_VALUE}
+                disabled={!canReadSites}
+                onChange={(event) => setCreateSiteId(event.target.value)}
+              >
+                <option value={SITE_COMMON_VALUE}>{SITE_COMMON_OPTION}</option>
+                {createSiteChoices.map((site) => (
+                  <option key={site.id} value={site.id}>
+                    {site.name}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </FormField>
 
           <FormField label="表示名" required>
             {(fieldProps) => <Input {...fieldProps} name="displayName" required />}
@@ -704,6 +931,48 @@ export function SocialAccounts(props: SocialAccountsProps) {
                   </>
                 )}
               </div>
+            </div>
+          </form>
+        )}
+      </Modal>
+
+      <Modal open={siteEditing !== null} title={SITE_CHANGE_TITLE} onClose={closeSiteEdit}>
+        {siteEditing !== null && (
+          <form onSubmit={submitSiteEdit}>
+            {siteEditError !== null && (
+              <div style={{ marginBottom: 'var(--tf-space-4)' }}>
+                <Alert tone="danger">{siteEditError}</Alert>
+              </div>
+            )}
+
+            <FormField label={SITE_COLUMN_HEADER}>
+              {(fieldProps) => (
+                <Select
+                  {...fieldProps}
+                  value={siteEditValue}
+                  onChange={(event) => setSiteEditValue(event.target.value)}
+                >
+                  <option value={SITE_COMMON_VALUE}>{SITE_COMMON_OPTION}</option>
+                  {siteEditChoices.map((site) => (
+                    <option key={site.id} value={site.id}>
+                      {siteNameLabel(site)}
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </FormField>
+
+            <div style={{ marginBottom: 'var(--tf-space-4)' }}>
+              <Alert tone="warning">{SITE_CHANGE_WARNING}</Alert>
+            </div>
+
+            <div style={{ display: 'flex', gap: 'var(--tf-space-2)', justifyContent: 'flex-end' }}>
+              <Button variant="secondary" onClick={closeSiteEdit}>
+                キャンセル
+              </Button>
+              <Button type="submit" variant="primary">
+                保存
+              </Button>
             </div>
           </form>
         )}

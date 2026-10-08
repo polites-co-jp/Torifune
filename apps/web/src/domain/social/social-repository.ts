@@ -1,4 +1,5 @@
 import type { Connection } from '../../database/provider';
+import type { AccessScope, PostOrigin } from './access-scope';
 import type { PublishVerdict, SkipVerdict } from './publishing';
 import type {
   AccountStatus,
@@ -18,6 +19,11 @@ export interface NewSocialAccount {
   /** **暗号化済みの文字列**。平文を渡さない。 */
   readonly encryptedCredential: string | null;
   readonly status: AccountStatus;
+  /**
+   * 属するサイト。省略・null は共通（053 設計 §7.5）。
+   * サイトが無ければ（外部キー違反）`insertAccount` は `NotFoundError('Site')` を投げる。
+   */
+  readonly siteId?: string | null | undefined;
 }
 
 export interface SocialAccountUpdate {
@@ -29,6 +35,11 @@ export interface SocialAccountUpdate {
    * `null` を明示すると消す。**「指定しない」と「消す」を区別する。**
    */
   readonly encryptedCredential?: string | null | undefined;
+  /**
+   * `undefined` なら変えない。`null` は共通にする（053 設計 §8.2.4）。
+   * サイトが無ければ（外部キー違反）`updateAccount` は `NotFoundError('Site')` を投げる。
+   */
+  readonly siteId?: string | null | undefined;
 }
 
 export interface SocialAccountListQuery {
@@ -55,6 +66,14 @@ export interface NewSocialPost {
   readonly externalRef?: string | null | undefined;
   /** 登録した API Token。セッションからの登録は null。 */
   readonly createdByTokenId?: string | null | undefined;
+  /**
+   * 登録元の区画（053 設計 §7.3）。省略は `(null, false)`（共通）。
+   *
+   * **`createdByTokenId` があるときは使わない。** Repository が挿入のトランザクションの中でトークンの行を
+   * `FOR SHARE` で読み、その値を書く（文脈の区画の写しで書くと、トークンのサイトの変更と同時に進んだ登録が食い違う）。
+   * 読んだ行が失効している・サイトのトークンでサイトが消えていれば `SiteGoneError` を投げ、挿入しない。
+   */
+  readonly origin?: PostOrigin | undefined;
 }
 
 export interface SocialPostUpdate {
@@ -131,8 +150,32 @@ export interface DueCursor {
 }
 
 export interface SocialRepository {
-  listAccounts(connection: Connection, query: SocialAccountListQuery): Promise<SocialAccountPage>;
+  /**
+   * 区画（053 設計 §7.4）で絞った一覧。`total` も同じ条件で数える。
+   * **区画は必須**（省略で `ALL_SCOPE` に倒さない。画面・ジョブは `ALL_SCOPE` を明示して渡す。053 受け入れ条件 #100）。
+   *
+   * **ID 指定（`findAccountById`）は区画を取らない。** 404 と 403 を分けるため、UseCase が
+   * `accountVisible` / `accountManageable` で判定する（053 設計 §8.3.4）。
+   */
+  listAccounts(
+    connection: Connection,
+    query: SocialAccountListQuery,
+    scope: AccessScope,
+  ): Promise<SocialAccountPage>;
   findAccountById(connection: Connection, id: string): Promise<SocialAccount | null>;
+  /**
+   * トークンからの削除・資格情報の変更の前に、アカウントの行を `FOR UPDATE` でロックして読む
+   * （053 ユーザー裁定 11。設計 §8.2.4・§8.2.5）。呼び出し側のトランザクションの中で呼ぶ。行が無ければ（id の形が不正を含む）null。
+   *
+   * `hasPostsOutsideScope` は、そのアカウントに区画から見えない投稿（設計 §5.2 の投稿の表で見えないもの）があるか。
+   * ロックは投稿の挿入（外部キーの検査の `FOR KEY SHARE`）と衝突するので、同時に進んだ登録はコミットを待ってから数える。
+   * `siteId` はロックした時点のアカウントのサイト（区画で変えられるかを、ロックした行で判定し直すため）。
+   */
+  lockAccountForScopedChange(
+    connection: Connection,
+    id: string,
+    scope: AccessScope,
+  ): Promise<{ readonly siteId: string | null; readonly hasPostsOutsideScope: boolean } | null>;
   /**
    * 資格情報つきで取得する。
    *
@@ -162,15 +205,28 @@ export interface SocialRepository {
     encryptedCredential: string,
   ): Promise<boolean>;
 
-  listPosts(connection: Connection, query: SocialPostListQuery): Promise<SocialPostPage>;
-  findPostById(connection: Connection, id: string): Promise<SocialPost | null>;
+  /**
+   * 投稿の読み出しの `scope` は区画（053 設計 §7.4）。**必須**（省略で `ALL_SCOPE` に倒さない。053 受け入れ条件 #100）。
+   * `listPosts` / `listManualPending` / `listApprovalPending` の `total` も同じ条件で数える。
+   */
+  listPosts(
+    connection: Connection,
+    query: SocialPostListQuery,
+    scope: AccessScope,
+  ): Promise<SocialPostPage>;
+  /** 区画の外の投稿は null（存在しないのと同じ。053 設計 §8.3.2）。 */
+  findPostById(connection: Connection, id: string, scope: AccessScope): Promise<SocialPost | null>;
   /**
    * IDでまとめて引く。
    *
    * キャンペーンに紐づく投稿のように「IDは判っている」場面で使う。
-   * 1件ずつ引くと件数分の往復になる。
+   * 1件ずつ引くと件数分の往復になる。区画の外の投稿は含めない。
    */
-  findPostsByIds(connection: Connection, ids: readonly string[]): Promise<readonly SocialPost[]>;
+  findPostsByIds(
+    connection: Connection,
+    ids: readonly string[],
+    scope: AccessScope,
+  ): Promise<readonly SocialPost[]>;
   insertPost(connection: Connection, post: NewSocialPost): Promise<SocialPost>;
   /**
    * 冪等に登録する（035-social-publishing 設計 §6.1.3）。
@@ -214,7 +270,11 @@ export interface SocialRepository {
    *
    * `total` は `limit` で切る前の全件数（ダッシュボードの件数に使う。§7.6）。
    */
-  listManualPending(connection: Connection, limit: number): Promise<SocialPostPage>;
+  listManualPending(
+    connection: Connection,
+    limit: number,
+    scope: AccessScope,
+  ): Promise<SocialPostPage>;
 
   // -------------------------------------------------------------------------
   // 承認（048-social-post-approval 設計 §6.4.6 / §6.5）
@@ -243,7 +303,11 @@ export interface SocialRepository {
   /**
    * 承認待ちの投稿を作成の古い順に引く（設計 §6.5）。`total` は `limit` で切る前の全件数。
    */
-  listApprovalPending(connection: Connection, limit: number): Promise<SocialPostPage>;
+  listApprovalPending(
+    connection: Connection,
+    limit: number,
+    scope: AccessScope,
+  ): Promise<SocialPostPage>;
 
   // -------------------------------------------------------------------------
   // 配信ジョブ（035-social-publishing 設計 §6.5.3 / §6.5.4 / §6.5.6）

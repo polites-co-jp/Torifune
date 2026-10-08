@@ -53,3 +53,33 @@ export function isSiteStatus(value: string): value is SiteStatus {
 
 /** 一覧の既定で `archived` を隠す。「もう使わないが記録は残す」状態のため。 */
 export const DEFAULT_LISTED_STATUSES: readonly SiteStatus[] = ['active', 'paused'];
+
+/**
+ * 紐づいた SNS アカウントがあるサイトの削除（053-site-scoped-social 設計 §8.6）。
+ *
+ * アカウントには投稿と資格情報が載っており、消す（`CASCADE`）か共通に戻す（範囲が広がる）かは運用者が決めることなので、
+ * サイトの削除を断る。API は 409 `CONFLICT`・`details.socialAccounts` に件数つきの文言を添えて写す。
+ *
+ * `count` は紐づいたアカウントの数。削除の文が外部キーに当たった（検査と削除の間に紐づけられた）ときは
+ * そのトランザクションの中では数えられないので null（UseCase がロールバックの後に数え直す）。
+ */
+export class SiteInUseError extends Error {
+  constructor(readonly count: number | null) {
+    super('サイトに紐づいた SNS アカウントがある');
+    this.name = 'SiteInUseError';
+  }
+}
+
+/**
+ * 投稿の登録の直前に、登録元のトークンが使えなくなっていた（053-site-scoped-social 設計 §8.3.1）。
+ *
+ * 挿入のトランザクションの中で読んだトークンの行が失効している、またはサイトのトークンでサイトが消えている
+ * （`site_scoped` で `site_id` が NULL）。要求の始めには使えたトークンがサイトの削除と同時に進んだ窓を閉じる。
+ * API はトークンが使えなくなったのと同じく 401 `UNAUTHENTICATED` に写す（理由は返さない）。
+ */
+export class SiteGoneError extends Error {
+  constructor(readonly tokenId: string) {
+    super('登録元のトークンが使えなくなっています');
+    this.name = 'SiteGoneError';
+  }
+}

@@ -111,6 +111,15 @@ export const accountListQuerySchema = z.object({
   provider: z.string().max(32).optional(),
 });
 
+/** アカウントのサイト（053 設計 §8.8）。 */
+const accountSiteIdSchema = z
+  .guid('UUID の形で指定してください。')
+  .nullable()
+  .optional()
+  .describe(
+    'サイトに紐づける。省略すると、画面では共通、サイトのトークンではそのサイト。APIトークンでは変えられない。',
+  );
+
 export const createAccountSchema = z.object({
   provider: z.string().min(1, '入力してください。').max(32),
   displayName: z.string().trim().min(1, '入力してください。').max(DISPLAY_NAME_MAX_LENGTH),
@@ -120,6 +129,7 @@ export const createAccountSchema = z.object({
   /** `credentialFields` に従う資格情報。`credential` との同時指定は 422。 */
   credentials: credentialsSchema.optional(),
   status: accountStatusSchema.default('disconnected'),
+  siteId: accountSiteIdSchema,
   csrfToken: z.string().optional(),
 });
 
@@ -131,6 +141,7 @@ export const updateAccountSchema = z.object({
   credential: z.string().max(4096).optional(),
   /** 省略すると変えない。空のオブジェクトを送ると消す。 */
   credentials: credentialsSchema.optional(),
+  siteId: accountSiteIdSchema,
   csrfToken: z.string().optional(),
 });
 
@@ -307,6 +318,10 @@ export const accountResponseSchema = z.object({
   credentialConfigured: z.boolean(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  siteId: z
+    .guid()
+    .nullable()
+    .describe('属するサイト。null は共通（どのサイトのトークンからも使える）。'),
 });
 
 export const accountEnvelopeSchema = dataEnvelope(accountResponseSchema);
@@ -321,6 +336,7 @@ export interface AccountResponse {
   readonly credentialConfigured: boolean;
   readonly createdAt: string;
   readonly updatedAt: string;
+  readonly siteId: string | null;
 }
 
 export function toAccountResponse(account: SocialAccount): AccountResponse {
@@ -333,6 +349,7 @@ export function toAccountResponse(account: SocialAccount): AccountResponse {
     credentialConfigured: account.credentialConfigured,
     createdAt: account.createdAt.toISOString(),
     updatedAt: account.updatedAt.toISOString(),
+    siteId: account.siteId,
   };
 }
 

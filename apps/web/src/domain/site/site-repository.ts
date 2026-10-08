@@ -45,6 +45,13 @@ export interface SiteRepository {
    * 利用者が任意の値を指定できる項目にしない。
    */
   updatePublicKey(connection: Connection, id: string, publicKey: string): Promise<boolean>;
-  /** 削除できたら true。存在しなければ false。 */
+  /**
+   * 削除できたら true。存在しなければ false。
+   *
+   * サイトに紐づいた SNS アカウントがあって外部キー（`social_accounts.site_id` の `RESTRICT`）に当たったら
+   * `SiteInUseError`（`count` は null）を投げる（053 設計 §8.6 の 4）。
+   */
   delete(connection: Connection, id: string): Promise<boolean>;
+  /** サイトに紐づいた SNS アカウントの数（053 設計 §8.6 の 2）。 */
+  countLinkedAccounts(connection: Connection, siteId: string): Promise<number>;
 }

@@ -53,8 +53,15 @@ export const DELETE = defineRoute({
   permission: 'site.delete',
   body: z.object({ csrfToken: z.string().optional() }),
   successStatus: 204,
-  additionalResponses: [SITE_NOT_FOUND],
+  additionalResponses: [
+    SITE_NOT_FOUND,
+    {
+      status: 409,
+      description: 'このサイトに紐づいた SNS アカウントがある。`details.socialAccounts` に理由',
+    },
+  ],
   handler: async ({ context, params }) => {
+    // 出力（失効させたトークンの数）は監査のためのもの。応答は今までどおり 204。
     await deleteSite(context, { id: params['id'] ?? '' });
     return noContentResponse();
   },

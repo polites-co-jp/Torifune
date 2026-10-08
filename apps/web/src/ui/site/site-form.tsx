@@ -3,6 +3,7 @@
 import { useState, type FormEvent, type ReactNode } from 'react';
 import { apiRequest } from '@/ui/client/api-client';
 import { Alert, Button, FormField, Input, Select, Textarea } from '@/ui/components';
+import { SITE_ARCHIVE_NOTE } from '@/ui/site/labels';
 
 /**
  * Webサイトの作成・編集フォーム。
@@ -115,7 +116,8 @@ export function SiteForm({ title, initial, siteId, sidebar }: SiteFormProps) {
             )}
           </FormField>
 
-          <FormField label="状態">
+          {/* アーカイブでサイトのトークンが使えなくなることを、選ぶ人の目に入る場所で伝える（053 設計 §9.3）。 */}
+          <FormField label="状態" description={SITE_ARCHIVE_NOTE}>
             {(props) => (
               <Select {...props} name="status" defaultValue={initial.status}>
                 <option value="active">稼働中</option>

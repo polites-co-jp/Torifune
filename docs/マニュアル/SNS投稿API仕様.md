@@ -41,6 +41,7 @@
   投稿先 SNS は `socialAccountId` が指すアカウントの `provider` で決まる（§4.2 で引く）
 * 実際に SNS を叩くのは provider ごとの**配信 Plugin**。登録時の文字数・媒体・リンクの規則も
   Plugin が宣言する（§5）
+* **Web サイトに紐づけたトークン（サイトのトークン）は、そのサイトのアカウントと共通のアカウントだけを使う**（§2.3）
 
 ### 1.2 ベース URL とバージョン
 
@@ -109,7 +110,7 @@ Authorization: Bearer tfp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 | --- | --- | --- |
 | `Authorization` ヘッダが無い（セッションも無い） | 401 `UNAUTHENTICATED` | **403 `CSRF_FAILED`** |
 | `Authorization` が上の形に合わない（`Token xxx`・`Bearer` だけ・値に空白を含む など） | 401 `UNAUTHENTICATED` | **403 `CSRF_FAILED`** |
-| 形は合っているが、トークンが存在しない・失効している・有効期限が切れている・所有者が無効化されている | 401 `UNAUTHENTICATED` | 401 `UNAUTHENTICATED` |
+| 形は合っているが、トークンが存在しない・失効している・有効期限が切れている・所有者が無効化されている・**サイトのトークンで、紐づいたサイトが削除された・アーカイブされている**（§2.3） | 401 `UNAUTHENTICATED` | 401 `UNAUTHENTICATED` |
 
 **更新系で 403 `CSRF_FAILED` が返ったら、まず `Authorization` ヘッダの付け方を疑う。**
 
@@ -136,16 +137,56 @@ Authorization: Bearer tfp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 承認を依頼した投稿を自分で承認でき、「人が確かめた」という承認の意味が無くなる。`social.approve` は既定で
 管理者と編集者のロールに割り当てられており、人は管理画面で承認する（閲覧者のロールには無い）。
 
-### 2.3 トークンは名前空間であって、分離境界ではない
+**サイトのトークン**（§2.3）に付けられる Scope は SNS の 4 つ（`social.read`・`social.write`・`social.delete`・`social.approve`）だけ。
+`POST /social/publish`（`system.manage`）や、サイト・キャンペーンなど SNS 以外の API は呼べない（403）。
+サイトのトークンに `social.approve` を付けた場合、承認できるのはそのサイトの区画の投稿だけ（§4.10）。
 
-* 冪等キー `externalRef`（§3.5）は**トークンごと**に分かれる。**外部アプリごとに別のトークンを発行する**
-* ただし**データの見え方はトークンで分かれない。** `social.read` があれば他のアプリが登録した投稿も
-  本文ごと読め、`social.write` があれば書き換えられる。**信頼できない第三者にトークンを渡さない**
+**トークンのサイトは、運用者が管理画面で後から変えることがある**（トークンの文字列はそのまま）。変わると、
+**次の要求から**見える・使える範囲が変わる（§2.3）。サイトに紐づけるときに SNS 以外の Scope は外れる。
+
+### 2.3 トークンの区画
+
+API トークンには、**共通のトークン**（Web サイトに紐づけないトークン。既存のトークンはすべてこれ）と、
+**サイトのトークン**（発行時に Web サイトを 1 つ選んだトークン）がある。SNS アカウントも、**共通のアカウント**（`siteId: null`）と
+**サイト専用のアカウント**（`siteId` にサイトの ID）に分かれる。トークンから見えるもの・使えるものは、この組み合わせ（**区画**）で決まる。
+
+| アカウント | 共通のトークン | サイト A のトークン |
+| --- | --- | --- |
+| 共通のアカウント | 見える・投稿先にできる・変えられる（**削除・資格情報の変更は、見えない投稿が載っていれば 403**。下記） | 見える・投稿先にできる。**変更・削除は 403** |
+| サイト A 専用のアカウント | **見えない**（404）・投稿先にできない（422） | 見える・投稿先にできる・変えられる |
+| サイト B 専用のアカウント | 見えない | **見えない** |
+
+| 投稿 | 共通のトークン | サイト A のトークン |
+| --- | --- | --- |
+| サイト A 専用のアカウントの投稿（登録したのが誰でも） | 見えない | 見える・変えられる |
+| 共通のアカウントの投稿で、サイト A のトークンが登録したもの | **見えない** | 見える・変えられる |
+| 共通のアカウントの投稿で、共通のトークン・管理画面が登録したもの | 見える・変えられる（今までどおり） | **見えない** |
+| 共通のアカウントの投稿で、削除されたサイトのトークンが登録したもの | 見えない | 見えない |
+| サイト B 専用のアカウントの投稿 | 見えない | 見えない |
+
+* 「見えない」ものを `{id}` で指定すると **404**（本文は存在しない ID と同じ）。見えないアカウントを `socialAccountId` にすると
+  **422 `socialAccountId`**（存在しない場合と同じ文言）。一覧（`GET /social/accounts`・`GET /social/posts`）と `meta.total` も区画の中だけ
+* 投稿は**見えれば変えられる**（`PATCH` / `DELETE` / 承認。Permission は別に要る）
+* **共通のトークンどうしは、今までどおり分離境界ではない**（名前空間）。冪等キー `externalRef`（§3.5）は**トークンごと**に分かれるので
+  **外部アプリごとに別のトークンを発行する**が、データの見え方はトークンで分かれない。`social.read` があれば共通の区画の他のアプリが
+  登録した投稿も本文ごと読め、`social.write` があれば書き換えられる。**信頼できない第三者にトークンを渡さない**
 * `social.write` は**アカウントの表示名・`handle`・資格情報の差し替え**（`PATCH /social/accounts/{id}`）も許す。
   資格情報を差し替えても承認済みの予約の承認は外れないので、承認した投稿が別の SNS アカウントから出ることがありうる。
   承認を統制として使う運用では、外部アプリのトークンを持つ相手を信頼できる範囲に限る
+* **サイトのトークンは自分の区画に閉じる**：そのサイトのアカウントとその投稿、共通のアカウントへ同じサイトのトークンが登録した投稿だけが見える。
+  別のサイトのアプリ・共通のトークンのアプリが登録した投稿は見えない。共通のアカウントは投稿先に使えるが、**変更・削除はできない**（403。
+  他の区画の投稿に影響するため）。同じサイトのトークンどうしは分かれない
+* **見えない投稿が載ったアカウントは、トークンから削除・資格情報の変更ができない**（403 `FORBIDDEN`）。共通のアカウントには、サイトのトークンが登録した
+  投稿（共通のトークンからは見えない）が載ることがある。そのアカウントを共通のトークンで `DELETE` する、または `PATCH` で `credential` / `credentials`
+  を送る（消去を含む）と、見えない投稿まで消える・別の SNS アカウントから出ることになるので断る。**表示名・`handle`・`status` の変更は通る**（配信先を変えない）。
+  403 の本文は権限不足と同じで、見えない投稿の件数や理由は返さない。見えない投稿が載っていなければ今までどおり（**サイトを使っていない間は起きない**）。
+  削除・資格情報の変更が要るときは、管理画面（`/social`）で行う
+* **区画を決めるのはトークンだけ。** 要求の値（クエリ・本文）で区画を選ぶ方法は無い。管理画面（人の操作）は区画で絞られない
+* 区画が変わるのは運用者の操作のときだけ：**アカウントをサイトに紐づける・付け替える**と、そのアカウントとその投稿は移った先の区画に入る
+  （共通のトークンからは 404 / 422 になる）。**トークンのサイトを変える**（§2.2）と、そのトークンが共通のアカウントへ登録した投稿も一緒に移る
 
-詳細は [手順書 §1「トークンは名前空間であって、分離境界ではない」](SNS投稿の外部連携.md#トークンは名前空間であって分離境界ではない)。
+詳細は [手順書 §1「トークンは名前空間であって、分離境界ではない」](SNS投稿の外部連携.md#トークンは名前空間であって分離境界ではない)と
+[「サイトのトークンは区画に閉じる」](SNS投稿の外部連携.md#サイトのトークンは区画に閉じる)。
 
 ### 2.4 ブラウザから直接呼ぶ場合（CORS）
 
@@ -194,7 +235,7 @@ CORS ヘッダが付く（`*` は指定できない）。ただし **API トー�
 
 * キーは**送った項目名**（`body`・`scheduledAt`・`media`・`link`・`deliveryMode`・`socialAccountId`・
   `externalRef`・`providerOptions`・`status`・`publishTiming`・`expectedUpdatedAt`・`externalUrl`・`externalId`・
-  `credentials`・`provider`・`displayName` など）
+  `credentials`・`provider`・`displayName`・`siteId` など）
 * `media` の問題は**2 種類のキーに分かれる**（`apps/web/src/api/schemas/social.ts` の `mediaSchema`）
   * **`media`**：件数（11 件以上）・URL が https でない／2048 文字超／`user:pass@` を含む・`alt` が 1000 文字超。
     どの要素の問題でも `media` 1 つにまとまる。SNS ごとの規則（§5）の違反もこのキー
@@ -216,10 +257,10 @@ CORS ヘッダが付く（`*` は指定できない）。ただし **API トー�
 
 | HTTP | `code` | いつ |
 | ---: | --- | --- |
-| 401 | `UNAUTHENTICATED` | GET で認証が無い／トークンが無効。更新系で `Bearer <トークン>` の形は合っているがトークンが無効（§2.1） |
-| 403 | `FORBIDDEN` | 権限（Scope）が足りない（§2.2） |
+| 401 | `UNAUTHENTICATED` | GET で認証が無い／トークンが無効。更新系で `Bearer <トークン>` の形は合っているがトークンが無効（§2.1）。**サイトのトークンで、紐づいたサイトが削除された・アーカイブされている**（§2.3。アーカイブを戻せば再び使える） |
+| 403 | `FORBIDDEN` | 権限（Scope）が足りない（§2.2）。**サイトのトークンで共通のアカウントを変更・削除しようとした**（§2.3）。**トークンから見えない投稿が載ったアカウントを、削除・資格情報の変更しようとした**（§2.3。理由は返さない） |
 | 403 | `CSRF_FAILED` | **更新系（POST / PATCH / DELETE）で `Authorization: Bearer <トークン>` の形のヘッダが無い**（ヘッダの欠落・形の誤り）。セッション（Cookie）認証で CSRF トークンが無いときも。形の合ったトークン認証では起きない（§2.1） |
-| 404 | `NOT_FOUND` | `{id}` の投稿・アカウントが無い（**UUID の形でない ID も 404**） |
+| 404 | `NOT_FOUND` | `{id}` の投稿・アカウントが無い（**UUID の形でない ID も 404**）。**トークンの区画の外（このトークンからは見えない）ものも 404**（§2.3） |
 | 409 | `CONFLICT` | `POST /social/publish` で他の配信処理が実行中（`details.job` と `Retry-After: 10` が付く）。承認（§4.10）で、画面や `GET` で読んだ後に投稿の内容が変わっていた（`details.expectedUpdatedAt`）。`PATCH /social/posts/{id}` の処理中に承認・配信の開始などで投稿の状態が変わった（`details.status`。§4.7） |
 | 422 | `VALIDATION_ERROR` | 入力の検査に落ちた（§3.2 の `details` を見る） |
 | 429 | `TOO_MANY_ATTEMPTS` | Rate Limit を超えた（§3.4。`Retry-After` が付く） |
@@ -270,7 +311,10 @@ CORS ヘッダが付く（`*` は指定できない）。ただし **API トー�
 * **2 回目で本文などを変えて送っても、保存されている内容は 1 回目のまま**（200 で 1 回目の内容が返る）。
   内容を変えるのは `PATCH`
 * 2 回目の要求でも、**要求全体の形の検査（§4.4 の表）と、本文が空でないこと・`socialAccountId` のアカウントが
-  存在することの検査は掛かる。** 形が壊れた再送は 422 になる。SNS ごとの規則（§5）は再送では検査しない
+  存在してトークンの区画から見えることの検査は掛かる。** 形が壊れた再送は 422 になる。SNS ごとの規則（§5）は再送では検査しない
+* 1 回目の後に運用者がアカウントのサイトを付け替える・トークンのサイトを変えるなどして、**既存の投稿がこのトークンの区画の外に
+  なっていたら 422 `externalRef`**（「この externalRef は既に使われています。別の externalRef で登録してください。」）。既存の投稿は見せず、
+  新しい投稿も作らない（§2.3）
 * 既存の投稿が `failed` / `published` でも 200 で返る。**失敗した投稿を出し直すときは新しい `externalRef`
   で登録する**
 * 既存の投稿を `DELETE` で消した後に同じ `externalRef` を送ると、新しい投稿として 201 で作られる
@@ -319,6 +363,9 @@ CORS ヘッダが付く（`*` は指定できない）。ただし **API トー�
   * `publishSocialPosts` の **409**（他の配信処理が実行中）
   * `approveSocialPost` の **404**（投稿が無い）と **409**（見た後に内容が変わった。§4.10）
   * `updateSocialPost` の **409**（処理中に投稿の状態が変わった。§4.7）
+* アカウントの応答・作成・更新に **`siteId`**（`format: uuid`・`nullable`）がある（§4.2）。`{id}` を取るアカウントと投稿の操作と
+  `approveSocialPost` の 404 の `description` に「このトークンからは見えない（別のサイトの区画）ものを含む」とある（§2.3）。
+  投稿の応答の形は変わらない
 * `createSocialPost` の要求の `status` には `default` が無い（省略時の `draft` はサーバが補う。§4.4）。
   状態の列挙（`status`）に `awaiting_approval` があり、投稿の応答に `approvedAt` がある
 * `page` / `perPage` の範囲は、parameter の `description` に書かれている
@@ -362,6 +409,7 @@ CORS ヘッダが付く（`*` は指定できない）。ただし **API トー�
 | `handle` | string | SNS 側の表示上の ID（任意。空文字のことがある） |
 | `status` | `connected` / `disconnected` / `error` | **表示用の目印。配信の可否には使われない** |
 | `credentialConfigured` | boolean | 資格情報が設定済みか。**値そのものはどの API からも返らない** |
+| `siteId` | string（UUID）\| null | **属する Web サイト。`null` は共通のアカウント**（どのサイトのトークンからも使える。§2.3） |
 | `createdAt` / `updatedAt` | string（ISO 8601 UTC） | |
 
 #### GET `/social/accounts` — 投稿先のアカウントを探す
@@ -386,6 +434,7 @@ curl -H "Authorization: Bearer $TORIFUNE_TOKEN" \
       "handle": "@example",
       "status": "connected",
       "credentialConfigured": true,
+      "siteId": null,
       "createdAt": "2026-09-20T02:11:05.412Z",
       "updatedAt": "2026-09-20T02:11:05.412Z"
     }
@@ -397,12 +446,15 @@ curl -H "Authorization: Bearer $TORIFUNE_TOKEN" \
 外部アプリは、この `id` を設定値として持っておき、投稿のたびに `socialAccountId` へ入れる。
 同じ provider のアカウントが複数あるときは `displayName` / `handle` で選ぶ。
 
+**返るのはトークンの区画から見えるアカウントだけ**（§2.3。共通のトークンなら共通のアカウント、サイトのトークンならそのサイトと共通のアカウント）。
+`meta.total` も区画の中の件数で、`provider` の絞り込みも区画の中で掛かる。
+
 **画面で登録したアカウントの `id` は、管理画面の SNS（`/social`）のアカウント一覧の「アカウントID」列に出ていて、「コピー」で写せる**
 （`social.read` があれば見える）。運用者から受け取れば、API で探す必要は無い。
 
 #### GET `/social/accounts/{id}`
 
-1 件を返す。無ければ 404。
+1 件を返す。無ければ 404（**区画の外も 404**）。
 
 #### POST `/social/accounts` / PATCH `/social/accounts/{id}`
 
@@ -418,14 +470,29 @@ curl -H "Authorization: Bearer $TORIFUNE_TOKEN" \
 | `status` | enum | 任意（既定 `disconnected`） | 任意 | `connected` / `disconnected` / `error` |
 | `credentials` | object | 任意 | 任意 | 値はすべて文字列。キーは配信 Plugin の宣言どおり（§5.6）。JSON にして 4096 文字以内。**更新で `{}` を送ると消える。省略すると変わらない** |
 | `credential` | string | 任意 | 任意 | 旧形式（1 つの文字列）。4096 文字以内。**`credentials` と同時に送ると 422**。更新で `""` を送ると消える |
+| `siteId` | string（UUID）\| null | 任意 | 任意 | 属するサイト。UUID の形（違反は 422 `siteId`）。**トークンでは決められる値が限られる**（下表） |
 
+`siteId` の扱い（違反はどれも 422 `siteId`）。
+
+| 送り方 | 作成：共通のトークン | 作成：サイト A のトークン | 更新（どちらのトークンも） |
+| --- | --- | --- | --- |
+| 省略 | 共通 | **サイト A**（自動で紐づく） | 変わらない |
+| `null` | 共通 | 422「サイトに紐づいたトークンでは、そのサイト以外を指定できません。」 | 今と同じ（共通）なら 200、違えば 422 |
+| サイト A の ID | 422「APIトークンではアカウントをサイトに紐づけられません。管理画面で紐づけてください。」 | サイト A | 今と同じなら 200（何も変わらない） |
+| 別のサイト・存在しないサイトの ID | 同上 | 422（上と同じ文言。サイトの存在は教えない） | 違う値は 422「APIトークンではアカウントのサイトを変えられません。管理画面で変えてください。」 |
+
+* **アカウントのサイトを紐づける・付け替えるのは管理画面（`/social`）だけ**（手順書 §2）。管理画面からは、存在しないサイトだけが 422（「Webサイトが見つかりません。」）
+* 更新・削除は、まず区画で対象を決める：区画の外は **404**、サイトのトークンから共通のアカウントは **403**（§2.3）
+* `credential` / `credentials` を送る更新（消去を含む）は、そのアカウントに**このトークンから見えない投稿**（別のサイトのトークンが登録したもの）が載っていれば
+  **403**（何も変わらない。同じ要求の他の項目も変わらない）。表示名・`handle`・`status` だけの更新は通る（§2.3）
 * 応答は §4.2 のアカウントの形（作成 201・更新 200）。資格情報は返らない
 * `credentials` のキーの過不足・型違いは **422 `credentials`**。**その provider の配信 Plugin が
   入っていないときはキーを検証せずに保存する**
 
 #### DELETE `/social/accounts/{id}`
 
-204。**そのアカウントに紐づく投稿もすべて削除される**（予約中のものも含む）。
+204。**そのアカウントに紐づく投稿もすべて削除される**（予約中のものも含む）。区画の外は 404、サイトのトークンから共通のアカウントは 403。
+そのアカウントに**このトークンから見えない投稿**が載っていれば 403（アカウントも投稿も残る。§2.3）。
 
 ### 4.3 投稿の形（応答）
 
@@ -558,9 +625,9 @@ curl -X POST https://torifune.example.com/api/v1/social/posts \
 | 1 | 要求全体の形（型・必須・長さ・https・件数・列挙値。`publishTiming` の列挙を含む）。**違反はまとめて返る** | 各項目名 |
 | 1b | **1 が通ったときだけ**：`publishTiming` と `status` の同時指定 → `status`（「publishTiming と status は同時に指定できません。」）。`publishTiming: "now"` と `scheduledAt` の値 → `scheduledAt`（「publishTiming が now のときは scheduledAt を指定できません。」）。**違反はまとめて返る** | `status` / `scheduledAt` |
 | 2 | 本文が空白だけでない。続けて `scheduledAt` の範囲（§1.4） | `body` / `scheduledAt` |
-| 3 | `socialAccountId` のアカウントが存在する | `socialAccountId` |
+| 3 | `socialAccountId` のアカウントが存在し、**トークンの区画から見える**（§2.3。見えないものは存在しない場合と同じ「SNSアカウントが見つかりません。」） | `socialAccountId` |
 | 4 | `externalRef` をトークン認証で付けている | `externalRef` |
-| — | （`externalRef` が既存と一致したら、ここで 200 を返して終わる。**`publishTiming` が 1 回目と違っても既存のまま**） | — |
+| — | （`externalRef` が既存と一致したら、ここで 200 を返して終わる。**`publishTiming` が 1 回目と違っても既存のまま**。既存の投稿が区画の外なら 422 `externalRef`。§3.5） | — |
 | 5 | 予約（`publishTiming: "scheduled"` か `status: "scheduled"`）なら `scheduledAt` がある。ここで手動投稿しかできない配信 Plugin の読み替え（承認待ち）も決まる | `scheduledAt` |
 | 6 | `deliveryMode: "manual"` なら `media` が空 | `media` |
 | 7 | `deliveryMode: "manual"` なら、その provider の配信 Plugin が手動投稿に対応している（**Plugin が入っていない provider の `manual` も 422**） | `deliveryMode` |
@@ -578,24 +645,27 @@ curl -X POST https://torifune.example.com/api/v1/social/posts \
   配信の時刻に「支度待ち」になる（§6.3）
 * 8b の配信 Plugin の検査が例外を投げた・5 秒以内に終わらなかったときは **500 `INTERNAL_ERROR`**
   （外部アプリの入力の問題ではない。時間をおいて同じ `externalRef` で再送してよい）
+* 検査の後、保存する直前にトークンが失効していた・サイトのトークンのサイトが削除されていたときは **401 `UNAUTHENTICATED`**
+  （投稿は作られない。§2.3）
 
 ### 4.5 GET `/social/posts` — 投稿一覧
 
 | クエリ | 型 | 説明 |
 | --- | --- | --- |
 | `page` / `perPage` | 整数 | §3.6 |
-| `accountId` | string（UUID） | そのアカウントの投稿だけに絞る。UUID の形（8-4-4-4-12 の 16 進。大文字・小文字を問わない）。**形が違えば（空文字を含む）422 `accountId`**（「UUID の形で指定してください。」）。存在しないアカウントの UUID は 200 で空 |
+| `accountId` | string（UUID） | そのアカウントの投稿だけに絞る。UUID の形（8-4-4-4-12 の 16 進。大文字・小文字を問わない）。**形が違えば（空文字を含む）422 `accountId`**（「UUID の形で指定してください。」）。存在しないアカウント・区画の外のアカウントの UUID は 200 で空 |
 | `status` | enum | `draft` / `awaiting_approval` / `scheduled` / `published` / `failed` のどれか 1 つ。列挙外は 422 `status`。`status=awaiting_approval` で承認待ちだけを引ける |
 
 並びは作成日時の新しい順。応答は §3.1 の一覧の形で、各要素は §4.3。
 
-**他のアプリ（別トークン）が登録した投稿も含めて返る**（§2.3）。自分が承認待ちを使っていなくても、
-他のアプリや人が作った承認待ち（`awaiting_approval`）が含まれうる。自分の投稿だけを見たいときは、
+**トークンの区画の投稿を返す**（§2.3）。共通のトークンでは、共通の区画の他のアプリ（別トークン）や人が登録した投稿も含む。
+サイトのトークンでは、そのサイトのアカウントの投稿と、同じサイトのトークンが共通のアカウントへ登録した投稿。
+自分が承認待ちを使っていなくても、区画の中の他のアプリや人が作った承認待ち（`awaiting_approval`）が含まれうる。自分の投稿だけを見たいときは、
 保存しておいた `id` で `GET /social/posts/{id}` を引くか、`externalRef` で見分ける。
 
 ### 4.6 GET `/social/posts/{id}` — 結果を確かめる
 
-1 件を返す。無ければ 404。状態の読み方は §6。
+1 件を返す。無ければ 404（**区画の外も 404**。§2.3）。状態の読み方は §6。
 
 ### 4.7 PATCH `/social/posts/{id}` — 更新・取りやめ・結果の記録
 
@@ -614,6 +684,7 @@ curl -X POST https://torifune.example.com/api/v1/social/posts \
 | `externalUrl` | string \| null | SNS 側の投稿の URL。**https のみ**・2048 文字以内 |
 | `failureReason` | string \| null | 失敗の理由。**2000 文字以内**（超えると 422 `failureReason`）。前後の空白は取り除き、空文字は `null` 扱い。（2000 文字で切り詰めて保存するのは配信 Plugin の内部経路だけで、この API は切り詰めない） |
 
+* **区画の外の投稿は 404**（何も変わらない。§2.3）
 * `socialAccountId` と `externalRef` は**変えられない**（送っても無視される）
 * **`publishTiming` は送れない**（どの値でも 422 `publishTiming`「publishTiming は登録のときだけ指定できます。承認を依頼するときは
   status に awaiting_approval を指定してください。」）。`PATCH` では `status` と `scheduledAt` で表す
@@ -661,14 +732,14 @@ curl -X PATCH https://torifune.example.com/api/v1/social/posts/$POST_ID \
 
 ### 4.8 DELETE `/social/posts/{id}`
 
-204。`social.delete` が要る（`social.read` + `social.write` だけのトークンでは 403）。
+204。`social.delete` が要る（`social.read` + `social.write` だけのトークンでは 403）。区画の外の投稿は 404（残る）。
 予約を止めるだけなら、削除ではなく `PATCH { "status": "draft" }`（取りやめ）でよい。
 
 ### 4.9 POST `/social/publish` — 配信を今すぐ回す（運用向け）
 
 期限の来た `auto` の予約を今すぐ配信する。**通常の外部アプリは呼ばない。** Torifune は既定で
 1 分ごとに同じ処理を自分で回している。定期実行を止めた構成（`TORIFUNE_SCHEDULER=off`）で
-外部の cron から叩くためのもので、`system.manage` が要る。要求本文は不要。
+外部の cron から叩くためのもので、`system.manage` が要る（サイトのトークンには付けられないので呼べない。§2.2）。要求本文は不要。
 
 応答は件数だけ（`interrupted`・`due`・`skipped`・`skipFailed`・`attempted`・`published`・`retried`・
 `failed`・`unrecorded`）。他の実行が 10 秒以上続いていれば **409 `CONFLICT`**（`details.job`、
@@ -691,7 +762,7 @@ curl -X PATCH https://torifune.example.com/api/v1/social/posts/$POST_ID \
 
 | HTTP | `code` | いつ |
 | ---: | --- | --- |
-| 404 | `NOT_FOUND` | 投稿が無い（UUID の形でない ID も） |
+| 404 | `NOT_FOUND` | 投稿が無い（UUID の形でない ID・**トークンの区画の外の投稿**も。§2.3） |
 | 409 | `CONFLICT` | **読んだ後に投稿の内容が変わっていた**（`expectedUpdatedAt` が投稿の `updatedAt` と合わない）。`details.expectedUpdatedAt`：「投稿の内容が変わっています。内容を確かめてから承認し直してください。」。読み直して内容を確かめてから承認し直す |
 | 422 | `VALIDATION_ERROR` | 承認待ちでない（`status`「承認待ちの投稿ではありません（いまの状態：scheduled）。」。**409 より先に判定する**）・日時の誤り（`scheduledAt`）・要求の形・配信 Plugin の規則（§4.4 の 6〜8b を予約として掛ける） |
 
@@ -703,6 +774,7 @@ curl -X PATCH https://torifune.example.com/api/v1/social/posts/$POST_ID \
 * **手動投稿しかできない配信 Plugin の provider（いまは X の無料版 `sns-x-manual`）では、`publishTiming` が `scheduled` でも即投稿になる**
   （200。`scheduledAt` がいまの時刻）。承認するとすぐ管理画面の「手動投稿待ち」に並ぶ
 * 承認を外す操作は無い。予約を止めるときは `PATCH { "status": "draft" }`（取りやめ）か `{ "status": "awaiting_approval" }`（承認待ちへ戻す）
+* サイトのトークンに `social.approve` を付けると、そのサイトの区画の投稿だけを承認できる（サイトごとの承認の道具を作れる。区画の外は 404）
 * 承認が成功すると `social.post.approved` イベントが 1 回発火し（§6.6）、監査ログに承認した人・時刻・選んだ時機が残る
 
 ```bash
@@ -966,6 +1038,9 @@ Webhook の本文は `{ "event": "<イベント名>", "data": { "postId": "…",
 （リプレイ対策は受け手の責任）。2xx 以外は失敗とみなされ、**初回を含めて最大 5 回**
 （送り直しは最大 4 回。間隔は 1 → 2 → 4 → 8 分）送られる。
 Payload の定義は [`Eventリファレンス.md`](../Eventリファレンス.md)。
+
+**Webhook はトークンにもサイトにも紐づかず、全サイトのイベントが届く**（Payload にサイトは載らない）。受け手がサイトで振り分けるときは、
+Payload の `accountId` をそのサイトのトークンで `GET /social/accounts/{accountId}` する（200 ならそのサイトか共通のアカウント、404 なら区画の外。§2.3）。
 
 ---
 
@@ -1293,7 +1368,8 @@ while True:
 
 * 投稿先 SNS の規則は Plugin の版で変わりうる。**文字数の事前チェックを外部アプリ側に持つ場合も、
   最終判断は Torifune の 422 に任せる**（`details` のキーを見て利用者へ返す）
-* 他のアプリが登録した投稿も一覧に出る（§2.3）。一覧を処理するときは自分の `externalRef` の形で絞る
+* 一覧には区画の中の他のアプリ（共通のトークンなら共通の区画の他のアプリ、サイトのトークンなら同じサイトの他のトークン）や人が登録した投稿も出る（§2.3）。
+  一覧を処理するときは自分の `externalRef` の形で絞る
 
 ---
 
@@ -1312,6 +1388,8 @@ while True:
 | 2026-10-01 | **承認待ちを足した**（`048-social-post-approval`）。`POST /social/posts` に任意の **`publishTiming`**（`now` / `scheduled` / `after_approval`。§4.4）、状態 **`awaiting_approval`**（§4.3・§6）、承認の操作 **`POST /social/posts/{id}/approve`**（Permission **`social.approve`**。§4.10）、応答の **`approvedAt`**、イベント **`social.post.approved`**（§6.6）。API のバージョンは v1 のまま。**既存の外部アプリへの影響**：(1) `publishTiming` を送らない要求は従来どおり。(2) `POST` の `status` の既定が OpenAPI から消えた（省略時は従来どおり `draft`。生成クライアントの既定値が消えることがある）。`publishTiming` と `status` を同時に送ると 422 `status`。(3) **状態の値 `awaiting_approval` が増えた。** 自分が承認待ちを使わなければ自分の投稿には現れないが、**`GET /social/posts` の一覧には他のアプリや人が作った承認待ちが含まれうる**。状態を網羅的に分岐しているクライアントは知らない値を受け取るので、無視するか「その他」として扱う。(4) `PATCH` で承認待ちから `scheduled` / `published` / `failed` へは変えられない（422 `status`）。`PATCH` に `publishTiming` を送ると 422（従来は黙って無視されていた）。(5) **承認を経た予約（`approvedAt` あり）の内容・日時・配信方法を書き換えると承認待ちに戻る。** 既存の予約はすべて `approvedAt: null` で、振る舞いは変わらない。(6) 既存のトークンの Scope に `social.approve` は無いので、既存のトークンは承認できない。(7) X の無料版（`sns-x-manual`）では `publishTiming` を送った登録が常に承認待ちになる（§5.1）。(8) **`PATCH /social/posts/{id}` の処理中に承認・配信の開始などで投稿の状態が変わると 409 `CONFLICT`**（`details.status`。何も変えない。§4.7）。OpenAPI の `updateSocialPost` に 409 を宣言した |
 | 2026-10-01 | **配信の不具合を直した**（`049-publish-claim-conditions`）。配信ジョブが、その周期の配信の順番に並べた後に `PATCH` で予約日時を未来へ直された・`deliveryMode` を `manual` に変えられた・取りやめてから予約し直された予約を、直す前の内容のまま送っていた（`PATCH` は 200 を返していた）。直した後は、こうした予約は直した内容で扱われる（§4.7）。`POST /social/publish` の件数では `due` にだけ数え、他のどれにも数えない。こうした予約について誤って出ていた `social.post.published` / `social.post.failed` も出なくなる。**API の形・バージョン（v1）・OpenAPI・イベントの形は変わらない** |
 | 2026-10-02 | 管理画面のアカウント一覧に ID の表示とコピーを足した（`051-social-account-id-display`）。画面で登録したアカウントの `id` は一覧の「アカウントID」列で写せる（§4.2）。**API の形・バージョン（v1）・OpenAPI は変わらない** |
+| 2026-10-08 | **SNS アカウントと API トークンを Web サイトに紐づけられるようにした**（`053-site-scoped-social`）。トークンの**区画**（§2.3）、アカウントの応答・作成・更新の **`siteId`**（§4.2）、区画の外の 404 / 422 / 403、サイトの削除・アーカイブでサイトのトークンが 401（§3.3）、再送で既存の投稿が区画の外なら 422 `externalRef`（§3.5）。API のバージョンは v1 のまま。**既存の外部アプリへの影響**：(1) アカウントの応答に `siteId` が増えた（既存のアカウントはすべて `null`）。(2) アカウントの作成・更新の `siteId` は送らなければ今までどおり（共通のトークンが値を送ると 422）。(3) **運用者がアカウントをサイトに紐づけたときだけ**、共通のトークンからそのアカウントは使えなくなる（登録は 422 `socialAccountId`、そのアカウントの投稿の取得・更新は 404）。(4) サイトのトークンが発行されたときだけ、そのトークンが共通のアカウントへ登録した投稿は共通のトークンから見えない。既存の投稿はすべて共通の区画のまま。(5) **運用者がトークンのサイトを変えると、そのトークンから見える範囲が次の要求から変わる**（§2.2）。(6) 共通のトークンどうしは今までどおり分離境界ではない。Plugin API・イベント・Webhook は変わらない |
+| 2026-10-08 | 053 の検証を受けて足した。**トークンから見えない投稿が載ったアカウントは、トークンから削除・資格情報の変更ができない**（403 `FORBIDDEN`。§2.3・§3.3・§4.2）。表示名・`handle`・`status` の変更は通る。見えない投稿が載るのは共通のアカウントへサイトのトークンが投稿を登録したときだけなので、**サイトを使っていない間は既存の外部アプリに影響しない**。あわせて、同じ `externalRef` の要求が同時に届いた場合も、既存の投稿が区画の外なら 422 `externalRef`（§3.5 の再送と同じ）にそろえた |
 
 ### 関連文書
 
@@ -1321,7 +1399,7 @@ while True:
 * API の全体方針：`docs/仕様書/05_API設計.md`（§10・§11 形式、§18 SNS API、§33 ページング、§36 Rate Limit、§37・§38 API Token）
 * 設計：`docs/設計/035-social-publishing/設計.md`、各 SNS は `036-sns-bluesky` / `037-sns-x` /
   `038-sns-instagram` / `040-sns-threads`、承認待ちは `048-social-post-approval`、
-  アカウントの ID の表示とコピーは `051-social-account-id-display`
+  アカウントの ID の表示とコピーは `051-social-account-id-display`、トークンの区画は `053-site-scoped-social`
 
 ---
 

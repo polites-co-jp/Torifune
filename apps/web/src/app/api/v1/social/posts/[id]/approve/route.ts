@@ -19,7 +19,11 @@ export const POST = defineRoute({
   body: approvePostSchema,
   response: postEnvelopeSchema,
   additionalResponses: [
-    { status: 404, description: '投稿が存在しない（UUID の形でない ID を含む）' },
+    {
+      status: 404,
+      description:
+        '投稿が存在しない（UUID の形でない ID を含む。このトークンからは見えない（別のサイトの区画）ものを含む）',
+    },
     {
       status: 409,
       description:

@@ -233,3 +233,38 @@ export const ACCOUNT_ID_COPIED = 'アカウントIDをコピーしました。';
 /** 写せないとき（設計 §7.3.3）。ID の要素は 1 回のクリックで全体が選ばれる。 */
 export const ACCOUNT_ID_COPY_FAILED =
   'コピーできませんでした。アカウントIDを選択して写してください。';
+
+// ---------------------------------------------------------------------------
+// アカウントのサイト（053-site-scoped-social 設計 §9.1）
+// ---------------------------------------------------------------------------
+
+/** 一覧の列の見出しと、追加の Modal の欄の名前（設計 §9.1.1・§9.1.2）。 */
+export const SITE_COLUMN_HEADER = 'サイト';
+/** サイトに紐づかないアカウント（どのサイトのトークンからも使える）。 */
+export const SITE_COMMON_LABEL = '共通';
+/** 追加の Modal・「サイト」の Modal の「共通」の選択肢。 */
+export const SITE_COMMON_OPTION = '共通（どのサイトのトークンからも使える）';
+/** サイトの名前を引けない（`site.read` が無い・一覧に無い）ときの表示。 */
+export const SITE_UNNAMED_LABEL = 'サイト専用';
+/** アーカイブしたサイトの名前に添える。 */
+export const SITE_ARCHIVED_SUFFIX = '（アーカイブ）';
+export const SITE_SELECT_DESCRIPTION =
+  'サイトを選ぶと、そのサイトに紐づいた API トークンからだけ使えます。管理画面からはいつでも使えます。';
+/** `site.read` が無いときの追加の Modal の説明（設計 §9.1.2）。 */
+export const SITE_SELECT_NO_PERMISSION = 'サイトの一覧を見る権限が無いため、共通で登録します。';
+
+/** 行の「サイト」ボタン（設計 §9.1.3）。 */
+export const SITE_CHANGE_LABEL = 'サイト';
+export const SITE_CHANGE_TITLE = 'サイトの紐づけを変える';
+export const SITE_CHANGE_WARNING =
+  'このアカウントの投稿（予約・承認待ちを含む）は、変更後のサイトのトークンからだけ見えるようになります。登録済みの予約はそのまま配信されます。';
+export const SITE_CHANGED = 'サイトの紐づけを変えました。';
+
+/** アカウント一覧の絞り込み（設計 §9.1.4。裁定 9）。 */
+export const SITE_FILTER_LABEL = 'サイトで絞り込む';
+export const SITE_FILTER_ALL = 'すべて';
+
+/** サイトの表示名。アーカイブしたサイトは「（アーカイブ）」を添える（設計 §9.1.1）。 */
+export function siteNameLabel(site: { readonly name: string; readonly status: string }): string {
+  return site.status === 'archived' ? `${site.name}${SITE_ARCHIVED_SUFFIX}` : site.name;
+}

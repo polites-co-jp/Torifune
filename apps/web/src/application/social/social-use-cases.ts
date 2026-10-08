@@ -1,6 +1,8 @@
 import type { SocialAccountView, SocialPostDraftView, SocialPostView } from '@torifune/plugin-api';
 import { uuidv7 } from 'uuidv7';
+import { ForbiddenError, type AuthorizationContext } from '@/application/authorization/authorize';
 import { defineUseCase } from '@/application/authorization/use-case';
+import { scopeOf } from '@/application/social/access-scope';
 import { emit } from '@/application/events';
 import {
   findPublisher,
@@ -8,8 +10,17 @@ import {
   type RegisteredPublisher,
 } from '@/application/social/publisher-registry';
 import { assertUsableText } from '@/application/text-input';
+import type { Connection } from '@/database/provider';
 import { NotFoundError, ValidationError } from '@/domain/repository';
 import type { Secret } from '@/domain/secret';
+import {
+  accountManageable,
+  accountVisible,
+  checkAccountSiteChange,
+  originOf,
+  resolveAccountSiteOnCreate,
+  type AccessScope,
+} from '@/domain/social/access-scope';
 import {
   CREDENTIAL_MAX_LENGTH,
   validateCredentialAgainstFields,
@@ -51,6 +62,7 @@ import type { SocialAccountPage, SocialPostPage } from '@/domain/social/social-r
 import { encryptSecret } from '@/infrastructure/crypto/cipher';
 import { log } from '@/infrastructure/logging';
 import { redactSecrets } from '@/infrastructure/secret-text';
+import { siteRepository } from '@/infrastructure/site-repository';
 import { socialRepository } from '@/infrastructure/social-repository';
 
 /**
@@ -191,11 +203,11 @@ export const listSocialAccounts = defineUseCase<ListAccountsInput, SocialAccount
   permission: 'social.read',
   handler: async (context, input) => {
     assertUsableText('SocialAccount', { provider: input.provider });
-    return socialRepository.listAccounts(context.connection, {
-      page: input.page,
-      perPage: input.perPage,
-      provider: input.provider,
-    });
+    return socialRepository.listAccounts(
+      context.connection,
+      { page: input.page, perPage: input.perPage, provider: input.provider },
+      scopeOf(context),
+    );
   },
 });
 
@@ -204,12 +216,94 @@ export const getSocialAccount = defineUseCase<{ id: string }, SocialAccount>({
   permission: 'social.read',
   handler: async (context, input) => {
     const account = await socialRepository.findAccountById(context.connection, input.id);
-    if (account === null) {
+    // 区画の外は存在しないのと同じ 404（053 設計 §8.2.2・§8.7）。
+    if (account === null || !accountVisible(scopeOf(context), account.siteId)) {
       throw new NotFoundError('SocialAccount', input.id);
     }
     return account;
   },
 });
+
+/**
+ * 冪等キーの既存の投稿が区画の外にある（053 設計 §8.3.1）。既存を見せず、2 つ目も作らない。
+ * 再送の検査（d）と、同時の再送で挿入が既存を返した経路の 2 か所で使う。
+ */
+const MESSAGE_EXTERNAL_REF_USED =
+  'この externalRef は既に使われています。別の externalRef で登録してください。';
+
+/** サイトが見つからない（存在しない・挿入までに消えた。053 設計 §8.2.3・§8.2.4）。 */
+const MESSAGE_SITE_NOT_FOUND = 'Webサイトが見つかりません。';
+
+/** 区画 `all`（画面）がアカウントをサイトに紐づけるとき、サイトの存在を確かめる（`site.read` は要求しない）。 */
+async function assertAccountSiteExists(
+  context: AuthorizationContext,
+  scope: AccessScope,
+  siteId: string | null,
+): Promise<void> {
+  if (scope.kind !== 'all' || siteId === null) {
+    return;
+  }
+  const site = await siteRepository.findById(context.connection, siteId);
+  if (site === null) {
+    throw new ValidationError('SocialAccount', 'siteId', MESSAGE_SITE_NOT_FOUND);
+  }
+}
+
+/**
+ * 区画でアカウントを変更・削除できるか（053 設計 §5.5・§8.2.4・§8.2.5）。
+ * 見えなければ 404、サイトのトークンから見た共通のアカウントは 403。
+ */
+function assertAccountManageable(
+  scope: AccessScope,
+  id: string,
+  accountSiteId: string | null,
+): void {
+  const verdict = accountManageable(scope, accountSiteId);
+  if (verdict === 'not_found') {
+    throw new NotFoundError('SocialAccount', id);
+  }
+  if (verdict === 'forbidden') {
+    throw new ForbiddenError();
+  }
+}
+
+/**
+ * トークンからの削除・資格情報の変更を、区画から見えない投稿が載ったアカウントには許さない（053 ユーザー裁定 11）。
+ *
+ * 共通のアカウントは共通のトークンから変えられる（設計 §5.2）が、サイトのトークンが登録した投稿（共通のトークンからは
+ * 見えない）が載っていると、削除は見えない投稿まで `CASCADE` で消し、資格情報の差し替えは見えない投稿の配信先を変える。
+ * その場合だけ 403（サイトのトークンから見た共通のアカウントと同じ形。件数も理由も返さない。設計 §8.7）。
+ * 画面（区画 `all`）は絞らない。
+ *
+ * **呼び出し側のトランザクションの中で呼ぶ。** アカウントの行を `FOR UPDATE` でロックしてから数えるので、同時に進んだ
+ * 投稿の登録はコミットを待ってから数え、ロックの後の登録は書き込みが終わるまで待つ。ロックした行のサイトで
+ * 区画の判定（`accountManageable`）もし直す（判定の後に画面でサイトを付け替えられた窓を閉じる）。
+ */
+async function assertNoPostsOutsideScope(
+  tx: Connection,
+  scope: AccessScope,
+  id: string,
+): Promise<void> {
+  if (scope.kind === 'all') {
+    return;
+  }
+  const locked = await socialRepository.lockAccountForScopedChange(tx, id, scope);
+  if (locked === null) {
+    throw new NotFoundError('SocialAccount', id);
+  }
+  assertAccountManageable(scope, id, locked.siteId);
+  if (locked.hasPostsOutsideScope) {
+    throw new ForbiddenError();
+  }
+}
+
+/** 挿入・更新の時点でサイトが消えていた（外部キー違反）ら 422 `siteId` に写す。 */
+function rethrowSiteGoneAsValidation(error: unknown): never {
+  if (error instanceof NotFoundError && error.resource === 'Site') {
+    throw new ValidationError('SocialAccount', 'siteId', MESSAGE_SITE_NOT_FOUND);
+  }
+  throw error;
+}
 
 export interface CreateAccountInput {
   readonly provider: string;
@@ -225,6 +319,11 @@ export interface CreateAccountInput {
    */
   readonly credentials?: Readonly<Record<string, string>> | undefined;
   readonly status: AccountStatus;
+  /**
+   * 紐づけるサイト（053 設計 §8.2.3）。省略（`undefined`）は、画面と共通のトークンでは共通、
+   * サイトのトークンではそのサイト。`null` は共通。トークンは自分の区画のとおりにしか決められない。
+   */
+  readonly siteId?: string | null | undefined;
 }
 
 export const createSocialAccount = defineUseCase<CreateAccountInput, SocialAccount>({
@@ -235,7 +334,8 @@ export const createSocialAccount = defineUseCase<CreateAccountInput, SocialAccou
     resourceType: 'social_account',
     resourceId: (_input, account) => account.id,
     // 認証情報は残さない。どのSNSのアカウントかが分かれば追跡できる。
-    detail: (_input, account) => ({ provider: account.provider }),
+    // サイトは紐づけの統制の記録として残す（053 設計 §8.9）。
+    detail: (_input, account) => ({ provider: account.provider, siteId: account.siteId }),
   },
   handler: async (context, input) => {
     assertUsableText('SocialAccount', { displayName: input.displayName, handle: input.handle });
@@ -250,6 +350,13 @@ export const createSocialAccount = defineUseCase<CreateAccountInput, SocialAccou
       throw new ValidationError('SocialAccount', 'displayName', '表示名を入力してください。');
     }
 
+    const scope = scopeOf(context);
+    const site = resolveAccountSiteOnCreate(scope, input.siteId);
+    if (!site.ok) {
+      throw new ValidationError('SocialAccount', 'siteId', site.message);
+    }
+    await assertAccountSiteExists(context, scope, site.siteId);
+
     // 平文をそのまま保存しない。
     const encryptedCredential =
       resolveEncryptedCredential(
@@ -258,16 +365,19 @@ export const createSocialAccount = defineUseCase<CreateAccountInput, SocialAccou
         input.credentials,
       ) ?? null;
 
-    const account = await context.connection.transaction((tx) =>
-      socialRepository.insertAccount(tx, {
-        id: uuidv7(),
-        provider: input.provider,
-        displayName: input.displayName.trim(),
-        handle: input.handle,
-        encryptedCredential,
-        status: input.status,
-      }),
-    );
+    const account = await context.connection
+      .transaction((tx) =>
+        socialRepository.insertAccount(tx, {
+          id: uuidv7(),
+          provider: input.provider,
+          displayName: input.displayName.trim(),
+          handle: input.handle,
+          encryptedCredential,
+          status: input.status,
+          siteId: site.siteId,
+        }),
+      )
+      .catch(rethrowSiteGoneAsValidation);
 
     // ペイロードに資格情報を含めない。Plugin へ渡ると、そこから漏れる。
     await emit('social.account.connected', {
@@ -296,6 +406,11 @@ export interface UpdateAccountInput {
    * **`credential` との同時指定は 422**（035-social-publishing 設計 §6.4）。
    */
   readonly credentials?: Readonly<Record<string, string>> | undefined;
+  /**
+   * `undefined` なら変えない。`null` は共通にする（053 設計 §8.2.4）。
+   * 付け替えられるのは画面（区画 `all`）だけで、トークンは今と同じ値しか送れない。
+   */
+  readonly siteId?: string | null | undefined;
 }
 
 export const updateSocialAccount = defineUseCase<UpdateAccountInput, SocialAccount>({
@@ -305,7 +420,11 @@ export const updateSocialAccount = defineUseCase<UpdateAccountInput, SocialAccou
     action: 'updated',
     resourceType: 'social_account',
     resourceId: (input) => input.id,
-    detail: (input) => ({ changed: Object.keys(input).filter((key) => key !== 'id') }),
+    // サイトを送ったときだけ更新後のサイトを残す（053 設計 §8.9）。
+    detail: (input, account) => ({
+      changed: Object.keys(input).filter((key) => key !== 'id'),
+      ...(input.siteId === undefined ? {} : { siteId: account.siteId }),
+    }),
   },
   handler: async (context, input) => {
     assertUsableText('SocialAccount', { displayName: input.displayName, handle: input.handle });
@@ -318,6 +437,17 @@ export const updateSocialAccount = defineUseCase<UpdateAccountInput, SocialAccou
     if (current === null) {
       throw new NotFoundError('SocialAccount', input.id);
     }
+    // まず区画で対象を決める（053 設計 §8.2.4）。
+    const scope = scopeOf(context);
+    assertAccountManageable(scope, input.id, current.siteId);
+
+    if (input.siteId !== undefined) {
+      const change = checkAccountSiteChange(scope, current.siteId, input.siteId);
+      if (!change.ok) {
+        throw new ValidationError('SocialAccount', 'siteId', change.message);
+      }
+      await assertAccountSiteExists(context, scope, input.siteId);
+    }
 
     const encryptedCredential = resolveEncryptedCredential(
       current.provider,
@@ -325,14 +455,21 @@ export const updateSocialAccount = defineUseCase<UpdateAccountInput, SocialAccou
       input.credentials,
     );
 
-    const account = await context.connection.transaction((tx) =>
-      socialRepository.updateAccount(tx, input.id, {
-        ...(input.displayName === undefined ? {} : { displayName: input.displayName.trim() }),
-        ...(input.handle === undefined ? {} : { handle: input.handle }),
-        ...(input.status === undefined ? {} : { status: input.status }),
-        ...(encryptedCredential === undefined ? {} : { encryptedCredential }),
-      }),
-    );
+    const account = await context.connection
+      .transaction(async (tx) => {
+        // 資格情報の差し替え・消去は、区画から見えない投稿の配信先まで変える（053 ユーザー裁定 11）。
+        if (encryptedCredential !== undefined) {
+          await assertNoPostsOutsideScope(tx, scope, input.id);
+        }
+        return socialRepository.updateAccount(tx, input.id, {
+          ...(input.displayName === undefined ? {} : { displayName: input.displayName.trim() }),
+          ...(input.handle === undefined ? {} : { handle: input.handle }),
+          ...(input.status === undefined ? {} : { status: input.status }),
+          ...(encryptedCredential === undefined ? {} : { encryptedCredential }),
+          ...(input.siteId === undefined ? {} : { siteId: input.siteId }),
+        });
+      })
+      .catch(rethrowSiteGoneAsValidation);
 
     if (account === null) {
       throw new NotFoundError('SocialAccount', input.id);
@@ -346,9 +483,20 @@ export const deleteSocialAccount = defineUseCase<{ id: string }, void>({
   permission: 'social.delete',
   audit: { action: 'deleted', resourceType: 'social_account', resourceId: (input) => input.id },
   handler: async (context, input) => {
-    const deleted = await context.connection.transaction((tx) =>
-      socialRepository.deleteAccount(tx, input.id),
-    );
+    const current = await socialRepository.findAccountById(context.connection, input.id);
+    if (current === null) {
+      throw new NotFoundError('SocialAccount', input.id);
+    }
+    // 区画の外は 404、サイトのトークンから見た共通のアカウントは 403（053 設計 §8.2.5）。
+    // 共通のアカウントを消すと、他の区画の投稿まで CASCADE で消える（§5.5）。
+    const scope = scopeOf(context);
+    assertAccountManageable(scope, input.id, current.siteId);
+
+    const deleted = await context.connection.transaction(async (tx) => {
+      // 区画から見えない投稿まで CASCADE で消さない（053 ユーザー裁定 11）。
+      await assertNoPostsOutsideScope(tx, scope, input.id);
+      return socialRepository.deleteAccount(tx, input.id);
+    });
     if (!deleted) {
       throw new NotFoundError('SocialAccount', input.id);
     }
@@ -380,6 +528,8 @@ export const readSocialCredential = defineUseCase<{ id: string }, Secret | null>
     if (account === null) {
       throw new NotFoundError('SocialAccount', input.id);
     }
+    // API では届かないが、区画の判定を経路に依存させない（053 設計 §8.3.4）。
+    assertAccountManageable(scopeOf(context), input.id, account.siteId);
     return account.credential;
   },
 });
@@ -398,15 +548,20 @@ export interface ListPostsInput {
 export const listSocialPosts = defineUseCase<ListPostsInput, SocialPostPage>({
   name: 'social.post.list',
   permission: 'social.read',
+  // 区画（053 設計 §8.3.2）。`socialAccountId` の絞り込みも区画の中で掛かる（区画の外のアカウントは空）。
   handler: async (context, input) =>
-    socialRepository.listPosts(context.connection, {
-      page: input.page,
-      perPage: input.perPage,
-      socialAccountId: input.socialAccountId,
-      // 単一指定を配列へ畳む。`listCampaigns` と同じ形。
-      statuses: input.status === null ? [] : [input.status],
-      orderBy: 'created',
-    }),
+    socialRepository.listPosts(
+      context.connection,
+      {
+        page: input.page,
+        perPage: input.perPage,
+        socialAccountId: input.socialAccountId,
+        // 単一指定を配列へ畳む。`listCampaigns` と同じ形。
+        statuses: input.status === null ? [] : [input.status],
+        orderBy: 'created',
+      },
+      scopeOf(context),
+    ),
 });
 
 export interface ListPostHistoryInput {
@@ -430,14 +585,19 @@ export interface ListPostHistoryInput {
 export const listSocialPostHistory = defineUseCase<ListPostHistoryInput, SocialPostPage>({
   name: 'social.post.history',
   permission: 'social.read',
+  // API で届かない（画面だけ）が区画を掛ける。区画の判定を経路に依存させない（053 設計 §8.3.4）。
   handler: async (context, input) =>
-    socialRepository.listPosts(context.connection, {
-      page: input.page,
-      perPage: input.perPage,
-      socialAccountId: null,
-      statuses: input.status === null ? DELIVERED_STATUSES : [input.status],
-      orderBy: 'delivered',
-    }),
+    socialRepository.listPosts(
+      context.connection,
+      {
+        page: input.page,
+        perPage: input.perPage,
+        socialAccountId: null,
+        statuses: input.status === null ? DELIVERED_STATUSES : [input.status],
+        orderBy: 'delivered',
+      },
+      scopeOf(context),
+    ),
 });
 
 /**
@@ -453,14 +613,21 @@ export const listSocialPostsByIds = defineUseCase<
 >({
   name: 'social.post.listByIds',
   permission: 'social.read',
-  handler: async (context, input) => socialRepository.findPostsByIds(context.connection, input.ids),
+  // 区画の外の投稿は含めない（053 設計 §8.3.4）。
+  handler: async (context, input) =>
+    socialRepository.findPostsByIds(context.connection, input.ids, scopeOf(context)),
 });
 
 export const getSocialPost = defineUseCase<{ id: string }, SocialPost>({
   name: 'social.post.get',
   permission: 'social.read',
   handler: async (context, input) => {
-    const post = await socialRepository.findPostById(context.connection, input.id);
+    // 区画の外は存在しないのと同じ 404（053 設計 §8.3.2・§8.7）。
+    const post = await socialRepository.findPostById(
+      context.connection,
+      input.id,
+      scopeOf(context),
+    );
     if (post === null) {
       throw new NotFoundError('SocialPost', input.id);
     }
@@ -861,11 +1028,13 @@ export const createSocialPost = defineUseCase<CreatePostInput, CreatePostOutput>
     }
 
     // b: 存在しないアカウントへの投稿を、FK 違反（500）ではなく 422 で返す。
+    //    区画から見えないアカウントも同じ 422・同じ文言（存在を教えない。053 設計 §8.3.1・§8.7）。
+    const scope = scopeOf(context);
     const account = await socialRepository.findAccountById(
       context.connection,
       input.socialAccountId,
     );
-    if (account === null) {
+    if (account === null || !accountVisible(scope, account.siteId)) {
       throw new ValidationError('SocialPost', 'socialAccountId', 'SNSアカウントが見つかりません。');
     }
 
@@ -889,6 +1058,13 @@ export const createSocialPost = defineUseCase<CreatePostInput, CreatePostOutput>
         input.externalRef,
       );
       if (existing !== null) {
+        // 既存が区画から見えなければ（1 回目の後にアカウントが別の区画へ付け替えられた）、
+        // 黙って 2 つ目を作らず、既存を見せもしない（053 設計 §8.3.1）。
+        if (
+          (await socialRepository.findPostById(context.connection, existing.id, scope)) === null
+        ) {
+          throw new ValidationError('SocialPost', 'externalRef', MESSAGE_EXTERNAL_REF_USED);
+        }
         return { post: existing, created: false, approvalForced: false };
       }
     }
@@ -926,8 +1102,8 @@ export const createSocialPost = defineUseCase<CreatePostInput, CreatePostOutput>
       CREATE_PREFLIGHT,
     );
 
-    const result = await context.connection.transaction((tx) =>
-      socialRepository.insertPostIdempotent(tx, {
+    const result = await context.connection.transaction(async (tx) => {
+      const inserted = await socialRepository.insertPostIdempotent(tx, {
         id: uuidv7(),
         socialAccountId: input.socialAccountId,
         body: input.body,
@@ -939,8 +1115,19 @@ export const createSocialPost = defineUseCase<CreatePostInput, CreatePostOutput>
         providerOptions,
         externalRef: input.externalRef ?? null,
         createdByTokenId: tokenId,
-      }),
-    );
+        // トークンの登録は Repository がトークンの行（FOR SHARE）の値で書く（053 設計 §7.3）。
+        origin: originOf(scope),
+      });
+      // 同時の再送で既存が返った（相手のコミットが d の検査の後だった）ときも、d と同じく区画の外の既存は
+      // 見せない（053 設計 §8.3.1）。返す前に区画で引き直す。
+      if (
+        !inserted.created &&
+        (await socialRepository.findPostById(tx, inserted.post.id, scope)) === null
+      ) {
+        throw new ValidationError('SocialPost', 'externalRef', MESSAGE_EXTERNAL_REF_USED);
+      }
+      return inserted;
+    });
 
     // **作成したときだけ発火する。** 再送で 2 回流れると、購読側が二重に動く。
     if (result.created) {
@@ -1044,7 +1231,9 @@ export const updateSocialPost = defineUseCase<UpdatePostInput, SocialPost>({
       assertScheduledAtInRange(input.scheduledAt);
     }
 
-    const current = await socialRepository.findPostById(context.connection, input.id);
+    // 区画は読み出しの時点で判定する。条件付き更新（048 §6.3.6）には区画の条件を足さない（053 設計 §8.3.3）。
+    const scope = scopeOf(context);
+    const current = await socialRepository.findPostById(context.connection, input.id, scope);
     if (current === null) {
       throw new NotFoundError('SocialPost', input.id);
     }
@@ -1206,7 +1395,7 @@ export const updateSocialPost = defineUseCase<UpdatePostInput, SocialPost>({
 
     if (post === null) {
       // 当たらなかったのは、消えたか、状態か承認の記録が変わったか。読み直して分ける。
-      const latest = await socialRepository.findPostById(context.connection, input.id);
+      const latest = await socialRepository.findPostById(context.connection, input.id, scope);
       if (latest === null) {
         throw new NotFoundError('SocialPost', input.id);
       }
@@ -1241,6 +1430,15 @@ export const deleteSocialPost = defineUseCase<{ id: string }, void>({
   permission: 'social.delete',
   audit: { action: 'deleted', resourceType: 'social_post', resourceId: (input) => input.id },
   handler: async (context, input) => {
+    // 区画の外は 404 で行は残す（053 設計 §8.3.3）。
+    const visible = await socialRepository.findPostById(
+      context.connection,
+      input.id,
+      scopeOf(context),
+    );
+    if (visible === null) {
+      throw new NotFoundError('SocialPost', input.id);
+    }
     const deleted = await context.connection.transaction((tx) =>
       socialRepository.deletePost(tx, input.id),
     );
@@ -1329,9 +1527,10 @@ export const approveSocialPost = defineUseCase<ApprovePostInput, ApprovePostOutp
     }),
   },
   handler: async (context, input) => {
-    // 2〜4: 投稿があり、承認待ちで、見た内容のままか。
+    // 2〜4: 投稿があり（区画の外は 404。053 設計 §8.3.3）、承認待ちで、見た内容のままか。
+    const scope = scopeOf(context);
     const post = assertApprovable(
-      await socialRepository.findPostById(context.connection, input.id),
+      await socialRepository.findPostById(context.connection, input.id, scope),
       input,
     );
 
@@ -1388,7 +1587,10 @@ export const approveSocialPost = defineUseCase<ApprovePostInput, ApprovePostOutp
     );
     if (approved === null) {
       // 間に誰かが承認した・書き換えた・消した。読み直して 404 / 422 / 409 のどれかを返す。
-      assertApprovable(await socialRepository.findPostById(context.connection, input.id), input);
+      assertApprovable(
+        await socialRepository.findPostById(context.connection, input.id, scope),
+        input,
+      );
       // 読み直しても承認できる形に見えるなら、それでも見た内容とは別の行になっている。
       throw new StaleSocialPostError(post.id);
     }
@@ -1422,8 +1624,9 @@ export interface ListApprovalPendingInput {
 export const listApprovalPendingPosts = defineUseCase<ListApprovalPendingInput, SocialPostPage>({
   name: 'social.post.listApprovalPending',
   permission: 'social.read',
+  // 画面（`all`）では全件。トークンの文脈では区画の中だけ（053 設計 §8.3.4）。
   handler: async (context, input) =>
-    socialRepository.listApprovalPending(context.connection, input.limit),
+    socialRepository.listApprovalPending(context.connection, input.limit, scopeOf(context)),
 });
 
 // ---------------------------------------------------------------------------
@@ -1444,8 +1647,9 @@ export interface ListManualPendingInput {
 export const listManualPendingPosts = defineUseCase<ListManualPendingInput, SocialPostPage>({
   name: 'social.post.listManualPending',
   permission: 'social.read',
+  // 画面（`all`）では全件。トークンの文脈では区画の中だけ（053 設計 §8.3.4）。
   handler: async (context, input) =>
-    socialRepository.listManualPending(context.connection, input.limit),
+    socialRepository.listManualPending(context.connection, input.limit, scopeOf(context)),
 });
 
 /**
@@ -1489,7 +1693,11 @@ export const resolveManualHandoff = defineUseCase<ManualHandoffInput, ManualHand
   name: 'social.post.manualHandoff',
   permission: 'social.read',
   handler: async (context, input) => {
-    const post = await socialRepository.findPostById(context.connection, input.id);
+    const post = await socialRepository.findPostById(
+      context.connection,
+      input.id,
+      scopeOf(context),
+    );
     if (post === null) {
       throw new NotFoundError('SocialPost', input.id);
     }

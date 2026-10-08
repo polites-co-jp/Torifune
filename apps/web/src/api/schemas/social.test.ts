@@ -277,6 +277,7 @@ describe('#118 toPostResponse が飛ばした履歴を写す', () => {
 
 describe('#64 アカウントの応答スキーマ（§6.4）', () => {
   it('#64 応答のキー集合が現行のまま（credentials を返さない）', () => {
+    // 053-site-scoped-social 設計 §8.2.1 で siteId が増える（053 実装プラン §8 の 1）。
     expect(Object.keys(accountResponseSchema.shape).sort()).toEqual(
       [
         'id',
@@ -287,6 +288,7 @@ describe('#64 アカウントの応答スキーマ（§6.4）', () => {
         'credentialConfigured',
         'createdAt',
         'updatedAt',
+        'siteId',
       ].sort(),
     );
   });

@@ -8,6 +8,7 @@ import { resetPublisherRegistry } from '@/application/social/publisher-registry'
 import { createSocialAccount, createSocialPost } from '@/application/social/social-use-cases';
 import { withConnection } from '@/application/transaction';
 import type { UserIdentity } from '@/authentication/identity';
+import { ALL_SCOPE } from '@/domain/social/access-scope';
 import { INTERRUPTED_REASON, isDue, type SkipVerdict } from '@/domain/social/publishing';
 import { resetLogger } from '@/infrastructure/logging';
 import { roleRepository } from '@/infrastructure/role-repository';
@@ -396,8 +397,8 @@ describe('述語と isDue の突き合わせ', () => {
       // 書き込みの前に、Domain の判定と取り出しの結果を取る。
       const now = new Date();
       const rows = await withConnection(async (connection) => ({
-        claim: await socialRepository.findPostById(connection, claimRow),
-        defer: await socialRepository.findPostById(connection, deferRow),
+        claim: await socialRepository.findPostById(connection, claimRow, ALL_SCOPE),
+        defer: await socialRepository.findPostById(connection, deferRow, ALL_SCOPE),
         listed: new Set((await socialRepository.listDue(connection, 200)).map((post) => post.id)),
       }));
       if (rows.claim === null || rows.defer === null) throw new Error('投稿が読めない');

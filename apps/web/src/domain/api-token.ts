@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { PermissionName } from './permission';
+import type { SiteStatus } from './site/site';
 
 /**
  * API Token（05_API設計.md §37-38）。
@@ -60,6 +61,10 @@ export interface ApiToken {
   readonly lastUsedAt: Date | null;
   readonly revokedAt: Date | null;
   readonly createdAt: Date;
+  /** 紐づいたサイト。サイトのトークンでもサイトが消えると null（053 設計 §7.1）。 */
+  readonly siteId: string | null;
+  /** サイトのトークンか。発行時に決まり、画面の変更の操作（053 設計 §8.5.6）でだけ変わる。 */
+  readonly siteScoped: boolean;
 }
 
 export const API_TOKEN_NAME_MAX_LENGTH = 100;
@@ -89,6 +94,154 @@ export function effectiveTokenPermissions(
   scopes: readonly PermissionName[],
 ): ReadonlySet<PermissionName> {
   return new Set(scopes.filter((scope) => ownerPermissions.has(scope)));
+}
+
+/**
+ * サイトのトークンに付けられる Scope（053-site-scoped-social 設計 §7.2・裁定 6）。
+ *
+ * 区画は SNS の UseCase にしか無いので、SNS 以外を許すと「サイトに限定したトークン」が SNS 以外では全体に届く。
+ * 発行時（422）・使用時（`effectiveSiteTokenPermissions`）・DB（`026` の `api_tokens_site_scopes_check`）の 3 か所で守る。
+ * **`026` の CHECK の配列と一致させる**（静的検査で固定している）。
+ */
+export const SITE_TOKEN_SCOPES = [
+  'social.read',
+  'social.write',
+  'social.delete',
+  'social.approve',
+] as const satisfies readonly PermissionName[];
+
+export type SiteTokenScope = (typeof SITE_TOKEN_SCOPES)[number];
+
+export function isSiteTokenScope(value: string): value is SiteTokenScope {
+  return (SITE_TOKEN_SCOPES as readonly string[]).includes(value);
+}
+
+export interface SiteTokenUsableInput {
+  readonly siteScoped: boolean;
+  readonly siteId: string | null;
+  /** 紐づいたサイトの状態。サイトが無ければ null。 */
+  readonly siteStatus: SiteStatus | null;
+}
+
+/**
+ * サイトのトークンとして使える状態か（設計 §8.5.3）。共通のトークンは常に真。
+ *
+ * サイトが削除された（`siteId` が null）・サイトが無い・アーカイブされたサイトのトークンは使えない。
+ * `paused` は影響しない。
+ */
+export function siteTokenUsable(input: SiteTokenUsableInput): boolean {
+  if (!input.siteScoped) {
+    return true;
+  }
+  if (input.siteId === null || input.siteStatus === null) {
+    return false;
+  }
+  return input.siteStatus !== 'archived';
+}
+
+/**
+ * サイトのトークンの実効 Permission：**所有者 ∩ Scope ∩ `SITE_TOKEN_SCOPES`**（設計 §8.5.3）。
+ *
+ * DB の CHECK をすり抜けた値（SNS 以外の Scope）もここで落とす。
+ */
+export function effectiveSiteTokenPermissions(
+  ownerPermissions: ReadonlySet<PermissionName>,
+  scopes: readonly PermissionName[],
+): ReadonlySet<PermissionName> {
+  return new Set(
+    [...effectiveTokenPermissions(ownerPermissions, scopes)].filter((scope) =>
+      isSiteTokenScope(scope),
+    ),
+  );
+}
+
+export interface ResolveTokenSiteChangeInput {
+  readonly current: { readonly revokedAt: Date | null; readonly scopes: readonly PermissionName[] };
+  /** 変更後のサイト。null は共通にする。 */
+  readonly requestedSiteId: string | null;
+  /** 変更後の Scope。省略すると今のまま。今の Scope の部分集合だけ（狭めるだけ）。 */
+  readonly requestedScopes?: readonly string[];
+  /** `requestedSiteId` のサイト。無ければ null（`requestedSiteId` が null のときは見ない）。 */
+  readonly site: { readonly status: SiteStatus } | null;
+}
+
+export type TokenSiteChangeResolution =
+  | {
+      readonly ok: true;
+      readonly siteId: string | null;
+      readonly siteScoped: boolean;
+      readonly scopes: readonly PermissionName[];
+      /** 今の Scope のうち、変更で外れるもの。 */
+      readonly removedScopes: readonly PermissionName[];
+    }
+  | { readonly ok: false; readonly field: 'siteId' | 'scopes'; readonly message: string };
+
+/**
+ * トークンのサイトの変更の判定（設計 §8.5.6 の表の 2〜7）。1 の 404（無い・他人のもの）は呼び出し側で先に判定する。
+ *
+ * SNS 以外の Scope を持つトークンをサイトへ変えるときは**黙って外さず断る**（`021` §2.3）。
+ * 同じ要求で `requestedScopes` を SNS の範囲に狭めれば通る。
+ */
+export function resolveTokenSiteChange(
+  input: ResolveTokenSiteChangeInput,
+): TokenSiteChangeResolution {
+  const { current, requestedSiteId, requestedScopes, site } = input;
+
+  // 2. 失効は取り消せない。
+  if (current.revokedAt !== null) {
+    return { ok: false, field: 'siteId', message: '失効したトークンは変えられません。' };
+  }
+
+  // 3. 広げられない（今の Scope の部分集合だけ）。
+  const currentScopes: readonly string[] = current.scopes;
+  if (requestedScopes !== undefined) {
+    const widened = requestedScopes.find((scope) => !currentScopes.includes(scope));
+    if (widened !== undefined) {
+      return {
+        ok: false,
+        field: 'scopes',
+        message: `権限を広げることはできません: ${widened}`,
+      };
+    }
+  }
+  const scopes =
+    requestedScopes === undefined
+      ? [...current.scopes]
+      : current.scopes.filter((scope) => requestedScopes.includes(scope));
+  const removedScopes = current.scopes.filter((scope) => !scopes.includes(scope));
+
+  if (requestedSiteId !== null) {
+    // 4. サイトが存在する。
+    if (site === null) {
+      return { ok: false, field: 'siteId', message: 'Webサイトが見つかりません。' };
+    }
+    // 5. アーカイブしたサイトには紐づけない（裁定 8）。
+    if (site.status === 'archived') {
+      return {
+        ok: false,
+        field: 'siteId',
+        message: 'アーカイブしたサイトにはトークンを紐づけられません。',
+      };
+    }
+    // 6. サイトのトークンは SNS の Scope だけ（裁定 6）。
+    const outside = scopes.filter((scope) => !isSiteTokenScope(scope));
+    if (outside.length > 0) {
+      return {
+        ok: false,
+        field: 'scopes',
+        message: `サイトに紐づけるトークンには SNS の権限だけを指定できます。外す権限を scopes で指定し直してください: ${outside.join(', ')}`,
+      };
+    }
+  }
+
+  // 7.
+  return {
+    ok: true,
+    siteId: requestedSiteId,
+    siteScoped: requestedSiteId !== null,
+    scopes,
+    removedScopes,
+  };
 }
 
 /** `Authorization: Bearer <token>` から値を取り出す。無ければ null。 */

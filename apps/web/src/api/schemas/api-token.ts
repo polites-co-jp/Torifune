@@ -18,6 +18,32 @@ export const createApiTokenSchema = z.object({
   scopes: z.array(z.string()).default([]),
   /** ISO8601。省略・null で無期限。 */
   expiresAt: z.string().datetime({ message: '日時の形式が不正です。' }).nullish(),
+  siteId: z
+    .guid('UUID の形で指定してください。')
+    .nullable()
+    .optional()
+    .describe(
+      '紐づけるサイト。省略・null は共通のトークン。サイトのトークンの scopes は SNS の権限（social.read・social.write・social.delete・social.approve）だけ。アーカイブしたサイトには発行できない。',
+    ),
+  csrfToken: z.string().optional(),
+});
+
+/**
+ * トークンのサイトの変更（`PATCH /api-tokens/{id}`。053-site-scoped-social 設計 §8.5.6・§8.8）。
+ *
+ * `siteId` は必須（null は共通にする）。`scopes` は省略すると今のまま。
+ */
+export const changeApiTokenSiteSchema = z.object({
+  siteId: z
+    .guid('UUID の形で指定してください。')
+    .nullable()
+    .describe(
+      '紐づけるサイト。null は共通のトークンにする。サイトのトークンの scopes は SNS の権限だけ。アーカイブしたサイトには紐づけられない。',
+    ),
+  scopes: z
+    .array(z.string())
+    .optional()
+    .describe('いまの Scope の部分集合だけ。狭めるだけで広げられない。'),
   csrfToken: z.string().optional(),
 });
 
@@ -35,6 +61,15 @@ export const apiTokenResponseSchema = z.object({
   lastUsedAt: z.string().nullable(),
   revokedAt: z.string().nullable(),
   createdAt: z.string(),
+  siteId: z
+    .guid()
+    .nullable()
+    .describe('紐づいたサイト。null は共通のトークン（サイトに紐づかない）。'),
+  siteScoped: z
+    .boolean()
+    .describe(
+      'サイトのトークンか。true で siteId が null はサイトが削除されたトークン（使えない）。',
+    ),
 });
 
 /** 発行時だけ平文を返す。**ここでしか返らない。** */
@@ -43,6 +78,8 @@ export const createdApiTokenResponseSchema = apiTokenResponseSchema.extend({
 });
 
 export const apiTokenListSchema = listEnvelope(apiTokenResponseSchema);
+/** トークンのサイトの変更の応答。**平文（`token`）を含めない。** */
+export const apiTokenEnvelopeSchema = dataEnvelope(apiTokenResponseSchema);
 export const createdApiTokenEnvelopeSchema = dataEnvelope(createdApiTokenResponseSchema);
 
 export interface ApiTokenResponse {
@@ -55,6 +92,8 @@ export interface ApiTokenResponse {
   readonly lastUsedAt: string | null;
   readonly revokedAt: string | null;
   readonly createdAt: string;
+  readonly siteId: string | null;
+  readonly siteScoped: boolean;
 }
 
 export function toApiTokenResponse(token: ApiToken): ApiTokenResponse {
@@ -67,6 +106,8 @@ export function toApiTokenResponse(token: ApiToken): ApiTokenResponse {
     lastUsedAt: token.lastUsedAt?.toISOString() ?? null,
     revokedAt: token.revokedAt?.toISOString() ?? null,
     createdAt: token.createdAt.toISOString(),
+    siteId: token.siteId,
+    siteScoped: token.siteScoped,
   };
 }
 
