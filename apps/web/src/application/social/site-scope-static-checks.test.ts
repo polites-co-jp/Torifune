@@ -14,7 +14,7 @@ import { CORE_PERMISSIONS } from '@/domain/permission';
  * * #63：公開 Plugin API の `SocialAccountView` / `SocialPostView` のキー、`PLUGIN_API_VERSION`、Core の Permission の数（G1）
  * * #60 の前半：`026` の `api_tokens_site_scopes_check` の配列と Domain の `SITE_TOKEN_SCOPES`（G2）
  * * #64：`AccessScope` を組み立てるのは `application/social/access-scope.ts` の `scopeOf` だけ（G4）
- * * #61：`social-use-cases.ts` の 17 個（054 で 18 個。054-bulk-post-actions 設計 §13.10 #57）の handler が
+ * * #61：`social-use-cases.ts` の 17 個（054 で 19 個。054-bulk-post-actions 設計 §13.10 #57）の handler が
  *   `scopeOf(context)` を呼び、`infrastructure/social-repository.ts` の区画の条件は `scopePredicate` の 1 か所にだけある（G5）
  * * #62：`application/social/publish.ts` が `access-scope` を import しない（G5。変えないことの固定）
  * * #60 の後半：`api_tokens` の `site_id` / `site_scoped` / `scopes` と `social_posts` の `origin_*` を
@@ -385,17 +385,17 @@ export function fromQuery(siteId) {
 });
 
 /* -------------------------------------------------------------------------- */
-/* #61 18 個の handler が scopeOf(context) を呼ぶ・述語は scopePredicate の 1 か所     */
+/* #61 19 個の handler が scopeOf(context) を呼ぶ・述語は scopePredicate の 1 か所     */
 /* -------------------------------------------------------------------------- */
 
 const SOCIAL_USE_CASES_FILE = 'application/social/social-use-cases.ts';
 const SOCIAL_REPOSITORY_FILE = 'infrastructure/social-repository.ts';
 
 /**
- * 設計 §8.3.4 の 17 個と、054 で足した 1 個の計 18 個（`name` の値）。
+ * 設計 §8.3.4 の 17 個と、054 で足した 2 個の計 19 個（`name` の値）。
  *
- * 054 の `listSocialPostSources`（`social.post.listSources`）も区画を掛ける（054-bulk-post-actions 設計 §8.8・§13.10 #57）。
- * 054 の G5 で `social.post.publishNow` を足して 19 個にする（054 実装プラン §8 の 14）。
+ * 054 の `listSocialPostSources`（`social.post.listSources`）と `publishSocialPostNow`（`social.post.publishNow`）も
+ * 区画を掛ける（054-bulk-post-actions 設計 §8.3・§8.8・§13.10 #57。段階は 054 実装プラン §8 の 14）。
  */
 const SCOPED_USE_CASE_NAMES = [
   'social.account.list',
@@ -416,6 +416,7 @@ const SCOPED_USE_CASE_NAMES = [
   'social.post.listManualPending',
   'social.post.manualHandoff',
   'social.post.listSources',
+  'social.post.publishNow',
 ];
 
 interface UseCaseHandler {
@@ -460,7 +461,7 @@ describe('#61 SNS の UseCase は scopeOf(context) を呼び、区画の述語�
   const handlers = (): UseCaseHandler[] =>
     useCaseHandlers(readFileSync(join(SRC_DIR, SOCIAL_USE_CASES_FILE), 'utf8'));
 
-  it('#61 social-use-cases.ts の defineUseCase は設計 §8.3.4 の 17 個と 054 の 1 個の計 18 個', () => {
+  it('#61 social-use-cases.ts の defineUseCase は設計 §8.3.4 の 17 個と 054 の 2 個の計 19 個', () => {
     // 並びは問わない（定義の順を変えても落とさない）。数と名前の集合を見る。
     expect(
       handlers()

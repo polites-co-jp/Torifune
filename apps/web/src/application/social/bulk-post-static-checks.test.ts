@@ -18,6 +18,8 @@ import { CORE_PERMISSIONS } from '@/domain/permission';
  * * #58 の一部：`listPostSourceTokens` は `scopedPosts` で区画を掛け、区画の条件を直に書かない。Domain の宣言は
  *   `scope: AccessScope` を必須で取る（G3）
  * * #56：`application/social/bulk-post-use-cases.ts` があり、`socialRepository` も `infrastructure/` も import しない（G4）
+ * * #58 の一部：`publishNow` は区画の条件を持たない（`scopedPosts`・`scopePredicate`・区画の語を本文に書かない。
+ *   区画は読み出しの時点で判定済み。設計 §8.3.1）（G5）
  *
  * **未実装の値は静的 import にしない**（`site-scope-static-checks.test.ts` と同じ）。
  * 未実装の段階でこのファイル全体が読めなくなると、他の件まで一緒に落ちて何が壊れたのか読めなくなる。
@@ -440,5 +442,98 @@ describe('#56 application/social/bulk-post-use-cases.ts は socialRepository も
         ].join('\n'),
       ),
     ).toBe(0);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* #58 publishNow は区画の条件を持たない（G5）                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 条件付き更新・削除のメソッドが区画の条件を持たないこと（設計 §8.3.1・§8.4。053 §8.3.3 と同じ）。
+ *
+ * 本文に `scopedPosts(`・`scopePredicate`・区画の条件の語（`site_id`・`origin_site_*` の比較）のどれも無い。
+ */
+function regionReferences(body: string): {
+  readonly scopedPosts: boolean;
+  readonly scopePredicate: boolean;
+  readonly conditions: number;
+} {
+  const code = withoutComments(body);
+  return {
+    scopedPosts: /\bscopedPosts\s*\(/.test(code),
+    scopePredicate: /\bscopePredicate\b/.test(code),
+    conditions: scopeConditionCount(body),
+  };
+}
+
+const NO_REGION = { scopedPosts: false, scopePredicate: false, conditions: 0 };
+
+describe('#58 publishNow は区画の条件を持たない', () => {
+  const repository = (): string =>
+    readSource(join(SRC_DIR, SOCIAL_REPOSITORY_FILE), SOCIAL_REPOSITORY_FILE);
+
+  it('#58 infrastructure/social-repository.ts に publishNow がある', () => {
+    expect(
+      methodBody(repository(), 'publishNow'),
+      'socialRepository に publishNow が無い',
+    ).not.toBeNull();
+  });
+
+  it('#58 publishNow の本文に scopedPosts・scopePredicate・区画の条件の語が無い', () => {
+    const body = methodBody(repository(), 'publishNow');
+
+    expect(body, 'socialRepository に publishNow が無い').not.toBeNull();
+    expect(regionReferences(body ?? '')).toEqual(NO_REGION);
+  });
+
+  it('#58 Domain の宣言の publishNow があり、区画の引数（scope）を取らない', () => {
+    const parameters = declarationParameters(
+      readSource(
+        join(SRC_DIR, SOCIAL_REPOSITORY_DECLARATION_FILE),
+        SOCIAL_REPOSITORY_DECLARATION_FILE,
+      ),
+      'publishNow',
+    );
+
+    expect(parameters, 'publishNow の宣言が無い').not.toBeNull();
+    expect(parameters).not.toMatch(/\bscope\s*\??\s*:/);
+  });
+
+  it('#58 判別力：scopedPosts を呼ぶ・scopePredicate を使う・区画の語を書く本文をそれぞれ見分ける（コメントは数えない）', () => {
+    const tampered = [
+      'export const socialRepository = {',
+      '  async publishNow(connection, input) {',
+      '    // scopedPosts( と scopePredicate はコメントなので数えない',
+      "    return scopedPosts(connection.db.updateTable('social_posts'), scope)",
+      "      .where(scopePredicate(scope)).where('social_accounts.site_id', '=', siteId);",
+      '  },',
+      '',
+      '  async other(connection) {',
+      '    return connection;',
+      '  },',
+      '};',
+      '',
+    ].join('\n');
+
+    expect(regionReferences(methodBody(tampered, 'publishNow') ?? '')).toEqual({
+      scopedPosts: true,
+      scopePredicate: true,
+      conditions: 1,
+    });
+    expect(
+      regionReferences(
+        '  async publishNow(connection, input) {\n    // scopedPosts(x) scopePredicate site_id = 1\n  },\n',
+      ),
+    ).toEqual(NO_REGION);
+  });
+
+  it('#58 判別力：scope を取る宣言は「区画の引数を取らない」に合わない', () => {
+    const parameters = declarationParameters(
+      '  publishNow(connection: Connection, input: PublishNowInput, scope: AccessScope): Promise<S>;',
+      'publishNow',
+    );
+
+    expect(parameters).toMatch(/\bscope\s*\??\s*:/);
   });
 });

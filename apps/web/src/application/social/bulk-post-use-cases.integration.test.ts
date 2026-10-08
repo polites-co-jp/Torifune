@@ -7,10 +7,15 @@ import { ForbiddenError, type AuthorizationContext } from '@/application/authori
 import { authorizationContextFor, buildApiTokenContext } from '@/application/authorization/context';
 import { resetEventHandlers } from '@/application/events';
 import { registerPublisher, resetPublisherRegistry } from '@/application/social/publisher-registry';
-import { createSocialAccount, createSocialPost } from '@/application/social/social-use-cases';
+import {
+  approveSocialPost,
+  createSocialAccount,
+  createSocialPost,
+} from '@/application/social/social-use-cases';
 import { withConnection } from '@/application/transaction';
 import type { UserIdentity } from '@/authentication/identity';
 import type { PermissionName } from '@/domain/permission';
+import { SocialPostIneligibleError } from '@/domain/social/social';
 import { roleRepository } from '@/infrastructure/role-repository';
 import { socialRepository } from '@/infrastructure/social-repository';
 import { useScratchDatabase, type ScratchDatabase } from '@/test-support/database';
@@ -22,11 +27,14 @@ import { useScratchDatabase, type ScratchDatabase } from '@/test-support/databas
  *
  * * #25：同じ承認待ちの投稿を含む 2 本の一括承認を同時に呼ぶと、ちょうど 1 本で成功する（G4）
  * * #46：2 件目の項目だけ Repository が例外を投げると、その項目だけ `internal_error`（例外の文言を含まない）（G4）
- * * #51：Permission の無い文脈で一括の UseCase を呼ぶと `ForbiddenError` で、項目は 1 件も処理されない（G4 は承認の分）
+ * * #51：Permission の無い文脈で一括の UseCase を呼ぶと `ForbiddenError` で、項目は 1 件も処理されない（G4 は承認の分、
+ *   G5 は今すぐ送るの分）
+ * * #28：`social.write` だけ（`social.approve` なし）の文脈で `publishSocialPostNow`：承認済みの予約は `approval_required`、
+ *   承認を経ていない予約は成功（G5）
  *
- * 一括の UseCase（`application/social/bulk-post-use-cases.ts`）はまだ無いので、指定子を `string` の定数に置いた
- * 動的 import で読む（053 実装プラン §8 の 19）。入出力の型は設計 §8.1・§8.2 と実装プラン T11 から写す
- * （`expectedUpdatedAt` は `Date`。ルートが文字列から直して渡す）。
+ * 一括の UseCase（`application/social/bulk-post-use-cases.ts`）と `publishSocialPostNow`（`social-use-cases.ts`）の
+ * 未実装の口は、指定子を `string` の定数に置いた動的 import で読む（053 実装プラン §8 の 19）。入出力の型は設計 §8.1・
+ * §8.2・§8.3 と実装プラン T11・T15・T16 から写す（`expectedUpdatedAt` は `Date`。ルートが文字列から直して渡す）。
  */
 
 const BOTH_PROVIDER = 'bulk_uc_both';
@@ -69,6 +77,70 @@ async function bulkApproveSocialPosts(
   }
   return module.bulkApproveSocialPosts(context, input);
 }
+
+interface BulkItemsInput {
+  readonly items: readonly { readonly id: string; readonly expectedUpdatedAt: Date }[];
+  readonly budgetMs?: number;
+}
+
+type BulkPublishNow = (context: AuthorizationContext, input: BulkItemsInput) => Promise<BulkOutput>;
+
+async function bulkPublishSocialPostsNow(
+  context: AuthorizationContext,
+  input: BulkItemsInput,
+): Promise<BulkOutput> {
+  const module = (await import(/* @vite-ignore */ BULK_USE_CASES_MODULE)) as {
+    readonly bulkPublishSocialPostsNow?: BulkPublishNow;
+  };
+  if (module.bulkPublishSocialPostsNow === undefined) {
+    throw new Error(
+      'application/social/bulk-post-use-cases.ts に bulkPublishSocialPostsNow が無い',
+    );
+  }
+  return module.bulkPublishSocialPostsNow(context, input);
+}
+
+/** `publishSocialPostNow` の入出力（設計 §8.3・実装プラン T15）。 */
+interface PublishNowInput {
+  readonly id: string;
+  readonly expectedUpdatedAt: Date;
+  readonly bulkId?: string;
+}
+
+interface PublishNowOutput {
+  readonly post: {
+    readonly id: string;
+    readonly scheduledAt: Date | null;
+    readonly status: string;
+  };
+  readonly previousScheduledAt: Date | null;
+  readonly approvalKept: boolean;
+}
+
+type PublishNow = (
+  context: AuthorizationContext,
+  input: PublishNowInput,
+) => Promise<PublishNowOutput>;
+
+const SOCIAL_USE_CASES_MODULE: string = '@/application/social/social-use-cases';
+
+async function publishSocialPostNow(
+  context: AuthorizationContext,
+  input: PublishNowInput,
+): Promise<PublishNowOutput> {
+  const module = (await import(/* @vite-ignore */ SOCIAL_USE_CASES_MODULE)) as {
+    readonly publishSocialPostNow?: PublishNow;
+  };
+  if (module.publishSocialPostNow === undefined) {
+    throw new Error('application/social/social-use-cases.ts に publishSocialPostNow が無い');
+  }
+  return module.publishSocialPostNow(context, input);
+}
+
+/** 今すぐ送るの `approval_required` の文言（設計 §8.3 の 4）。 */
+const APPROVAL_REQUIRED_MESSAGE = '承認済みの予約を今すぐ送るには、承認の権限が要ります。';
+
+const HOUR = 60 * 60_000;
 
 /** 想定外の失敗の項目の文言（設計 §8.1.1）。 */
 const INTERNAL_ERROR_MESSAGE = '処理中にエラーが発生しました。';
@@ -133,12 +205,34 @@ interface Awaiting {
 }
 
 /** 外部アプリのトークンで承認待ちの投稿を登録する。 */
-async function makeAwaiting(): Promise<Awaiting> {
+async function makeAwaiting(scheduledAt: Date | null = null): Promise<Awaiting> {
   const { post } = await createSocialPost(appContext, {
     socialAccountId: accountId,
     body: '一括の UseCase のテストの投稿です。',
-    scheduledAt: null,
+    scheduledAt,
     publishTiming: 'after_approval',
+  });
+  return { id: post.id, expectedUpdatedAt: post.updatedAt };
+}
+
+/** 外部アプリのトークンで、承認を経ていない未来の予約を登録する。 */
+async function makeScheduled(scheduledAt = new Date(Date.now() + HOUR)): Promise<Awaiting> {
+  const { post } = await createSocialPost(appContext, {
+    socialAccountId: accountId,
+    body: '今すぐ送るのテストの投稿です。',
+    scheduledAt,
+    publishTiming: 'scheduled',
+  });
+  return { id: post.id, expectedUpdatedAt: post.updatedAt };
+}
+
+/** 承認済みの未来の予約（承認待ち → 管理者が `scheduled` の時機で承認）。 */
+async function makeApprovedScheduled(): Promise<Awaiting> {
+  const awaiting = await makeAwaiting(new Date(Date.now() + 2 * HOUR));
+  const { post } = await approveSocialPost(admin, {
+    id: awaiting.id,
+    publishTiming: 'scheduled',
+    expectedUpdatedAt: awaiting.expectedUpdatedAt,
   });
   return { id: post.id, expectedUpdatedAt: post.updatedAt };
 }
@@ -146,12 +240,15 @@ async function makeAwaiting(): Promise<Awaiting> {
 interface PostRow {
   readonly status: string;
   readonly approved_at: Date | null;
+  readonly scheduled_at: Date | null;
+  readonly updated_at: Date;
 }
 
 async function rowOf(id: string): Promise<PostRow> {
   return withConnection(async (connection) => {
     const result = await sql<PostRow>`
-      SELECT status, approved_at FROM social_posts WHERE id = ${id}`.execute(connection.db);
+      SELECT status, approved_at, scheduled_at, updated_at
+        FROM social_posts WHERE id = ${id}`.execute(connection.db);
     const row = result.rows[0];
     if (row === undefined) throw new Error(`投稿が無い: ${id}`);
     return row;
@@ -355,5 +452,108 @@ describe('#51 bulkApproveSocialPosts を social.approve の無い文脈で呼ぶ
     expect(find).not.toHaveBeenCalled();
     expect((await rowOf(post.id)).status).toBe('awaiting_approval');
     expect(await auditCount('approved')).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #28 social.write だけの文脈の今すぐ送る（G5）
+// ---------------------------------------------------------------------------
+
+describe('#28 social.write だけ（social.approve なし）の文脈で publishSocialPostNow', () => {
+  /** 管理者の文脈を広げ、`permissions` だけ差し替える（既定のロールに social.write だけのものは無い。実装プラン §2）。 */
+  function writeOnly(): AuthorizationContext {
+    return { ...admin, permissions: new Set<PermissionName>(['social.read', 'social.write']) };
+  }
+
+  it('#28 承認済みの予約 → SocialPostIneligibleError（reason: approval_required）', async () => {
+    const post = await makeApprovedScheduled();
+
+    const error = await rejectionOf(publishSocialPostNow(writeOnly(), post));
+
+    expect(error).toBeInstanceOf(SocialPostIneligibleError);
+    expect((error as SocialPostIneligibleError).reason).toBe('approval_required');
+  });
+
+  it('#28 approval_required の行は変わらない', async () => {
+    const post = await makeApprovedScheduled();
+    const before = await rowOf(post.id);
+
+    await rejectionOf(publishSocialPostNow(writeOnly(), post));
+
+    expect(await rowOf(post.id)).toEqual(before);
+  });
+
+  it('#28 承認を経ていない予約 → 成功（scheduledAt がいま、approvalKept: false、previousScheduledAt は元の日時）', async () => {
+    const desired = new Date(Date.now() + 3 * HOUR);
+    const post = await makeScheduled(desired);
+
+    const before = Date.now();
+    const output = await publishSocialPostNow(writeOnly(), post);
+    const after = Date.now();
+
+    expect(output.post.id).toBe(post.id);
+    expect(output.post.status).toBe('scheduled');
+    expect(output.post.scheduledAt?.getTime()).toBeGreaterThanOrEqual(before);
+    expect(output.post.scheduledAt?.getTime()).toBeLessThanOrEqual(after);
+    expect(output.approvalKept).toBe(false);
+    expect(output.previousScheduledAt?.getTime()).toBe(desired.getTime());
+  });
+
+  it('#28 判別力：social.approve を持つ管理者なら承認済みの予約も成功し、approvalKept: true', async () => {
+    const post = await makeApprovedScheduled();
+
+    const output = await publishSocialPostNow(admin, post);
+
+    expect(output.approvalKept).toBe(true);
+    expect((await rowOf(post.id)).approved_at).not.toBeNull();
+  });
+
+  it('#28 一括で呼ぶと承認済みの予約の項目だけ approval_required（field: null・設計の文言）、他は queued', async () => {
+    const approved = await makeApprovedScheduled();
+    const unapproved = await makeScheduled();
+
+    const output = await bulkPublishSocialPostsNow(writeOnly(), { items: [approved, unapproved] });
+
+    expect(output.results[0]).toEqual({
+      id: approved.id,
+      ok: false,
+      reason: 'approval_required',
+      field: null,
+      message: APPROVAL_REQUIRED_MESSAGE,
+    });
+    expect(output.results[1]).toMatchObject({ id: unapproved.id, ok: true, effect: 'queued' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #51 Permission の無い文脈（今すぐ送るの分。G5）
+// ---------------------------------------------------------------------------
+
+describe('#51 bulkPublishSocialPostsNow を social.write の無い文脈で呼ぶ', () => {
+  function withoutWrite(): AuthorizationContext {
+    return {
+      ...admin,
+      permissions: new Set<PermissionName>(['social.read', 'social.approve', 'social.delete']),
+    };
+  }
+
+  it('#51 ForbiddenError', async () => {
+    const post = await makeScheduled();
+
+    const error = await rejectionOf(bulkPublishSocialPostsNow(withoutWrite(), { items: [post] }));
+
+    expect(error).toBeInstanceOf(ForbiddenError);
+  });
+
+  it('#51 項目は 1 件も処理されない（投稿を読まず、行は変わらず、監査 updated も残らない）', async () => {
+    const post = await makeScheduled();
+    const before = await rowOf(post.id);
+    const find = vi.spyOn(socialRepository, 'findPostById');
+
+    await rejectionOf(bulkPublishSocialPostsNow(withoutWrite(), { items: [post] }));
+
+    expect(find).not.toHaveBeenCalled();
+    expect(await rowOf(post.id)).toEqual(before);
+    expect(await auditCount('updated')).toBe(0);
   });
 });
