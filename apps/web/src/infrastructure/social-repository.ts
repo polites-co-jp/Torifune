@@ -20,6 +20,7 @@ import type {
 import { NotFoundError } from '../domain/repository';
 import { SiteGoneError } from '../domain/site/site';
 import type { AccessScope, PostOrigin } from '../domain/social/access-scope';
+import type { PostSourceFilter, SocialPostSources } from '../domain/social/post-source';
 import type { PublishVerdict, SkipReason, SkipVerdict } from '../domain/social/publishing';
 import { isSkipReason } from '../domain/social/publishing';
 import type {
@@ -166,6 +167,33 @@ function withScopeAccount(
       eb.selectFrom('social_accounts').select(['id as account_id', 'site_id']).as('scope_account'),
     (join) => join.onRef('scope_account.account_id', '=', 'social_posts.social_account_id'),
   ) as unknown as SelectQueryBuilder<Schema, 'social_posts', object>;
+}
+
+/**
+ * 登録元の条件（054-bulk-post-actions 設計 §8.7 の表）。区画の条件ではない（区画は `scopedPosts` が掛ける）。
+ *
+ * トークンの ID が UUID の形でなければ、どの行にも当たらない条件にする（uuid 列との比較で例外にしない）。
+ */
+function sourceCondition(
+  eb: ExpressionBuilder<Schema, 'social_posts'>,
+  source: PostSourceFilter,
+): Expression<SqlBool> {
+  switch (source.kind) {
+    case 'screen':
+      return eb.and([
+        eb('created_by_token_id', 'is', null),
+        eb('created_by_token_name', 'is', null),
+      ]);
+    case 'deleted_token':
+      return eb.and([
+        eb('created_by_token_id', 'is', null),
+        eb('created_by_token_name', 'is not', null),
+      ]);
+    case 'token':
+      return UUID_PATTERN.test(source.tokenId)
+        ? eb('created_by_token_id', '=', source.tokenId)
+        : sql<SqlBool>`false`;
+  }
 }
 
 /** `social_accounts.site_id` の外部キー違反（PostgreSQL の 23503）か。 */
@@ -592,6 +620,10 @@ export const socialRepository: SocialRepository = {
       if (query.statuses.length > 0) {
         list.push(eb('status', 'in', [...query.statuses]));
       }
+      const source = query.source ?? null;
+      if (source !== null) {
+        list.push(sourceCondition(eb, source));
+      }
       return list;
     };
 
@@ -617,6 +649,44 @@ export const socialRepository: SocialRepository = {
       .executeTakeFirstOrThrow();
 
     return { items: rows.map((row) => toPost(row as PostRow)), total: Number(counted.count) };
+  },
+
+  async listPostSourceTokens(
+    connection: Connection,
+    scope: AccessScope,
+  ): Promise<SocialPostSources> {
+    // 区画は scopedPosts が掛ける。トークンは投稿に現れるものだけを、所有者を問わずに読む（設計 §8.8）。
+    const tokenIdsInScope = scopedPosts(connection.db.selectFrom('social_posts'), scope)
+      .select('created_by_token_id')
+      .where('created_by_token_id', 'is not', null);
+    const tokens = await connection.db
+      .selectFrom('api_tokens')
+      .select(['id', 'name', 'revoked_at', 'created_at'])
+      .where('id', 'in', tokenIdsInScope)
+      .orderBy('name', 'asc')
+      .orderBy('created_at', 'asc')
+      .orderBy('id', 'asc')
+      .execute();
+
+    const exists = async (source: PostSourceFilter): Promise<boolean> => {
+      const row = await scopedPosts(connection.db.selectFrom('social_posts'), scope)
+        .select('id')
+        .where((eb) => sourceCondition(eb, source))
+        .limit(1)
+        .executeTakeFirst();
+      return row !== undefined;
+    };
+
+    return {
+      tokens: tokens.map((token) => ({
+        id: token.id,
+        name: token.name,
+        revoked: token.revoked_at !== null,
+        createdAt: token.created_at,
+      })),
+      hasScreenPosts: await exists({ kind: 'screen' }),
+      hasDeletedTokenPosts: await exists({ kind: 'deleted_token' }),
+    };
   },
 
   async findPostById(

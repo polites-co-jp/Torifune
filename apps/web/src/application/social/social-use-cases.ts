@@ -59,6 +59,7 @@ import {
   type SocialAccount,
   type SocialPost,
 } from '@/domain/social/social';
+import type { PostSourceFilter, SocialPostSources } from '@/domain/social/post-source';
 import type { SocialAccountPage, SocialPostPage } from '@/domain/social/social-repository';
 import { encryptSecret } from '@/infrastructure/crypto/cipher';
 import { log } from '@/infrastructure/logging';
@@ -544,6 +545,11 @@ export interface ListPostsInput {
   readonly perPage: number;
   readonly socialAccountId: string | null;
   readonly status: PostStatus | null;
+  /**
+   * 登録元で絞る（054-bulk-post-actions 設計 §8.7。画面だけ）。省略・null は絞らない。
+   * 公開 API・Data API は渡さない。
+   */
+  readonly source?: PostSourceFilter | null | undefined;
 }
 
 export const listSocialPosts = defineUseCase<ListPostsInput, SocialPostPage>({
@@ -560,9 +566,23 @@ export const listSocialPosts = defineUseCase<ListPostsInput, SocialPostPage>({
         // 単一指定を配列へ畳む。`listCampaigns` と同じ形。
         statuses: input.status === null ? [] : [input.status],
         orderBy: 'created',
+        source: input.source ?? null,
       },
       scopeOf(context),
     ),
+});
+
+/**
+ * 区画から見える投稿の登録元（054-bulk-post-actions 設計 §8.8。画面だけ）。
+ *
+ * 投稿一覧の「登録元」の列と絞り込みの選択肢に使う。トークンの所有者を問わず、投稿を登録したトークンの
+ * 名前と失効の有無だけを返す（所有者・prefix・Scope は返さない。設計 §5.6）。
+ */
+export const listSocialPostSources = defineUseCase<undefined, SocialPostSources>({
+  name: 'social.post.listSources',
+  permission: 'social.read',
+  handler: async (context) =>
+    socialRepository.listPostSourceTokens(context.connection, scopeOf(context)),
 });
 
 export interface ListPostHistoryInput {
