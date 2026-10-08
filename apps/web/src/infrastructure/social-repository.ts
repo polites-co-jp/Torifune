@@ -202,6 +202,7 @@ interface PostRow {
   skip_count: number;
   skip_reason: string | null;
   approved_at: Date | null;
+  created_by_token_name: string | null;
 }
 
 /**
@@ -241,6 +242,7 @@ function toPost(row: PostRow): SocialPost {
     skipCount: Number(row.skip_count),
     skipReason: toSkipReason(row.skip_reason),
     approvedAt: row.approved_at,
+    createdByTokenName: row.created_by_token_name,
   };
 }
 
@@ -269,6 +271,7 @@ const POST_COLUMNS = [
   'skip_count',
   'skip_reason',
   'approved_at',
+  'created_by_token_name',
 ] as const;
 
 /**
@@ -283,7 +286,7 @@ const DELIVERED_AT = sql<Date>`COALESCE(published_at, failed_at, updated_at)`;
 /** 冪等な登録の試行回数。同時要求の相手がコミットするのを待つぶん。 */
 const IDEMPOTENT_INSERT_ATTEMPTS = 3;
 
-function postInsertValues(post: NewSocialPost, origin: PostOrigin): Record<string, unknown> {
+function postInsertValues(post: NewSocialPost, origin: InsertOrigin): Record<string, unknown> {
   return {
     id: post.id,
     social_account_id: post.socialAccountId,
@@ -299,9 +302,17 @@ function postInsertValues(post: NewSocialPost, origin: PostOrigin): Record<strin
       : { provider_options: JSON.stringify(post.providerOptions) }),
     ...(post.externalRef === undefined ? {} : { external_ref: post.externalRef }),
     ...(post.createdByTokenId === undefined ? {} : { created_by_token_id: post.createdByTokenId }),
-    origin_site_id: origin.originSiteId,
-    origin_site_scoped: origin.originSiteScoped,
+    origin_site_id: origin.site.originSiteId,
+    origin_site_scoped: origin.site.originSiteScoped,
+    created_by_token_name: origin.tokenName,
   };
+}
+
+/** 挿入で書く登録元（区画と、トークンの名前の写し）。 */
+interface InsertOrigin {
+  readonly site: PostOrigin;
+  /** 登録したトークンの名前（行から読んだ値。054 設計 §7.2）。トークン以外の登録は null。 */
+  readonly tokenName: string | null;
 }
 
 /** トークン以外の登録の既定の登録元の区画（共通。053 設計 §7.3）。 */
@@ -317,16 +328,18 @@ const COMMON_ORIGIN: PostOrigin = { originSiteId: null, originSiteScoped: false 
  * 読んだ行が無い・失効している・サイトのトークンでサイトが消えている（`site_scoped` で `site_id` が NULL）なら
  * `SiteGoneError`。要求の始めには使えたトークンがサイトの削除と同時に進んだ窓を閉じる。
  * 読んだ値で書くので `origin_site_id` の外部キー違反は起きない。トークン以外は `post.origin`（省略は共通）。
+ *
+ * トークンの名前の写し（054 設計 §7.2）も同じ行から読む。文脈の `apiToken.name` は使わない。
  */
-async function originForInsert(connection: Connection, post: NewSocialPost): Promise<PostOrigin> {
+async function originForInsert(connection: Connection, post: NewSocialPost): Promise<InsertOrigin> {
   const tokenId = post.createdByTokenId ?? null;
   if (tokenId === null) {
-    return post.origin ?? COMMON_ORIGIN;
+    return { site: post.origin ?? COMMON_ORIGIN, tokenName: null };
   }
   const token = UUID_PATTERN.test(tokenId)
     ? await connection.db
         .selectFrom('api_tokens')
-        .select(['site_id', 'site_scoped', 'revoked_at'])
+        .select(['site_id', 'site_scoped', 'revoked_at', 'name'])
         .where('id', '=', tokenId)
         .forShare()
         .executeTakeFirst()
@@ -338,7 +351,10 @@ async function originForInsert(connection: Connection, post: NewSocialPost): Pro
   if (siteGone) {
     throw new SiteGoneError(tokenId);
   }
-  return { originSiteId: token.site_id, originSiteScoped: token.site_scoped };
+  return {
+    site: { originSiteId: token.site_id, originSiteScoped: token.site_scoped },
+    tokenName: token.name,
+  };
 }
 
 /**

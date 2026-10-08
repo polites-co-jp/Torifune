@@ -201,6 +201,8 @@ export interface SocialPost {
    * 誰が承認したかは監査ログが持つ。
    */
   readonly approvedAt: Date | null;
+  /** 登録したトークンの名前の写し（054 §5.6）。トークンを経ない登録は null。トークンが消えても残る。 */
+  readonly createdByTokenName: string | null;
 }
 
 /**
