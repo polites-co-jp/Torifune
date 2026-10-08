@@ -397,13 +397,16 @@ curl -H "Authorization: Bearer $TORIFUNE_TOKEN" \
 外部アプリは、この `id` を設定値として持っておき、投稿のたびに `socialAccountId` へ入れる。
 同じ provider のアカウントが複数あるときは `displayName` / `handle` で選ぶ。
 
+**画面で登録したアカウントの `id` は、管理画面の SNS（`/social`）のアカウント一覧の「アカウントID」列に出ていて、「コピー」で写せる**
+（`social.read` があれば見える）。運用者から受け取れば、API で探す必要は無い。
+
 #### GET `/social/accounts/{id}`
 
 1 件を返す。無ければ 404。
 
 #### POST `/social/accounts` / PATCH `/social/accounts/{id}`
 
-アカウントと資格情報の登録は通常、運用者が画面から行う。API で行う場合の項目は次のとおり
+アカウントと資格情報の登録は通常、運用者が画面から行う。その `id` は一覧の「アカウントID」列から写す（上記）。API で行う場合の項目は次のとおり
 （`credentials` に何を入れるかは §5.6、運用上の注意は
 [手順書 §2](SNS投稿の外部連携.md#2-snsアカウントを登録する)）。
 
@@ -460,7 +463,7 @@ curl -H "Authorization: Bearer $TORIFUNE_TOKEN" \
 
 | 項目 | 型 | 必須 | 既定 | 制約（違反は 422。`details` のキーはその項目名） |
 | --- | --- | --- | --- | --- |
-| `socialAccountId` | string | **必須** | — | 存在するアカウントの `id`。無ければ 422 `socialAccountId`（404 ではない） |
+| `socialAccountId` | string | **必須** | — | 存在するアカウントの `id`（§4.2。画面で登録したアカウントは一覧の「アカウントID」列で写せる）。無ければ 422 `socialAccountId`（404 ではない） |
 | `body` | string | **必須** | — | 1〜10000 文字（UTF-16 の長さ）。空白だけは不可。**SNS ごとの上限は §5** |
 | `publishTiming` | enum | 任意（**推奨**） | なし | **いつ配信へ回すか**。`now`（即投稿）/ `scheduled`（`scheduledAt` の時刻に投稿）/ `after_approval`（**人の確認を待ってから投稿**＝承認待ち）。下の「`publishTiming` と結果」の表。**省略すると `status` と `scheduledAt` で決まる（従来どおり）**。列挙外は 422 `publishTiming`。`deliveryMode`（誰が SNS へ出すか）とは別の項目で、組み合わせて使う |
 | `status` | enum | 任意 | `draft`（`publishTiming` を送らないとき） | `draft`（下書き。配信しない）/ `scheduled`（予約。配信する）/ `awaiting_approval`（承認待ち。`publishTiming: "after_approval"` と同じ結果）。**`publishTiming` と同時に送ると 422 `status`**（値が `draft` でも）。`published` / `failed` も形式上は受け付けるが、配信されず `publishedAt` / `failedAt` も入らない。外部アプリは使わない |
@@ -1308,6 +1311,7 @@ while True:
 | 2026-09-25 | 検証を受けて §1.3 を訂正・追記した。使えない文字の検査はクエリの**名前**も見る（名前そのものに含むときの `details` のキーは `_`）。`details` のキーは先頭の 50 個まで。あわせて、項目名が `constructor`・`__proto__` などのときに 500 になっていたのと、深い入れ子（1 万段など）の本文で 500 になっていたのを直した（どちらも 422） |
 | 2026-10-01 | **承認待ちを足した**（`048-social-post-approval`）。`POST /social/posts` に任意の **`publishTiming`**（`now` / `scheduled` / `after_approval`。§4.4）、状態 **`awaiting_approval`**（§4.3・§6）、承認の操作 **`POST /social/posts/{id}/approve`**（Permission **`social.approve`**。§4.10）、応答の **`approvedAt`**、イベント **`social.post.approved`**（§6.6）。API のバージョンは v1 のまま。**既存の外部アプリへの影響**：(1) `publishTiming` を送らない要求は従来どおり。(2) `POST` の `status` の既定が OpenAPI から消えた（省略時は従来どおり `draft`。生成クライアントの既定値が消えることがある）。`publishTiming` と `status` を同時に送ると 422 `status`。(3) **状態の値 `awaiting_approval` が増えた。** 自分が承認待ちを使わなければ自分の投稿には現れないが、**`GET /social/posts` の一覧には他のアプリや人が作った承認待ちが含まれうる**。状態を網羅的に分岐しているクライアントは知らない値を受け取るので、無視するか「その他」として扱う。(4) `PATCH` で承認待ちから `scheduled` / `published` / `failed` へは変えられない（422 `status`）。`PATCH` に `publishTiming` を送ると 422（従来は黙って無視されていた）。(5) **承認を経た予約（`approvedAt` あり）の内容・日時・配信方法を書き換えると承認待ちに戻る。** 既存の予約はすべて `approvedAt: null` で、振る舞いは変わらない。(6) 既存のトークンの Scope に `social.approve` は無いので、既存のトークンは承認できない。(7) X の無料版（`sns-x-manual`）では `publishTiming` を送った登録が常に承認待ちになる（§5.1）。(8) **`PATCH /social/posts/{id}` の処理中に承認・配信の開始などで投稿の状態が変わると 409 `CONFLICT`**（`details.status`。何も変えない。§4.7）。OpenAPI の `updateSocialPost` に 409 を宣言した |
 | 2026-10-01 | **配信の不具合を直した**（`049-publish-claim-conditions`）。配信ジョブが、その周期の配信の順番に並べた後に `PATCH` で予約日時を未来へ直された・`deliveryMode` を `manual` に変えられた・取りやめてから予約し直された予約を、直す前の内容のまま送っていた（`PATCH` は 200 を返していた）。直した後は、こうした予約は直した内容で扱われる（§4.7）。`POST /social/publish` の件数では `due` にだけ数え、他のどれにも数えない。こうした予約について誤って出ていた `social.post.published` / `social.post.failed` も出なくなる。**API の形・バージョン（v1）・OpenAPI・イベントの形は変わらない** |
+| 2026-10-02 | 管理画面のアカウント一覧に ID の表示とコピーを足した（`051-social-account-id-display`）。画面で登録したアカウントの `id` は一覧の「アカウントID」列で写せる（§4.2）。**API の形・バージョン（v1）・OpenAPI は変わらない** |
 
 ### 関連文書
 
@@ -1316,7 +1320,8 @@ while True:
 * 配信 Plugin の作り方：[`Plugin開発ガイド.md`](../Plugin開発ガイド.md) §9
 * API の全体方針：`docs/仕様書/05_API設計.md`（§10・§11 形式、§18 SNS API、§33 ページング、§36 Rate Limit、§37・§38 API Token）
 * 設計：`docs/設計/035-social-publishing/設計.md`、各 SNS は `036-sns-bluesky` / `037-sns-x` /
-  `038-sns-instagram` / `040-sns-threads`、承認待ちは `048-social-post-approval`
+  `038-sns-instagram` / `040-sns-threads`、承認待ちは `048-social-post-approval`、
+  アカウントの ID の表示とコピーは `051-social-account-id-display`
 
 ---
 

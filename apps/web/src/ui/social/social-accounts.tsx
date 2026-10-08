@@ -1,10 +1,11 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { ownValue } from '@/domain/own-value';
 import type { AccountStatus } from '@/domain/social/social';
 import { apiRequest } from '@/ui/client/api-client';
+import { copyText } from '@/ui/client/clipboard';
 import {
   Alert,
   Button,
@@ -28,7 +29,12 @@ import {
   type CredentialInput,
 } from '@/ui/social/credential-form';
 import {
+  ACCOUNT_ID_COPIED,
+  ACCOUNT_ID_COPY_FAILED,
+  ACCOUNT_ID_COPY_LABEL,
+  ACCOUNT_ID_HEADER,
   ACCOUNT_STATUS_LABEL,
+  accountIdCopyAriaLabel,
   CREDENTIAL_CLEAR_CONFIRM_LABEL,
   CREDENTIAL_CLEAR_CONFIRM_TITLE,
   CREDENTIAL_CLEAR_LABEL,
@@ -354,21 +360,85 @@ export function SocialAccounts(props: SocialAccountsProps) {
     router.refresh();
   }
 
+  /**
+   * アカウントの ID をクリップボードへ写し、結果を Toast で知らせる（051 設計 §7.3）。
+   * 行の値だけを使い、要求を出さない。
+   */
+  async function copyAccountId(account: AccountRow): Promise<void> {
+    const copied = await copyText(account.id);
+    setToast({
+      id: `${account.id}:copy`,
+      text: copied ? ACCOUNT_ID_COPIED : ACCOUNT_ID_COPY_FAILED,
+      tone: copied ? 'success' : 'danger',
+    });
+  }
+
+  /**
+   * ID の全桁と「コピー」（051 設計 §7.2）。短縮しない。
+   * ハイフンの直後に `<wbr>` を入れて折り返しを区切りの位置に限る（文字は足さない）。
+   * 1 回のクリックで全体が選ばれるので、写せない環境でも手で写せる（設計 §7.3.3）。
+   */
+  function renderAccountId(account: AccountRow): React.ReactNode {
+    const parts = account.id.split('-');
+    return (
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          alignItems: 'center',
+          gap: 'var(--tf-space-2)',
+        }}
+      >
+        <code
+          data-account-id={account.id}
+          style={{
+            fontFamily: 'var(--tf-font-mono)',
+            fontSize: 'var(--tf-text-caption)',
+            userSelect: 'all',
+            WebkitUserSelect: 'all',
+          }}
+        >
+          {parts.map((part, index) =>
+            index < parts.length - 1 ? (
+              <Fragment key={index}>
+                {part}-<wbr />
+              </Fragment>
+            ) : (
+              <Fragment key={index}>{part}</Fragment>
+            ),
+          )}
+        </code>
+        <Button
+          variant="ghost"
+          aria-label={accountIdCopyAriaLabel(
+            account.displayName,
+            ownValue(providerLabels, account.provider) ?? account.provider,
+          )}
+          onClick={() => void copyAccountId(account)}
+        >
+          {ACCOUNT_ID_COPY_LABEL}
+        </Button>
+      </div>
+    );
+  }
+
   const columns: Column<AccountRow>[] = [
     {
       key: 'provider',
       header: 'サービス',
-      width: '10rem',
+      width: '8rem',
       // publisher の表示名を優先する（設計 §5.6.1）。部品に自前の対応表を持たない。
       // provider は HTTP で決められるので、自分のプロパティだけを見る（047 設計 §4.1）。
       render: (account) => ownValue(providerLabels, account.provider) ?? account.provider,
     },
     { key: 'displayName', header: '表示名', render: (account) => account.displayName },
     { key: 'handle', header: 'ハンドル', render: (account) => account.handle },
+    // 外部アプリへ渡す ID（051 設計 §7.1）。`social.read` で見える・押せる。幅は指定しない。
+    { key: 'accountId', header: ACCOUNT_ID_HEADER, render: renderAccountId },
     {
       key: 'credential',
       header: '資格情報',
-      width: '10rem',
+      width: '7rem',
       // **平文を出さない。** 設定済みかどうかだけを示す。
       render: (account) => (account.credentialConfigured ? '••••••••' : '未設定'),
     },
@@ -381,8 +451,8 @@ export function SocialAccounts(props: SocialAccountsProps) {
     {
       key: 'actions',
       header: '操作',
-      // 2 つのボタンが収まる幅（039 設計 §7.3.1）。狭い画面では表の中で横に動く。
-      width: '16rem',
+      // 2 つのボタンが収まる幅（039 設計 §7.3.1。051 設計 §7.4 で詰めた）。狭い画面では表の中で横に動く。
+      width: '14rem',
       render: (account) =>
         canWrite || canDelete ? (
           <div style={{ display: 'flex', gap: 'var(--tf-space-2)' }}>

@@ -22,7 +22,7 @@ Torifune は、**外部のアプリが API で登録した投稿を、指定し�
 
 ```text
 1. APIトークンを発行する        管理画面 → 設定 → API（Scope は social.read と social.write）
-2. SNSアカウントを登録する      POST /api/v1/social/accounts
+2. SNSアカウントを登録する      POST /api/v1/social/accounts（画面で登録済みなら、一覧の「アカウントID」を写す）
 3. 投稿を登録する               POST /api/v1/social/posts
 4. 再送してよい形にする          externalRef を付ける。2回目は 200 で同じ投稿が返る
 5. 結果を見る                   GET /api/v1/social/posts/{id} の status / failureReason
@@ -137,6 +137,19 @@ curl -X POST https://torifune.example.com/api/v1/social/accounts \
             "createdAt": "…", "updatedAt": "…" } }
 ```
 
+### 画面で登録したアカウントを使う
+
+アカウントは API で作らず、運用者が管理画面で登録してもよい。
+
+1. 運用者が管理画面の SNS（`/social`）の「+ アカウントを追加」で登録する
+2. 一覧のその行の「アカウントID」の「コピー」で ID を写す（`social.read` があれば見える）
+3. 写した値を外部アプリの設定（下の例の `$ACCOUNT_ID`）に入れる
+
+* 写せないとき（http で開いた画面など、クリップボードが使えない環境）は「コピーできませんでした。」と出る。
+  ID を 1 回クリックすると全体が選ばれるので、手で写す
+* API で探すなら `GET /api/v1/social/accounts`（`social.read`。[仕様 §4.2](SNS投稿API仕様.md)）の
+  `displayName` / `handle` で目当ての行を選ぶ
+
 ### `credentials` に何を入れるか
 
 **何が要るかを決めるのは配信 Plugin。** 例えば Bluesky なら
@@ -195,7 +208,7 @@ curl -X POST https://torifune.example.com/api/v1/social/posts \
 
 | 項目 | 既定 | 説明 |
 | --- | --- | --- |
-| `socialAccountId` | — | §2 で作ったアカウントの `id`（必須） |
+| `socialAccountId` | — | §2 で作った（または画面の一覧で写した）アカウントの `id`（必須） |
 | `body` | — | 本文（必須） |
 | `publishTiming` | なし | **いつ配信へ回すか**（推奨）。`now`＝すぐ／`scheduled`＝`scheduledAt` の時刻に／`after_approval`＝**人が管理画面で確かめてから**（下記）。省略すると `status` と `scheduledAt` で決まる。`status` と同時には送れない（422） |
 | `status` | `draft` | `draft` なら下書き。**配信するなら `scheduled`**（`publishTiming` を送るときは送らない） |
