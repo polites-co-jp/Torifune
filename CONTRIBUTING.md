@@ -186,9 +186,9 @@ Breaking Change を行う場合は移行手順を添えてください。
 ```bash
 pnpm lint
 pnpm format:check
-pnpm typecheck
+pnpm typecheck      # テストファイルも型検査する
 pnpm test
-pnpm build
+pnpm build          # 本番のコードだけを型検査する（apps/web/tsconfig.build.json。テストは見ない）
 ```
 
 Plugin の読み込み・配置・再ビルドに関わる変更では、これに加えて

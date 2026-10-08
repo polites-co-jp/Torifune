@@ -868,6 +868,8 @@ pnpm typecheck
 ```
 
 Plugin のコードは本体と同じ TypeScript の設定で検査される。
+本番のビルド（コンテナ内の再ビルドを含む）は `apps/web/tsconfig.build.json`（`tsconfig.json` からテストファイルを除いたもの）で型検査する。
+Plugin のコードはレジストリから辿られて検査に載り、型の誤りがあれば再ビルドが失敗して Plugin は隔離される。
 `@torifune/plugin-api` と `react` はリポジトリのルートから解決される。
 
 ### やってはいけないこと
