@@ -17,6 +17,7 @@ import { CORE_PERMISSIONS } from '@/domain/permission';
  * * #61：`application/social/publish.ts` の SHA-256 の固定（G1）
  * * #58 の一部：`listPostSourceTokens` は `scopedPosts` で区画を掛け、区画の条件を直に書かない。Domain の宣言は
  *   `scope: AccessScope` を必須で取る（G3）
+ * * #56：`application/social/bulk-post-use-cases.ts` があり、`socialRepository` も `infrastructure/` も import しない（G4）
  *
  * **未実装の値は静的 import にしない**（`site-scope-static-checks.test.ts` と同じ）。
  * 未実装の段階でこのファイル全体が読めなくなると、他の件まで一緒に落ちて何が壊れたのか読めなくなる。
@@ -369,5 +370,75 @@ describe('#58 listPostSourceTokens は scopedPosts で区画を掛け、区画�
     );
 
     expect(parameters).toMatch(/\bscope\s*\?\s*:/);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* #56 一括の UseCase は Repository を直接触らない                                   */
+/* -------------------------------------------------------------------------- */
+
+const BULK_USE_CASES_FILE = 'application/social/bulk-post-use-cases.ts';
+
+/**
+ * `socialRepository` か `infrastructure/` を読む箇所の数（静的・型だけ・動的・副作用だけの import。コメントは数えない）。
+ *
+ * * `import { socialRepository } from …` / `import type { … } from '@/infrastructure/…'` / `export … from '…'`
+ * * `await import('../../infrastructure/…')` / `import '@/infrastructure/…'`
+ * * `socialRepository` という名前を本文で使う（別名の再 export を経由した呼び出しも拾う）
+ */
+function repositoryReferenceCount(source: string): number {
+  const code = withoutComments(source);
+  const infrastructure =
+    /['"](?:@\/infrastructure|(?:\.\.?\/)+(?:[\w-]+\/)*infrastructure)(?:\/[^'"]*)?['"]/;
+  let count = 0;
+  for (const match of code.matchAll(
+    /\b(?:import|export)\b[^;]*?\bfrom\s*(['"][^'"]+['"])|\bimport\s*\(\s*(['"][^'"]+['"])\s*\)|\bimport\s*(['"][^'"]+['"])/g,
+  )) {
+    const specifier = match[1] ?? match[2] ?? match[3] ?? '';
+    if (infrastructure.test(specifier)) count += 1;
+  }
+  count += [...code.matchAll(/\bsocialRepository\b/g)].length;
+  return count;
+}
+
+describe('#56 application/social/bulk-post-use-cases.ts は socialRepository も infrastructure/ も import しない', () => {
+  it('#56 application/social/bulk-post-use-cases.ts がある', () => {
+    expect(existsSync(join(SRC_DIR, BULK_USE_CASES_FILE)), `${BULK_USE_CASES_FILE} が無い`).toBe(
+      true,
+    );
+  });
+
+  it('#56 socialRepository と infrastructure/ を参照しない（静的・型だけ・動的のどれでも）', () => {
+    const source = readSource(join(SRC_DIR, BULK_USE_CASES_FILE), BULK_USE_CASES_FILE);
+
+    expect(repositoryReferenceCount(source)).toBe(0);
+  });
+
+  it('#56 判別力：静的・型だけ・動的・副作用だけの import と名前の参照を数え、コメントと他の層は数えない', () => {
+    expect(
+      repositoryReferenceCount(
+        "import { socialRepository } from '@/infrastructure/social-repository';",
+      ),
+    ).toBe(2);
+    expect(
+      repositoryReferenceCount(
+        "import type { Row } from '../../infrastructure/social-repository';",
+      ),
+    ).toBe(1);
+    expect(
+      repositoryReferenceCount("const m = await import('@/infrastructure/logging');\nm.log;"),
+    ).toBe(1);
+    expect(repositoryReferenceCount("import '../../infrastructure/side-effect';")).toBe(1);
+    expect(repositoryReferenceCount("export { log } from '@/infrastructure/logging';")).toBe(1);
+    expect(
+      repositoryReferenceCount(
+        [
+          "// import { socialRepository } from '@/infrastructure/social-repository';",
+          "import { approveSocialPost } from './social-use-cases';",
+          "import { BULK_MAX_ITEMS } from '@/domain/social/bulk';",
+          '',
+        ].join('\n'),
+      ),
+    ).toBe(0);
   });
 });

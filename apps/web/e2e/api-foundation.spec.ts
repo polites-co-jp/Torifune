@@ -128,6 +128,8 @@ test('OpenAPI に登録済みエンドポイントが含まれる', async ({ req
     '/social/accounts',
     '/social/accounts/{id}',
     '/social/posts',
+    // 054-bulk-post-actions 設計 §8.2。画面（セッション）専用の一括承認。
+    '/social/posts/bulk/approve',
     '/social/posts/{id}',
     // 048-social-post-approval 設計 §6.4。承認待ちの投稿を承認する。
     '/social/posts/{id}/approve',
