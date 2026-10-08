@@ -44,6 +44,7 @@ import {
   isValidPostBody,
   isValidProvider,
   isValidScheduledAt,
+  POST_PUBLISHING_MESSAGE,
   resolveApprovalSchedule,
   resolveCreateTiming,
   revokesApproval,
@@ -1245,11 +1246,7 @@ export const updateSocialPost = defineUseCase<UpdatePostInput, SocialPost>({
       current.deliveryMode === 'auto' &&
       current.publishStartedAt !== null;
     if (publishing && PUBLISH_GUARDED_FIELDS.some((field) => input[field] !== undefined)) {
-      throw new ValidationError(
-        'SocialPost',
-        'status',
-        '配信を開始しているため変更できません。結果が記録されるまで待ってください。',
-      );
+      throw new ValidationError('SocialPost', 'status', POST_PUBLISHING_MESSAGE);
     }
 
     // 承認待ちを予約にするのは承認の操作だけ（048-social-post-approval 設計 §6.3.1）。

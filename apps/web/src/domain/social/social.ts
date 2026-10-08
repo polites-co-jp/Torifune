@@ -1,5 +1,6 @@
 import { isSafeReturnTo } from '../authorization-state';
 import { ownValue } from '../own-value';
+import { ValidationError } from '../repository';
 import type { Secret } from '../secret';
 import { containsNul } from '../text';
 import type { SkipReason } from './publishing';
@@ -465,7 +466,64 @@ export type ApprovalScheduleResult =
       /** 手動投稿しかできない配信 Plugin のために即投稿へ読み替えたか（裁定 5）。 */
       readonly approvalForced: boolean;
     }
-  | { readonly ok: false; readonly field: 'scheduledAt'; readonly message: string };
+  | {
+      readonly ok: false;
+      readonly field: 'scheduledAt';
+      readonly message: string;
+      /** 失敗の理由（054-bulk-post-actions 設計 §8.1.1。一括の項目の結果に写す）。 */
+      readonly reason: ApprovalScheduleFailureReason;
+    };
+
+/** 承認の時刻が決められなかった理由。`missing`＝日時が無い、`past`＝いま以前、`out_of_range`＝範囲外。 */
+export type ApprovalScheduleFailureReason = 'missing' | 'past' | 'out_of_range';
+
+/**
+ * 承認の時刻の誤り（054-bulk-post-actions 設計 §6・§8.1.1）。
+ *
+ * `ValidationError` の派生なので、1 件の承認の応答（422 `details.scheduledAt` と文言）は変わらない。
+ * 一括の承認は `reason` を項目の理由（`no_desired_time` / `desired_time_passed` / `validation`）に写す。
+ */
+export class ApprovalScheduleError extends ValidationError {
+  constructor(
+    field: string,
+    message: string,
+    readonly reason: ApprovalScheduleFailureReason,
+  ) {
+    super('SocialPost', field, message);
+    this.name = 'ApprovalScheduleError';
+  }
+}
+
+/** 一括の操作で、投稿がその操作の対象でない理由（054-bulk-post-actions 設計 §8.1.1）。 */
+export type SocialPostIneligibleReason =
+  'not_applicable' | 'already_due' | 'publishing' | 'approval_required';
+
+/**
+ * 投稿がその操作の対象でない（054-bulk-post-actions 設計 §8.1.1・§8.3・§8.4）。
+ *
+ * `ValidationError` の派生（`field` は `status`）。一括の操作は `reason` をそのまま項目の理由に写す。
+ */
+export class SocialPostIneligibleError extends ValidationError {
+  constructor(
+    readonly reason: SocialPostIneligibleReason,
+    message: string,
+  ) {
+    super('SocialPost', 'status', message);
+    this.name = 'SocialPostIneligibleError';
+  }
+}
+
+/** 配信中の投稿を変えようとしたときの文言（1 件の更新・一括の操作で同じ。035 設計 §5.8）。 */
+export const POST_PUBLISHING_MESSAGE =
+  '配信を開始しているため変更できません。結果が記録されるまで待ってください。';
+
+/** `StaleSocialPostError` の 409 の `details.expectedUpdatedAt` の文言（048 設計 §6.4.2）。 */
+export const STALE_POST_MESSAGE =
+  '投稿の内容が変わっています。内容を確かめてから承認し直してください。';
+
+/** `SocialPostStateChangedError` の 409 の `details.status` の文言（048 設計 §6.3.6）。 */
+export const POST_STATE_CHANGED_MESSAGE =
+  '投稿の状態が変わっています。読み直してからやり直してください。';
 
 /**
  * 承認のときの配信の時刻を決める（048-social-post-approval 設計 §6.4.5。裁定 4・5）。
@@ -489,6 +547,7 @@ export function resolveApprovalSchedule(input: ApprovalScheduleInput): ApprovalS
       ok: false,
       field: 'scheduledAt',
       message: '0001-01-01T00:00:00Z から 9999-12-31T23:59:59.999Z までの日時を指定してください。',
+      reason: 'out_of_range',
     };
   }
   const scheduledAt = fromInput ?? input.registered;
@@ -497,6 +556,7 @@ export function resolveApprovalSchedule(input: ApprovalScheduleInput): ApprovalS
       ok: false,
       field: 'scheduledAt',
       message: '承認して予約するときは日時を指定してください。',
+      reason: 'missing',
     };
   }
   if (scheduledAt.getTime() <= now.getTime()) {
@@ -504,6 +564,7 @@ export function resolveApprovalSchedule(input: ApprovalScheduleInput): ApprovalS
       ok: false,
       field: 'scheduledAt',
       message: '指定の日時を過ぎています。即投稿を選ぶか、未来の日時を指定してください。',
+      reason: 'past',
     };
   }
   return { ok: true, timing: 'scheduled', scheduledAt, approvalForced: false };
