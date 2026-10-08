@@ -125,10 +125,11 @@ function securityFor(endpoint: EndpointSpec): SecurityRequirement[] | undefined 
 }
 
 function descriptionFor(endpoint: EndpointSpec): string | undefined {
-  if (endpoint.deprecated === undefined) {
-    return undefined;
-  }
-  return deprecationDescription(endpoint.deprecated);
+  const parts = [
+    ...(endpoint.description === undefined ? [] : [endpoint.description]),
+    ...(endpoint.deprecated === undefined ? [] : [deprecationDescription(endpoint.deprecated)]),
+  ];
+  return parts.length === 0 ? undefined : parts.join('\n\n');
 }
 
 interface OpenApiParameter {

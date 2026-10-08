@@ -70,6 +70,8 @@ export interface RouteDefinition<TBodySchema extends z.ZodType, TQuerySchema ext
   readonly method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   readonly path: string;
   readonly summary: string;
+  /** OpenAPI の操作の説明（`summary` に収まらない注意書き）。省略できる。 */
+  readonly description?: string;
   /** null なら認可しない。**理由を `reason` に書く。** */
   readonly permission: PermissionName | null;
   readonly reason?: string;
@@ -263,6 +265,7 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
     method: definition.method,
     path: definition.path,
     summary: definition.summary,
+    description: definition.description,
     permission: definition.permission,
     documented: definition.documented ?? true,
     sessionOnly: definition.sessionOnly ?? false,

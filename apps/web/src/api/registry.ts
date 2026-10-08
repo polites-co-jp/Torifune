@@ -29,6 +29,8 @@ export interface EndpointSpec {
   readonly method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   readonly path: string;
   readonly summary: string;
+  /** 操作の説明（OpenAPI の `description`）。非推奨の告知があれば、その後ろに続ける。 */
+  readonly description?: string | undefined;
   readonly permission: PermissionName | null;
   /** 公開 API 仕様に載せるか。 */
   readonly documented: boolean;
