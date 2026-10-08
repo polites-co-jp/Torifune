@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { applyMigrations } from './migrate/runner.js';
+import { PLUGINS_USAGE_LINES, runPlugins } from './plugins/command.js';
 import {
   InvalidPasswordError,
   resetPassword,
@@ -17,9 +18,14 @@ import {
  * `reset-password` は、画面からのパスワードリセットが使えない環境のための復旧経路
  * （`03_リスクと未決事項.md` S-8）。メール送信を用意していない構成では、
  * 管理者が1人だとその管理者が締め出された時点で復旧できなくなる。
+ *
+ * `plugins` はコンテナの起動手順が使う。イメージに残した同梱 Plugin の写しから
+ * plugins の Volume の同梱 Plugin を更新し（`sync-bundled`）、Plugin のソースの指紋を出す
+ * （`fingerprint`。いまのビルドと食い違えば起動前に再ビルドする）
+ * （docs/設計/050-bundled-plugin-sync/設計.md §6.6）。
  */
 
-export const COMMANDS = ['migrate', 'reset-password'] as const;
+export const COMMANDS = ['migrate', 'reset-password', 'plugins'] as const;
 
 export type Command = (typeof COMMANDS)[number];
 
@@ -34,6 +40,7 @@ export function usage(): string {
     'Commands:',
     '  migrate         Apply pending migrations',
     '  reset-password  Reset a user password directly in the database',
+    '  plugins         Maintain plugin files when the container starts (see below)',
     '',
     'Options for migrate:',
     '  --database-url=<url>     Target database (default: $DATABASE_URL)',
@@ -54,6 +61,7 @@ export function usage(): string {
     '',
     'Resetting a password revokes every active session of that user.',
     '',
+    ...PLUGINS_USAGE_LINES,
   ].join('\n');
 }
 
@@ -285,6 +293,10 @@ export async function run(argv: readonly string[], io: RunIo = defaultIo): Promi
 
   if (command === 'reset-password') {
     return runResetPassword(rest, io);
+  }
+
+  if (command === 'plugins') {
+    return runPlugins(rest, io);
   }
 
   return runMigrate(rest, io);

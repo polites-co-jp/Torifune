@@ -28,6 +28,9 @@ function maxFiles(): number {
 const S_IFMT = 0o170000;
 const S_IFLNK = 0o120000;
 
+/** Plugin のフォルダの直下で本体が使う名前の接頭辞（`.torifune-bundled`・`.torifune-quarantine` など）。 */
+const RESERVED_PREFIX = '.torifune-';
+
 export class PluginPackageError extends Error {
   constructor(message: string) {
     super(message);
@@ -53,7 +56,11 @@ function isUnsafePath(name: string): boolean {
   if (name.startsWith('/')) return true;
   // C:\ や C:/ のようなドライブ付き絶対パス。
   if (/^[a-zA-Z]:/.test(name)) return true;
-  return name.split('/').some((segment) => segment === '..');
+  // 空の区間（`a//b`）と `.` の区間（`a/./b`）も拒否する。展開の join が正規化して別の場所
+  // （たとえば Plugin のフォルダの直下）を指すため、名前の検証がすり抜けられる。
+  // ディレクトリの項目の末尾の `/` が作る最後の空の区間だけは認める。
+  const segments = name.endsWith('/') ? name.slice(0, -1).split('/') : name.split('/');
+  return segments.some((segment) => segment === '..' || segment === '.' || segment === '');
 }
 
 interface RawEntry {
@@ -179,7 +186,16 @@ export async function inspectPackage(archive: Buffer): Promise<InspectedPackage>
       // 展開後にリンク経由で外を読み書きできる。
       throw new PluginPackageError(`シンボリックリンクが含まれている: ${entry.name}`);
     }
-    const top = entry.name.split('/')[0];
+    const [top, child] = entry.name.split('/');
+    // 大文字小文字を区別しないファイルシステム（開発機の Windows・macOS）では `.TORIFUNE-BUNDLED` も同じ名前。
+    if (child !== undefined && child.toLowerCase().startsWith(RESERVED_PREFIX)) {
+      // 本体が置く印（同梱の印・隔離マーク）を Package から持ち込ませない。偽の同梱の印があると、
+      // 利用者が更新した同梱 Plugin の ID のフォルダが、次の起動で同梱の版へ戻される
+      // （050-bundled-plugin-sync 設計 §6.2.2・§6.3 #4）。
+      throw new PluginPackageError(
+        `本体が使う名前（${RESERVED_PREFIX} で始まる）がフォルダの直下に含まれている: ${entry.name}`,
+      );
+    }
     if (top !== undefined && top !== '') {
       topLevels.add(top);
     }

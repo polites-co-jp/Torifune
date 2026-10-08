@@ -114,6 +114,95 @@ describe('検証', () => {
     await expect(inspectPackage(zip)).resolves.toBeDefined();
   });
 
+  it.each([
+    ['同梱の印（.torifune-bundled）', 'sample-plugin/.torifune-bundled'],
+    ['隔離マーク（.torifune-quarantine）', 'sample-plugin/.torifune-quarantine'],
+    ['.torifune- で始まる別の名前のファイル', 'sample-plugin/.torifune-other'],
+    ['.torifune- で始まるディレクトリの中のファイル', 'sample-plugin/.torifune-dir/x.txt'],
+  ])('Plugin のフォルダの直下に本体が使う名前（%s）を含むものを拒否する', async (_label, name) => {
+    // 偽の印を持ち込むと、利用者が更新した同梱 Plugin の ID のフォルダが、次の起動で同梱の版へ戻される
+    // （050-bundled-plugin-sync 設計 §6.2.2・§6.3 #4）。
+    const zip = buildZip([
+      { name: 'sample-plugin/plugin.json', content: manifestOf('sample-plugin') },
+      { name: 'sample-plugin/index.ts', content: 'export default {};' },
+      { name, content: '{"schema":1,"hash":"sha256:' + '0'.repeat(64) + '"}' },
+    ]);
+
+    await expect(inspectPackage(zip)).rejects.toThrow('本体が使う名前');
+  });
+
+  it('Plugin のフォルダの直下に本体が使う名前のディレクトリの項目だけがあるものも拒否する', async () => {
+    const zip = buildZip([
+      { name: 'sample-plugin/plugin.json', content: manifestOf('sample-plugin') },
+      { name: 'sample-plugin/index.ts', content: 'export default {};' },
+      { name: 'sample-plugin/.torifune-bundled/', content: '' },
+    ]);
+
+    await expect(inspectPackage(zip)).rejects.toThrow('本体が使う名前');
+  });
+
+  it('下の階層にある .torifune- で始まる名前は拒否しない（本体が使うのはフォルダの直下だけ）', async () => {
+    const zip = buildZip([
+      { name: 'sample-plugin/plugin.json', content: manifestOf('sample-plugin') },
+      { name: 'sample-plugin/index.ts', content: 'export default {};' },
+      { name: 'sample-plugin/assets/.torifune-bundled', content: 'x' },
+    ]);
+
+    await expect(inspectPackage(zip)).resolves.toBeDefined();
+  });
+
+  it.each([
+    ['空の区間（//）', 'sample-plugin//.torifune-bundled'],
+    ['. の区間（/./）', 'sample-plugin/./.torifune-bundled'],
+  ])(
+    '%s を挟んで本体が使う名前を直下へ持ち込むもの（展開の join で直下に正規化される）を拒否する',
+    async (_label, name) => {
+      const zip = buildZip([
+        { name: 'sample-plugin/plugin.json', content: manifestOf('sample-plugin') },
+        { name: 'sample-plugin/index.ts', content: 'export default {};' },
+        { name, content: '{"schema":1,"hash":"sha256:' + '0'.repeat(64) + '"}' },
+      ]);
+
+      await expect(inspectPackage(zip)).rejects.toBeInstanceOf(PluginPackageError);
+    },
+  );
+
+  it.each([
+    ['空の区間（//）', 'sample-plugin//lib.ts'],
+    ['. の区間（/./）', 'sample-plugin/./lib.ts'],
+    ['先頭の . の区間', './sample-plugin/lib.ts'],
+  ])('%s を含むパスを安全でないパスとして拒否する', async (_label, name) => {
+    const zip = buildZip([
+      { name: 'sample-plugin/plugin.json', content: manifestOf('sample-plugin') },
+      { name: 'sample-plugin/index.ts', content: 'export default {};' },
+      { name, content: 'export const x = 1;' },
+    ]);
+
+    await expect(inspectPackage(zip)).rejects.toThrow('安全でないパス');
+  });
+
+  it('大文字小文字を変えた本体が使う名前（.TORIFUNE-BUNDLED）も拒否する（大文字小文字を区別しないファイルシステムでは同じ名前）', async () => {
+    const zip = buildZip([
+      { name: 'sample-plugin/plugin.json', content: manifestOf('sample-plugin') },
+      { name: 'sample-plugin/index.ts', content: 'export default {};' },
+      { name: 'sample-plugin/.TORIFUNE-BUNDLED', content: 'x' },
+    ]);
+
+    await expect(inspectPackage(zip)).rejects.toThrow('本体が使う名前');
+  });
+
+  it('ディレクトリの項目の末尾の / は拒否しない', async () => {
+    const zip = buildZip([
+      { name: 'sample-plugin/', content: '' },
+      { name: 'sample-plugin/ui/', content: '' },
+      { name: 'sample-plugin/plugin.json', content: manifestOf('sample-plugin') },
+      { name: 'sample-plugin/index.ts', content: 'export default {};' },
+      { name: 'sample-plugin/ui/widget.tsx', content: 'export const W = () => null;' },
+    ]);
+
+    await expect(inspectPackage(zip)).resolves.toBeDefined();
+  });
+
   it('トップレベルが複数あるものを拒否する', async () => {
     // どれが Plugin か決められない。
     const zip = buildZip([

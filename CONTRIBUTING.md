@@ -196,7 +196,10 @@ Plugin の読み込み・配置・再ビルドに関わる変更では、これ�
 
 ```bash
 ./scripts/verify-container-rebuild.sh
+./scripts/verify-bundled-plugin-sync.sh
 ```
+
+2 つはどちらもイメージをビルドするので、**同時に流さず 1 つずつ順に流す**（`pnpm test` とも重ねない）。
 
 `import.meta` はビルドで書き換わるため、**dev と Vitest では動くのに
 本番ビルドでだけ壊れる**ことがある。CI の `container` ジョブが同じものを走らせる。
