@@ -15,6 +15,8 @@ import { CORE_PERMISSIONS } from '@/domain/permission';
  * * #59：公開 Plugin API の `SocialPostView` のキー、`PLUGIN_API_VERSION`、`CORE_EVENTS`、`CORE_PERMISSIONS`、
  *   `AUDIT_ACTIONS` が 054 の前（`4597907`）と同じ（G1）
  * * #61：`application/social/publish.ts` の SHA-256 の固定（G1）
+ * * #58 の一部：`listPostSourceTokens` は `scopedPosts` で区画を掛け、区画の条件を直に書かない。Domain の宣言は
+ *   `scope: AccessScope` を必須で取る（G3）
  *
  * **未実装の値は静的 import にしない**（`site-scope-static-checks.test.ts` と同じ）。
  * 未実装の段階でこのファイル全体が読めなくなると、他の件まで一緒に落ちて何が壊れたのか読めなくなる。
@@ -247,5 +249,125 @@ describe('#61 application/social/publish.ts は変えない', () => {
     const source = readSource(join(SRC_DIR, PUBLISH_FILE), PUBLISH_FILE);
 
     expect(sha256OfLf(`${source}\n// publish now\n`)).not.toBe(SHA256_OF_PUBLISH);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* #58 区画の条件は scopePredicate だけ（listPostSourceTokens は scopedPosts を使う）     */
+/* -------------------------------------------------------------------------- */
+
+const SOCIAL_REPOSITORY_FILE = 'infrastructure/social-repository.ts';
+const SOCIAL_REPOSITORY_DECLARATION_FILE = 'domain/social/social-repository.ts';
+
+/** コメント（ブロックコメントと行コメント）を落とす。 */
+function withoutComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+}
+
+/**
+ * オブジェクトリテラルのメソッド `  async <name>(` から、次のメソッドかオブジェクトの終わりまで
+ * （`approval-static-checks.test.ts` の `methodBody` を写す）。無ければ null。
+ */
+function methodBody(source: string, name: string): string | null {
+  const normalized = source.replaceAll('\r\n', '\n');
+  const start = normalized.search(new RegExp(`^ {2}async ${name}\\(`, 'm'));
+  if (start === -1) return null;
+  const rest = normalized.slice(start + 1);
+  const end = rest.search(/^ {2}async [A-Za-z]+\(|^\};?$/m);
+  return end === -1 ? rest : rest.slice(0, end);
+}
+
+/**
+ * 区画の条件の語：`site_id` / `site_scoped` / `origin_site_id` / `origin_site_scoped` の比較
+ * （`site-scope-static-checks.test.ts` の #61 の `SCOPE_CONDITION` を写す）。
+ */
+const SCOPE_CONDITION =
+  /\b(?:origin_)?site_(?:id|scoped)\b\s*(?:=(?!=)|<>|!=(?!=)|\bIS\b)|['"](?:[a-z_]+\.)?(?:origin_)?site_(?:id|scoped)['"]\s*,\s*['"](?:=|<>|!=|is|is not)['"]/gi;
+
+function scopeConditionCount(source: string): number {
+  return [...withoutComments(source).matchAll(SCOPE_CONDITION)].length;
+}
+
+/** `open` の位置の `(` に対応する `)` までの中身。対応が取れなければ末尾まで。 */
+function balancedContent(code: string, open: number): string {
+  let depth = 0;
+  for (let index = open; index < code.length; index += 1) {
+    const char = code[index];
+    if (char === '(') depth += 1;
+    if (char === ')') {
+      depth -= 1;
+      if (depth === 0) return code.slice(open + 1, index);
+    }
+  }
+  return code.slice(open + 1);
+}
+
+/** `<name>(` の宣言の引数の並び（括弧の対応で切る）。無ければ null。 */
+function declarationParameters(source: string, name: string): string | null {
+  const code = withoutComments(source);
+  const match = new RegExp(`^\\s*(?:async\\s+)?${name}\\(`, 'm').exec(code);
+  if (match === null) return null;
+  return balancedContent(code, match.index + match[0].length - 1);
+}
+
+describe('#58 listPostSourceTokens は scopedPosts で区画を掛け、区画の条件を直に書かない', () => {
+  const repository = (): string =>
+    readSource(join(SRC_DIR, SOCIAL_REPOSITORY_FILE), SOCIAL_REPOSITORY_FILE);
+
+  it('#58 infrastructure/social-repository.ts に listPostSourceTokens があり、本文が scopedPosts( を呼ぶ', () => {
+    const body = methodBody(repository(), 'listPostSourceTokens');
+
+    expect(body, 'socialRepository に listPostSourceTokens が無い').not.toBeNull();
+    expect(withoutComments(body ?? '')).toMatch(/\bscopedPosts\s*\(/);
+  });
+
+  it('#58 listPostSourceTokens の本文に区画の条件の語（site_id・origin_site_* の比較）を直に書かない', () => {
+    const body = methodBody(repository(), 'listPostSourceTokens');
+
+    expect(body, 'socialRepository に listPostSourceTokens が無い').not.toBeNull();
+    expect(scopeConditionCount(body ?? '')).toBe(0);
+  });
+
+  it('#58 Domain の宣言の listPostSourceTokens が scope: AccessScope を必須で取る', () => {
+    const parameters = declarationParameters(
+      readSource(
+        join(SRC_DIR, SOCIAL_REPOSITORY_DECLARATION_FILE),
+        SOCIAL_REPOSITORY_DECLARATION_FILE,
+      ),
+      'listPostSourceTokens',
+    );
+
+    expect(parameters, 'listPostSourceTokens の宣言が無い').not.toBeNull();
+    expect(parameters).toMatch(/\bscope\s*:\s*AccessScope\b/);
+    expect(parameters).not.toMatch(/\bscope\s*\?\s*:/);
+  });
+
+  it('#58 判別力：区画の条件を直に書いた本文と scopedPosts を呼ばない本文を見分ける（コメントは数えない）', () => {
+    const tampered = [
+      'export const socialRepository = {',
+      '  async listPostSourceTokens(connection, scope) {',
+      '    // scopedPosts( はコメントなので数えない',
+      "    return connection.db.selectFrom('social_posts').where('social_accounts.site_id', '=', siteId);",
+      '  },',
+      '',
+      '  async other(connection) {',
+      "    return scopedPosts(connection.db.selectFrom('social_posts'), scope);",
+      '  },',
+      '};',
+      '',
+    ].join('\n');
+    const body = methodBody(tampered, 'listPostSourceTokens') ?? '';
+
+    expect(withoutComments(body)).not.toMatch(/\bscopedPosts\s*\(/);
+    expect(scopeConditionCount(body)).toBe(1);
+  });
+
+  it('#58 判別力：省略できる scope の宣言は必須の形に合わない', () => {
+    const parameters = declarationParameters(
+      '  listPostSourceTokens(connection: Connection, scope?: AccessScope): Promise<S>;',
+      'listPostSourceTokens',
+    );
+
+    expect(parameters).toMatch(/\bscope\s*\?\s*:/);
   });
 });
