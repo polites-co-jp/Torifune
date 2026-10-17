@@ -934,6 +934,38 @@ export const socialRepository: SocialRepository = {
     return row === undefined ? null : toPost(row as PostRow);
   },
 
+  async publishNow(
+    connection: Connection,
+    input: {
+      readonly id: string;
+      readonly now: Date;
+      readonly expectedUpdatedAt: Date;
+    },
+  ): Promise<SocialPost | null> {
+    if (!UUID_PATTERN.test(input.id)) return null;
+
+    // 判定と更新を 1 文で（054-bulk-post-actions 設計 §8.3.1）。読んでから書くまでに承認が外れた・取りやめられた・
+    // 配信ジョブが着手した行には当たらない（`status`・着手印・`updated_at` のどれかが変わる）。
+    // 期限の来た予約（再試行待ち・支度待ちを含む）は対象にしない。待ち時刻と回数の規則を崩さない（設計 §5.4）。
+    // `approved_at`・`skip_*`・`attempt_count` は触らない。
+    const row = await connection.db
+      .updateTable('social_posts')
+      .set({
+        scheduled_at: input.now,
+        next_attempt_at: null,
+        updated_at: input.now,
+      })
+      .where('id', '=', input.id)
+      .where('status', '=', 'scheduled')
+      .where('publish_started_at', 'is', null)
+      .where((eb) => eb.or([eb('scheduled_at', 'is', null), eb('scheduled_at', '>', input.now)]))
+      .where(sql<Date>`date_trunc('milliseconds', updated_at)`, '=', input.expectedUpdatedAt)
+      .returning(POST_COLUMNS)
+      .executeTakeFirst();
+
+    return row === undefined ? null : toPost(row as PostRow);
+  },
+
   async listApprovalPending(
     connection: Connection,
     limit: number,
