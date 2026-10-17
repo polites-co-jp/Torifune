@@ -1,6 +1,10 @@
 import type { SocialAccountView, SocialPostDraftView, SocialPostView } from '@torifune/plugin-api';
 import { uuidv7 } from 'uuidv7';
-import { ForbiddenError, type AuthorizationContext } from '@/application/authorization/authorize';
+import {
+  ForbiddenError,
+  hasPermission,
+  type AuthorizationContext,
+} from '@/application/authorization/authorize';
 import { defineUseCase } from '@/application/authorization/use-case';
 import { scopeOf } from '@/application/social/access-scope';
 import { emit } from '@/application/events';
@@ -21,6 +25,7 @@ import {
   resolveAccountSiteOnCreate,
   type AccessScope,
 } from '@/domain/social/access-scope';
+import { APPROVAL_REQUIRED_MESSAGE, publishNowEligibility } from '@/domain/social/bulk';
 import {
   CREDENTIAL_MAX_LENGTH,
   validateCredentialAgainstFields,
@@ -49,6 +54,7 @@ import {
   resolveApprovalSchedule,
   resolveCreateTiming,
   revokesApproval,
+  SocialPostIneligibleError,
   SocialPostStateChangedError,
   StaleSocialPostError,
   type AccountStatus,
@@ -1647,6 +1653,147 @@ export const approveSocialPost = defineUseCase<ApprovePostInput, ApprovePostOutp
       effectiveTiming: schedule.timing,
       approvalForced: schedule.approvalForced,
       via: context.apiToken === undefined ? 'session' : 'api_token',
+    };
+  },
+});
+
+// ---------------------------------------------------------------------------
+// 今すぐ送る（054-bulk-post-actions 設計 §5.4・§8.3）
+// ---------------------------------------------------------------------------
+
+export interface PublishPostNowInput {
+  readonly id: string;
+  /** 画面で読んだ投稿の `updatedAt`。合わなければ送らない（設計 §8.3 の 3）。 */
+  readonly expectedUpdatedAt: Date;
+  /** 一括の要求の ID。あるときだけ監査の `detail.bulkId` に残す（設計 §8.10）。 */
+  readonly bulkId?: string | undefined;
+}
+
+/** 今すぐ送るの結果。監査に残す値を運ぶ（監査の `detail` は `context` を見られない）。 */
+export interface PublishPostNowOutput {
+  /** 処理後の投稿（予約日時がいま）。 */
+  readonly post: SocialPost;
+  /** 早める前の予約日時（022 より前の形の予約では null）。 */
+  readonly previousScheduledAt: Date | null;
+  /** 承認済みの予約だったか（承認は外さない。設計 §5.4）。 */
+  readonly approvalKept: boolean;
+}
+
+/**
+ * 今すぐ送れる予約かを確かめる（設計 §8.3 の 1〜3）。
+ *
+ * 対象かどうか（予約でない・配信中・期限が来ている）を、内容が変わったことより先に見る。
+ */
+function assertPublishableNow(
+  post: SocialPost | null,
+  input: Pick<PublishPostNowInput, 'id' | 'expectedUpdatedAt'>,
+  now: Date,
+): SocialPost {
+  if (post === null) {
+    throw new NotFoundError('SocialPost', input.id);
+  }
+  const eligibility = publishNowEligibility(post, now);
+  if (!eligibility.ok) {
+    throw new SocialPostIneligibleError(eligibility.reason, eligibility.message);
+  }
+  // 応答の `updatedAt` は `toISOString()`（ミリ秒）。ミリ秒で比べる（048 設計 §6.4.3 と同じ）。
+  if (post.updatedAt.getTime() !== input.expectedUpdatedAt.getTime()) {
+    throw new StaleSocialPostError(post.id);
+  }
+  return post;
+}
+
+/**
+ * 未来の予約を「いま」に早める（054-bulk-post-actions 設計 §5.4・§8.3）。**単独のルートは無い**（一括の操作からだけ届く）。
+ *
+ * `PATCH { scheduledAt }` と違い**承認を外さない**（048 裁定 10 の例外を `PATCH` に作らない）。内容は変えず、画面で
+ * 見た内容のまま（`expectedUpdatedAt`）で、承認済みの予約の時刻を早められるのは `social.approve` を持つ人だけ。
+ * 実際の送信は次の定期実行に任せ、ここでは配信 Plugin を呼ばない（検査の `validate()` は呼ぶ）。イベントは出さない。
+ */
+export const publishSocialPostNow = defineUseCase<PublishPostNowInput, PublishPostNowOutput>({
+  name: 'social.post.publishNow',
+  permission: 'social.write',
+  audit: {
+    action: 'updated',
+    resourceType: 'social_post',
+    resourceId: (input) => input.id,
+    // 予約日時の更新なので `updated`。1 件の更新とは `operation` で見分ける（設計 §8.10）。本文は残さない。
+    detail: (input, output) => ({
+      operation: 'publish_now',
+      changed: ['scheduledAt'],
+      status: output.post.status,
+      previousScheduledAt: output.previousScheduledAt?.toISOString() ?? null,
+      approvalKept: output.approvalKept,
+      deliveryMode: output.post.deliveryMode,
+      ...(input.bulkId === undefined ? {} : { bulkId: input.bulkId }),
+    }),
+  },
+  handler: async (context, input) => {
+    // 1〜3: 投稿があり（区画の外は 404。053 設計 §8.3.3）、今すぐ送れる予約で、見た内容のままか。
+    const scope = scopeOf(context);
+    const now = new Date();
+    const post = assertPublishableNow(
+      await socialRepository.findPostById(context.connection, input.id, scope),
+      input,
+      now,
+    );
+
+    // 4: 承認済みの予約の時刻を早めるのは承認の判断を変えることなので、承認の権限が要る（設計 §5.4）。
+    if (post.approvedAt !== null && !hasPermission(context, 'social.approve')) {
+      throw new SocialPostIneligibleError('approval_required', APPROVAL_REQUIRED_MESSAGE);
+    }
+
+    // 5: アカウント（`ON DELETE CASCADE` なので通常は必ずある）。
+    const account = await socialRepository.findAccountById(
+      context.connection,
+      post.socialAccountId,
+    );
+    if (account === null) {
+      throw new ValidationError('SocialPost', 'socialAccountId', 'SNSアカウントが見つかりません。');
+    }
+
+    // 6: 予約になる更新と同じ検査を、新しい予約日時（いま）で掛ける（035 設計 §6.2）。
+    await assertPostIsDeliverable(
+      {
+        body: post.body,
+        scheduledAt: now,
+        status: 'scheduled',
+        deliveryMode: post.deliveryMode,
+        media: post.media,
+        link: post.link,
+        providerOptions: post.providerOptions,
+      },
+      account,
+      {
+        checkSchedulable: true,
+        checkPublisherRules: true,
+        checkManualSupport: post.deliveryMode === 'manual',
+      },
+    );
+
+    // 7: 判定と更新を 1 文で（設計 §8.3.1）。
+    const updated = await context.connection.transaction((tx) =>
+      socialRepository.publishNow(tx, {
+        id: post.id,
+        now,
+        expectedUpdatedAt: input.expectedUpdatedAt,
+      }),
+    );
+    if (updated === null) {
+      // 間に承認が外れた・取りやめられた・着手された・書き換えられた・消えた。読み直して該当の誤りを返す。
+      assertPublishableNow(
+        await socialRepository.findPostById(context.connection, input.id, scope),
+        input,
+        now,
+      );
+      // 読み直しても送れる形に見えるなら、それでも読んだ時点とは別の行になっている。
+      throw new SocialPostStateChangedError(post.id);
+    }
+
+    return {
+      post: updated,
+      previousScheduledAt: post.scheduledAt,
+      approvalKept: post.approvedAt !== null,
     };
   },
 });
