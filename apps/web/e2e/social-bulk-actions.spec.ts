@@ -15,9 +15,11 @@ import {
  *
  * * #80 登録元の列（トークンの名前／「管理画面」）と登録元の絞り込み、URL の `postSource=token:` と `#posts`
  * * #81 承認待ちを絞って一括選択 →「一括送信（承認）」→「即投稿」→ Toast・予約済み・承認待ちの区画が消える
- * * #82 希望日時が過去と未来の承認待ち →「それぞれの希望日時に投稿」→ 結果のダイアログ、過去は承認待ちのまま
- * * #83 未来の予約を「即投稿」→ 予約日時がいま → 配信の後に「配信済み」
- * * #84 下書きと配信済みの「一括取り消し」→ 下書きだけが消える（ユーザー裁定 6）
+ * * #82 希望日時が過去と未来の承認待ち →「それぞれの希望日時に投稿」→ 結果のダイアログ、過去は承認待ちのまま。
+ *   検証 1 回目で強めた分：選んだ直後の警告（中-1）、選んだ未来の予約を今すぐ送らない（低-1）、閉じた後に選択が消える（低-2）
+ * * #83 未来の予約を「即投稿」→ 予約日時がいま → 配信の後に「配信済み」。強めた分：成功の Toast の後に選択が消える（低-2）
+ * * #84 下書きと配信済みの「一括取り消し」→ 下書きだけが消える（ユーザー裁定 6）。
+ *   強めた分：「削除する」の後は成功の Toast で、結果のダイアログは出ない（軽微-2）
  * * #85 閲覧者・編集者の出し分け
  * * #86 幅 375px で横スクロールしない、3 つのダイアログが画面幅に収まる、選択の列が表を動かさずに押せる
  * * #87 絞り込んで 2 ページ目へ移ると絞り込みが保たれ選択が消える、誤ったクエリは既定
@@ -62,6 +64,12 @@ const BULK_DELETE = '一括取り消し';
 const BULK_DELETE_TITLE = '投稿を一括で取り消しますか？';
 const BULK_RESULT_TITLE = '一括操作の結果';
 const REASON_DESIRED_PASSED = '希望日時を過ぎています';
+/** 「それぞれの希望日時」を選んだときの警告（`BULK_SEND_WARN_DESIRED_PAST`。設計 §9.5 の図。数を含む部分だけを見る）。 */
+const DESIRED_PAST_WARNING = /希望日時を過ぎている\s*1\s*件/;
+/** 一括の 3 操作のパス（設計 §8.2〜§8.4）。 */
+const BULK_PATH_PREFIX = '/api/v1/social/posts/bulk/';
+const BULK_APPROVE_PATH = '/api/v1/social/posts/bulk/approve';
+const BULK_PUBLISH_NOW_PATH = '/api/v1/social/posts/bulk/publish-now';
 const API_TOKEN_NAME_NOTE = 'この名前は、SNS 画面の投稿一覧に『登録元』として表示されます';
 
 /** この spec が作ったもの。`afterAll` で消す。 */
@@ -539,6 +547,122 @@ test.describe('#82 一括送信（それぞれの希望日時）', () => {
     expect((await fetchPost(request, future.id)).status).toBe('scheduled');
     expect((await fetchPost(request, past.id)).status).toBe('awaiting_approval');
   });
+
+  test('#82 「それぞれの希望日時に投稿」を選んだ直後、送る前のダイアログに「希望日時を過ぎている 1 件」の警告が出る（検証 1 回目 spec 中-1）', async ({
+    page,
+  }) => {
+    const past = await createByToken('過去', {
+      publishTiming: 'after_approval',
+      scheduledAt: minutesFromNow(-60),
+    });
+    const future = await createByToken('未来', {
+      publishTiming: 'after_approval',
+      scheduledAt: minutesFromNow(24 * 60),
+    });
+
+    await page.goto('/social');
+    await rowCheckbox(page, past.body).check();
+    await rowCheckbox(page, future.body).check();
+
+    const dialog = await openSendDialog(page);
+    // 時機を選ぶ前は即投稿の内訳なので、希望日時の警告は出ない（設計 §9.5・#69）。
+    await expect(dialog).not.toContainText(DESIRED_PAST_WARNING);
+
+    await dialog.getByLabel(BULK_SEND_DESIRED).check();
+    await expect(dialog).toContainText(DESIRED_PAST_WARNING);
+
+    // 送らずに閉じる（行は承認待ちのまま。後片付けは afterEach）。
+    await dialog.getByRole('button', { name: 'キャンセル' }).click();
+    await expect(dialog).toHaveCount(0);
+  });
+
+  test('#82 選択に承認を経ていない未来の予約を含めても、「それぞれの希望日時」では今すぐ送らない（bulk/publish-now の要求が出ず、予約日時が同じ。検証 1 回目 spec 低-1）', async ({
+    page,
+    request,
+  }) => {
+    const past = await createByToken('過去', {
+      publishTiming: 'after_approval',
+      scheduledAt: minutesFromNow(-60),
+    });
+    const future = await createByToken('未来', {
+      publishTiming: 'after_approval',
+      scheduledAt: minutesFromNow(24 * 60),
+    });
+    const scheduled = await createByToken('予約', {
+      publishTiming: 'scheduled',
+      scheduledAt: minutesFromNow(24 * 60),
+    });
+    const scheduledBefore = await fetchPost(request, scheduled.id);
+
+    const bulkRequests: string[] = [];
+    page.on('request', (sent) => {
+      const path = new URL(sent.url()).pathname;
+      if (sent.method() === 'POST' && path.startsWith(BULK_PATH_PREFIX)) {
+        bulkRequests.push(path);
+      }
+    });
+
+    await page.goto('/social');
+    for (const post of [past, future, scheduled]) {
+      await rowCheckbox(page, post.body).check();
+    }
+
+    const dialog = await openSendDialog(page);
+    await dialog.getByLabel(BULK_SEND_DESIRED).check();
+    await dialog.getByRole('button', { name: BULK_SEND_CONFIRM, exact: true }).click();
+
+    // 過去の 1 件が承認されないので結果のダイアログが出る（送り終えた合図）。
+    const result = resultDialog(page);
+    await expect(result).toBeVisible();
+
+    // 判別力：一括承認の要求は捉えている。今すぐ送るの要求は出ていない。
+    expect(bulkRequests).toContain(BULK_APPROVE_PATH);
+    expect(bulkRequests).not.toContain(BULK_PUBLISH_NOW_PATH);
+
+    const scheduledAfter = await fetchPost(request, scheduled.id);
+    expect(scheduledAfter.status).toBe('scheduled');
+    expect(scheduledAfter.scheduledAt).toBe(scheduledBefore.scheduledAt);
+  });
+
+  test('#82 結果のダイアログを閉じた後、残った行のチェックボックスはすべて外れ、一括の帯の 2 つのボタンは disabled（検証 1 回目 spec 低-2）', async ({
+    page,
+  }) => {
+    const past = await createByToken('過去', {
+      publishTiming: 'after_approval',
+      scheduledAt: minutesFromNow(-60),
+    });
+    const future = await createByToken('未来', {
+      publishTiming: 'after_approval',
+      scheduledAt: minutesFromNow(24 * 60),
+    });
+    const scheduled = await createByToken('予約', {
+      publishTiming: 'scheduled',
+      scheduledAt: minutesFromNow(24 * 60),
+    });
+
+    await page.goto('/social');
+    for (const post of [past, future, scheduled]) {
+      await rowCheckbox(page, post.body).check();
+    }
+
+    const dialog = await openSendDialog(page);
+    await dialog.getByLabel(BULK_SEND_DESIRED).check();
+    await dialog.getByRole('button', { name: BULK_SEND_CONFIRM, exact: true }).click();
+
+    const result = resultDialog(page);
+    await expect(result).toBeVisible();
+    await result.getByRole('button', { name: '閉じる' }).click();
+    await expect(result).toHaveCount(0);
+
+    // 3 行とも一覧に残る（承認待ち・予約済み・予約済み）。どれも選ばれていない。
+    for (const post of [past, future, scheduled]) {
+      await expect(postRow(page, post.body)).toHaveCount(1);
+      await expect(rowCheckbox(page, post.body)).not.toBeChecked();
+    }
+    await expect(selectPageCheckbox(page)).not.toBeChecked();
+    await expect(page.getByRole('button', { name: BULK_SEND })).toBeDisabled();
+    await expect(page.getByRole('button', { name: BULK_DELETE })).toBeDisabled();
+  });
 });
 
 /** #83。未来の予約を今すぐ送る（設計 §5.4・§8.3）。 */
@@ -576,6 +700,31 @@ test.describe('#83 予約を今すぐ送る', () => {
     await page.reload();
     await expect(postRow(page, post.body)).toContainText('配信済み');
   });
+
+  test('#83 成功の Toast の後、その行のチェックボックスは外れ、一括の帯の 2 つのボタンは disabled（検証 1 回目 spec 低-2）', async ({
+    page,
+  }) => {
+    const post = await createByToken('予約', {
+      publishTiming: 'scheduled',
+      scheduledAt: minutesFromNow(24 * 60),
+    });
+
+    await page.goto('/social');
+    await rowCheckbox(page, post.body).check();
+    // 判別力：送る前は選ばれていて、帯のボタンが押せる。
+    await expect(page.getByRole('button', { name: BULK_SEND })).toBeEnabled();
+
+    const dialog = await openSendDialog(page);
+    await dialog.getByLabel(BULK_SEND_NOW).check();
+    await dialog.getByRole('button', { name: BULK_SEND_CONFIRM, exact: true }).click();
+    await expect(successToast(page, /1\s*件を処理しました/)).toBeVisible();
+
+    // 読み込み直した後も行は一覧に残る（予約済みか、定期実行が先に配信していれば配信済み。実装プラン §8 の 23）。
+    await expect(postRow(page, post.body)).toHaveCount(1);
+    await expect(rowCheckbox(page, post.body)).not.toBeChecked();
+    await expect(page.getByRole('button', { name: BULK_SEND })).toBeDisabled();
+    await expect(page.getByRole('button', { name: BULK_DELETE })).toBeDisabled();
+  });
 });
 
 /** #84。一括取り消しは下書き・承認待ち・予約済みだけを消す（設計 §5.5・§9.6。ユーザー裁定 6）。 */
@@ -600,6 +749,11 @@ test.describe('#84 一括取り消し', () => {
     await expect(dialog).toContainText(/対象外\s*1\s*件（配信済み\s*1）/);
     await expect(dialog).toContainText('この操作は取り消せません。');
     await dialog.getByRole('button', { name: '削除する' }).click();
+
+    // 送らなかった配信済みの行は結果の「対象外」に数えないので、成功の Toast だけが出る
+    // （設計 §9.7。検証 1 回目 spec 軽微-2・実装プラン §8 の 62）。
+    await expect(successToast(page, /1\s*件を削除しました。/)).toBeVisible();
+    await expect(resultDialog(page)).toHaveCount(0);
 
     await expect(postRow(page, draft.body)).toHaveCount(0);
     await expect(postRow(page, published.body)).toContainText('配信済み');

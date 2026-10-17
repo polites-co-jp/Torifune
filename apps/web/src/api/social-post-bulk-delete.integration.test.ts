@@ -725,6 +725,150 @@ describe('#44 1 件の DELETE /social/posts/{id} は変わらない', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #89〜#91 要求の配列の検査（設計 §8.1.2。検証 1 回目 security L1・M1）
+// ---------------------------------------------------------------------------
+
+/** 件数の 422 の文言（設計 §8.1.2 の 2）。 */
+const COUNT_MESSAGE = '1〜100 件で指定してください。';
+/** 重複の 422 の文言（設計 §8.1.2 の 4）。 */
+const DUPLICATE_MESSAGE = '同じ投稿が 2 回以上含まれています。';
+/** 要素ごとの文言の書き出し「N 件目：」（設計 §8.1.2 の 3。N の数え方は固定しない）。 */
+const ELEMENT_MESSAGE = /^\d+\s*件目：/;
+/** `id` が長すぎるときの要素の文言（設計 §8.1.2 の 3）。 */
+const ID_TOO_LONG_MESSAGE = /^\d+\s*件目：投稿の ID は100文字以内で入力してください。$/;
+
+function idsMessagesOf(result: JsonResult): readonly string[] {
+  return errorOf(result).details?.['ids'] ?? [];
+}
+
+/**
+ * 先頭に `head`、続けて形の誤った要素（数値・空文字）と同じ ID の 2 回を混ぜ、
+ * 残りを正しい形の要素で埋めて `count` 件にする（設計 #89。ISO の誤りは `items` だけ）。
+ */
+function mixedIds(count: number, head: string): unknown[] {
+  const duplicate = uuidv7();
+  const mixed: unknown[] = [head, 123, '', duplicate, duplicate];
+  while (mixed.length < count) {
+    mixed.push(uuidv7());
+  }
+  return mixed;
+}
+
+describe('#89 件数が 1〜100 を外れたら、要素の誤り・重複を混ぜても件数の 422 だけ', () => {
+  it('#89 101 件（要素の誤り・重複を混ぜる）→ 422 の details がちょうど { ids: [件数の文言] }', async () => {
+    const draft = await makeDraft();
+
+    const result = await callBulkDelete({ ids: mixedIds(101, draft) });
+
+    expect(result.status).toBe(422);
+    expect(errorOf(result).details).toEqual({ ids: [COUNT_MESSAGE] });
+  });
+
+  it('#89 101 件の 422 では行も監査も変わらない', async () => {
+    const draft = await makeDraft();
+    const before = await rowOf(draft);
+
+    await callBulkDelete({ ids: mixedIds(101, draft) });
+
+    expect(await rowOf(draft)).toEqual(before);
+    expect(await deletedAuditRows()).toHaveLength(0);
+  });
+
+  it('#89 0 件 → 422 の details がちょうど { ids: [件数の文言] }', async () => {
+    const result = await callBulkDelete({ ids: [] });
+
+    expect(result.status).toBe(422);
+    expect(errorOf(result).details).toEqual({ ids: [COUNT_MESSAGE] });
+  });
+
+  it('#89 判別力：同じ混ぜ方の 100 件では、要素の文言（N 件目：）と重複の文言が details.ids に出る', async () => {
+    const draft = await makeDraft();
+
+    const result = await callBulkDelete({ ids: mixedIds(100, draft) });
+
+    expect(result.status).toBe(422);
+    expect(detailKeysOf(result)).toEqual(['ids']);
+    const messages = idsMessagesOf(result);
+    expect(messages.some((message) => ELEMENT_MESSAGE.test(message))).toBe(true);
+    expect(messages).toContain(DUPLICATE_MESSAGE);
+    expect(messages).not.toContain(COUNT_MESSAGE);
+    expect(await rowOf(draft)).not.toBeNull();
+  });
+});
+
+describe('#90 項目の ID は 100 文字まで（101 文字は要求全体の 422）', () => {
+  it('#90 101 文字の ID を 1 つ含む → 422（キーは ids、文言「N 件目：投稿の ID は100文字以内で入力してください。」）', async () => {
+    const draft = await makeDraft();
+
+    const result = await callBulkDelete({ ids: [draft, 'a'.repeat(101)] });
+
+    expect(result.status).toBe(422);
+    expect(detailKeysOf(result)).toEqual(['ids']);
+    expect(idsMessagesOf(result).some((message) => ID_TOO_LONG_MESSAGE.test(message))).toBe(true);
+  });
+
+  it('#90 101 文字の ID を含む要求では、同じ要求の他の項目も処理しない（行も監査も変わらない）', async () => {
+    const draft = await makeDraft();
+    const before = await rowOf(draft);
+
+    await callBulkDelete({ ids: [draft, 'a'.repeat(101)] });
+
+    expect(await rowOf(draft)).toEqual(before);
+    expect(await deletedAuditRows()).toHaveLength(0);
+  });
+
+  it('#90 100 文字ちょうどの ID（UUID の形でない）→ 200 で、その項目は not_found（境界）', async () => {
+    const draft = await makeDraft();
+    const id = 'a'.repeat(100);
+
+    const result = await callBulkDelete({ ids: [draft, id] });
+
+    expect(result.status).toBe(200);
+    expect(resultsOf(result)).toHaveLength(2);
+    expect(resultsOf(result)[1]).toEqual({
+      id,
+      ok: false,
+      reason: 'not_found',
+      field: null,
+      message: NOT_FOUND_MESSAGE,
+    });
+  });
+});
+
+describe('#91 ID の重複は大文字・小文字を区別しない', () => {
+  it('#91 同じ投稿の UUID を小文字と大文字で 1 回ずつ → 422（キーは ids、重複の文言）', async () => {
+    const draft = await makeDraft();
+
+    const result = await callBulkDelete({ ids: [draft, draft.toUpperCase()] });
+
+    expect(result.status).toBe(422);
+    expect(detailKeysOf(result)).toEqual(['ids']);
+    expect(idsMessagesOf(result)).toContain(DUPLICATE_MESSAGE);
+  });
+
+  it('#91 大文字・小文字だけ違う重複の 422 では行も監査も変わらない', async () => {
+    const draft = await makeDraft();
+    const before = await rowOf(draft);
+
+    await callBulkDelete({ ids: [draft, draft.toUpperCase()] });
+
+    expect(await rowOf(draft)).toEqual(before);
+    expect(await deletedAuditRows()).toHaveLength(0);
+  });
+
+  it('#91 判別力：別々の 2 つの投稿（一方を大文字）なら 200 で、results[].id は送った字面のまま', async () => {
+    const first = await makeDraft();
+    const second = await makeDraft();
+    const upper = second.toUpperCase();
+
+    const result = await callBulkDelete({ ids: [first, upper] });
+
+    expect(result.status).toBe(200);
+    expect(resultsOf(result).map((entry) => entry.id)).toEqual([first, upper]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // #49 権限
 // ---------------------------------------------------------------------------
 

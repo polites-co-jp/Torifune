@@ -3,7 +3,11 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import type { BulkEffect, BulkFailureReason } from '@/domain/social/bulk';
 import { POST_STATUSES } from '@/domain/social/social';
-import { POST_STATUS_LABEL } from './labels';
+import {
+  BULK_SEND_WARN_DESIRED_PAST,
+  BULK_SEND_WARN_NO_DESIRED,
+  POST_STATUS_LABEL,
+} from './labels';
 import type { PostListFilters, PostListOption, PostSourceView } from './post-list-params';
 import { SocialPosts, type PostRow, type SocialPostsProps } from './social-posts';
 
@@ -777,6 +781,54 @@ describe('#69 一括送信（承認）のダイアログ', () => {
 
   it('#69 キャンセルのボタンがある', () => {
     expect(buttons(dialog()).some((button) => button.text === 'キャンセル')).toBe(true);
+  });
+
+  describe('#69 時機を選ぶ前は希望日時の 2 つの警告が出ない（即投稿の内訳。設計 §9.5。検証 1 回目 spec 中-1）', () => {
+    // 「それぞれの希望日時」なら警告に数えられる 2 行（希望日時を過ぎた承認待ち・希望日時の無い承認待ち）を選ぶ。
+    // 選んだ後に警告が出ることは E2E #82 が見る（静的な描画では時機を選べない）。
+    const desiredPast = post({
+      status: 'awaiting_approval',
+      body: '希望日時を過ぎた案内',
+      scheduledAt: '2026-10-16T00:00:00.000Z',
+      desiredPast: true,
+    });
+    const noDesired = post({
+      status: 'awaiting_approval',
+      body: '希望日時の無い案内',
+      scheduledAt: null,
+    });
+    const warnRows = [desiredPast, noDesired, AWAITING];
+
+    function warnDialog(): string {
+      const html = render({
+        initialPosts: warnRows,
+        total: warnRows.length,
+        initialSelectedIds: warnRows.map((row) => row.id),
+        initialDialog: 'send',
+      });
+      return sendDialog(html) ?? '';
+    }
+
+    it('#69 希望日時を過ぎた・無い承認待ちを選んでも、ダイアログは開き 3 件を承認の内訳に数える', () => {
+      const text = textOf(warnDialog());
+
+      expect(warnDialog()).not.toBe('');
+      expect(text).toMatch(/承認待ち\s*3\s*件/);
+    });
+
+    it('#69 「希望日時を過ぎている n 件」の警告（BULK_SEND_WARN_DESIRED_PAST）が出ない', () => {
+      const text = textOf(warnDialog());
+
+      expect(text).not.toContain(BULK_SEND_WARN_DESIRED_PAST(1));
+      expect(text).not.toMatch(/希望日時を過ぎている\s*\d+\s*件/);
+    });
+
+    it('#69 「希望日時が無い n 件」の警告（BULK_SEND_WARN_NO_DESIRED）が出ない', () => {
+      const text = textOf(warnDialog());
+
+      expect(text).not.toContain(BULK_SEND_WARN_NO_DESIRED(1));
+      expect(text).not.toMatch(/希望日時が無い\s*\d+\s*件/);
+    });
   });
 });
 
