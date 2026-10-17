@@ -215,9 +215,9 @@ USER_EDIT='<!-- verify-bundled-plugin-sync: user edit -->'
 in_app sh -c "printf '%s\n' '$USER_EDIT' >> /app/plugins/sns-x-manual/README.md"
 
 # 利用者の Plugin の導入（監視ループの再ビルド）は、sns-threads を消す**前に**済ませる。
-# web のビルドは apps/web のテストも型検査し、そのテストが同梱 Plugin のソースを import するので、
-# 同梱 Plugin のフォルダが無いと監視ループの再ビルドが失敗する（監視ループの再ビルドは同期しない。
-# 設計 §6.5・§6.7.3）。#46 の意図（作り直す時点で同梱のフォルダが無い）は、消すのを作り直しの直前に
+# 052 より前は、web のビルドが apps/web のテストも型検査し、そのテストが同梱 Plugin のソースを import していたので、
+# 同梱 Plugin のフォルダが無いと監視ループの再ビルドが失敗した（監視ループの再ビルドは同期しない。
+# 設計 §6.5・§6.7.3）。052 で直ったが、この順序はそのまま通る。#46 の意図（作り直す時点で同梱のフォルダが無い）は、消すのを作り直しの直前に
 # 移しても変わらない（実装プラン §8 の 30）。
 log "#46 利用者の Plugin を Package で導入する"
 in_app node /tmp/driver.mjs install-user
