@@ -101,6 +101,19 @@ export const bulkPublishNowSchema = z.object({
   csrfToken: z.string().optional(),
 });
 
+/**
+ * 一括取り消しの要求（設計 §8.4）。`expectedUpdatedAt` は取らない（取り消しは「この投稿を出さない」という判断で、
+ * 内容が直されていても変わらない。状態の変化は条件付き削除で止まる。設計 §5.5）。
+ */
+export const bulkDeleteSchema = z.object({
+  ids: bulkArraySchema({
+    element: bulkItemSchema.shape.id,
+    keyOf: (id) => id,
+    description: `1〜${BULK_MAX_ITEMS} 件。同じ ID を 2 回以上含めない（重複は 422）。`,
+  }),
+  csrfToken: z.string().optional(),
+});
+
 /** 応答の項目（成功）。 */
 const bulkSuccessSchema = z.object({
   id: z.string(),

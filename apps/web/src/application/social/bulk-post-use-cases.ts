@@ -2,6 +2,7 @@ import { uuidv7 } from 'uuidv7';
 import { defineUseCase } from '@/application/authorization/use-case';
 import {
   approveSocialPost,
+  deleteSocialPost,
   logBulkItemFailure,
   publishSocialPostNow,
 } from '@/application/social/social-use-cases';
@@ -25,7 +26,7 @@ import {
 } from '@/domain/social/social';
 
 /**
- * SNS 投稿の一括操作（054-bulk-post-actions 設計 §5.2・§8.1・§8.1.1・§8.2・§8.3）。
+ * SNS 投稿の一括操作（054-bulk-post-actions 設計 §5.2・§8.1・§8.1.1・§8.2・§8.3・§8.4）。
  *
  * **項目ごとに既存の 1 件の UseCase を呼ぶだけ。** 区画・権限・条件付き更新・監査・イベントは項目の UseCase が持ち、
  * ここでは二重に書かない。Repository も `infrastructure/` も触らない（受け入れ条件 #56）。
@@ -200,5 +201,28 @@ export const bulkPublishSocialPostsNow = defineUseCase<BulkPublishNowInput, Bulk
         return { effect, post: output.post };
       },
       { stale: PUBLISH_NOW_STALE_MESSAGE },
+    ),
+});
+
+export interface BulkDeleteInput {
+  readonly ids: readonly string[];
+}
+
+/**
+ * 一括取り消し（設計 §5.5・§8.4）。項目ごとに条件付きの `deleteSocialPost` を呼ぶ。
+ *
+ * 消せるのは出す前の投稿（下書き・承認待ち・配信中でない予約）だけ。監査は項目ごとに `deleteSocialPost` が残す。
+ */
+export const bulkDeleteSocialPosts = defineUseCase<BulkDeleteInput, BulkOutput>({
+  name: 'social.post.bulkDelete',
+  permission: 'social.delete',
+  handler: async (context, input) =>
+    processItems(
+      'bulkDelete',
+      input.ids.map((id) => ({ id })),
+      async (item, bulkId) => {
+        await deleteSocialPost(context, { id: item.id, guard: { bulkId } });
+        return { effect: 'deleted', post: null };
+      },
     ),
 });
