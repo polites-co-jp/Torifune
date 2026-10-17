@@ -66,6 +66,8 @@ const BULK_RESULT_TITLE = '一括操作の結果';
 const REASON_DESIRED_PASSED = '希望日時を過ぎています';
 /** 「それぞれの希望日時」を選んだときの警告（`BULK_SEND_WARN_DESIRED_PAST`。設計 §9.5 の図。数を含む部分だけを見る）。 */
 const DESIRED_PAST_WARNING = /希望日時を過ぎている\s*1\s*件/;
+/** 同じく、希望日時の無い承認待ちの警告（`BULK_SEND_WARN_NO_DESIRED`。設計 §9.5 の図。検証 2 回目 spec 低-1）。 */
+const NO_DESIRED_WARNING = /希望日時が無い\s*1\s*件/;
 /** 一括の 3 操作のパス（設計 §8.2〜§8.4）。 */
 const BULK_PATH_PREFIX = '/api/v1/social/posts/bulk/';
 const BULK_APPROVE_PATH = '/api/v1/social/posts/bulk/approve';
@@ -548,7 +550,7 @@ test.describe('#82 一括送信（それぞれの希望日時）', () => {
     expect((await fetchPost(request, past.id)).status).toBe('awaiting_approval');
   });
 
-  test('#82 「それぞれの希望日時に投稿」を選んだ直後、送る前のダイアログに「希望日時を過ぎている 1 件」の警告が出る（検証 1 回目 spec 中-1）', async ({
+  test('#82 「それぞれの希望日時に投稿」を選んだ直後、送る前のダイアログに「希望日時を過ぎている 1 件」と「希望日時が無い 1 件」の警告が出る（検証 1 回目 spec 中-1・検証 2 回目 spec 低-1）', async ({
     page,
   }) => {
     const past = await createByToken('過去', {
@@ -559,17 +561,22 @@ test.describe('#82 一括送信（それぞれの希望日時）', () => {
       publishTiming: 'after_approval',
       scheduledAt: minutesFromNow(24 * 60),
     });
+    // 希望日時の無い承認待ち（`scheduledAt` を送らない）。
+    const noDesired = await createByToken('希望なし', { publishTiming: 'after_approval' });
 
     await page.goto('/social');
     await rowCheckbox(page, past.body).check();
     await rowCheckbox(page, future.body).check();
+    await rowCheckbox(page, noDesired.body).check();
 
     const dialog = await openSendDialog(page);
-    // 時機を選ぶ前は即投稿の内訳なので、希望日時の警告は出ない（設計 §9.5・#69）。
+    // 時機を選ぶ前は即投稿の内訳なので、希望日時の 2 つの警告は出ない（設計 §9.5・#69）。
     await expect(dialog).not.toContainText(DESIRED_PAST_WARNING);
+    await expect(dialog).not.toContainText(NO_DESIRED_WARNING);
 
     await dialog.getByLabel(BULK_SEND_DESIRED).check();
     await expect(dialog).toContainText(DESIRED_PAST_WARNING);
+    await expect(dialog).toContainText(NO_DESIRED_WARNING);
 
     // 送らずに閉じる（行は承認待ちのまま。後片付けは afterEach）。
     await dialog.getByRole('button', { name: 'キャンセル' }).click();

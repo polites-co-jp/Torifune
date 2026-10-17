@@ -29,7 +29,7 @@ vi.mock('next/navigation', () => ({
  * * #69・#70 一括送信・一括取り消しのダイアログ（`initialDialog`）
  * * #73 結果のダイアログ（`initialResults`）
  * * #74 絞り込みの帯の 4 つの `Select`・表示件数・「条件をクリア」・登録元の選択肢の「（発行 …）」
- * * #77 0 件の表示、#78 既存の locator と帯のボタンの名前
+ * * #77 0 件の表示（表示件数だけでは「条件」にしない）、#78 既存の locator と帯のボタンの名前
  *
  * 足す props（設計 §9.8。すべて任意）と行の項目はまだ型に無いので、部品を**テストの中で写した props の型**として読む
  * （053 実装プラン §8 の 44）。`initialResults` の形は設計が決めていないので、実装プラン §8 の 52 で読んだ
@@ -1073,6 +1073,39 @@ describe('#77 0 件の表示', () => {
     expect(text).toContain(EMPTY);
     expect(text).toContain('投稿を作成');
     expect(text).not.toContain(FILTER_EMPTY);
+  });
+
+  describe('#77 表示件数は「条件」に数えない（設計 §9.2。検証 2 回目 spec 軽微-1）', () => {
+    it('#77 表示件数だけを 50 にした 0 件：今までどおり「投稿が登録されていません。」で、「条件をクリア」が無い', () => {
+      const text = textOf(
+        render({
+          initialPosts: [],
+          total: 0,
+          perPage: 50,
+          filters: { ...DEFAULT_FILTERS, perPage: 50 },
+        }),
+      );
+
+      expect(text).toContain(EMPTY);
+      expect(text).toContain('投稿を作成');
+      expect(text).not.toContain(FILTER_EMPTY);
+      expect(text).not.toContain(FILTER_CLEAR);
+    });
+
+    it('#77 判別力：同じ表示件数 50 でも状態で絞れば「条件に合う投稿がありません。」と「条件をクリア」が出る', () => {
+      const text = textOf(
+        render({
+          initialPosts: [],
+          total: 0,
+          perPage: 50,
+          filters: { ...DEFAULT_FILTERS, perPage: 50, status: 'awaiting_approval' },
+        }),
+      );
+
+      expect(text).toContain(FILTER_EMPTY);
+      expect(text).toContain(FILTER_CLEAR);
+      expect(text).not.toContain(EMPTY);
+    });
   });
 
   it('#77 filters を渡さない（既存の呼び出し）なら今までどおり', () => {
