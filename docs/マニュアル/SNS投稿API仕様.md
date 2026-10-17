@@ -354,6 +354,10 @@ CORS ヘッダが付く（`*` は指定できない）。ただし **API トー�
 * SNS API の 12 操作（`listSocialAccounts`・`createSocialAccount`・`getSocialAccount`・`updateSocialAccount`・
   `deleteSocialAccount`・`listSocialPosts`・`createSocialPost`・`getSocialPost`・`updateSocialPost`・
   `deleteSocialPost`・`approveSocialPost`・`publishSocialPosts`）がすべて載る
+* ほかに、**管理画面の一括操作が使う画面専用の 3 操作**（`bulkApproveSocialPosts`・`bulkPublishSocialPostsNow`・
+  `bulkDeleteSocialPosts`。§4.1 の表の下）も載る。`security` は `session` だけで、**API トークンでは 401**。外部アプリは使わない。
+  各操作の `description` に「画面（セッション）専用。API トークンでは 401。」とある。応答は成功・401・403・422・429・500 だけで、
+  404・409 は宣言されていない（項目ごとの結果は 200 の本文で返す）
 * 必要な権限は各操作の拡張項目 **`x-required-permission`** に書かれている
 * 認証方式は `session`（Cookie）と `bearer`（API トークン）の 2 つが宣言されている
 * 応答は、成功・401・403・422・429・500 のほかに次が宣言されている
@@ -396,6 +400,11 @@ CORS ヘッダが付く（`*` は指定できない）。ただし **API トー�
 | POST | `/social/posts/{id}/approve` | **承認待ちの投稿を承認して配信に回す**（§4.10。通常は人が管理画面で行う） | **`social.approve`** | 200 |
 | DELETE | `/social/posts/{id}` | 投稿の削除 | `social.delete` | 204 |
 | POST | `/social/publish` | 期限の来た投稿の配信を今すぐ回す（運用向け） | `system.manage` | 200 |
+
+**画面専用の操作**：表のほかに、管理画面の投稿一覧の一括操作が使う `POST /social/posts/bulk/approve`（`social.approve`）・
+`POST /social/posts/bulk/publish-now`（`social.write`）・`POST /social/posts/bulk/delete`（`social.delete`）がある。
+**セッション（画面）専用で、API トークンでは 401**（`UNAUTHENTICATED`）。外部アプリからは呼べないので、この文書では要求・応答を扱わない
+（OpenAPI には載る。§3.7）。運用者がこれらを使ったときの外部アプリからの見え方は §6.1。
 
 ### 4.2 SNS アカウント
 
@@ -523,6 +532,8 @@ curl -H "Authorization: Bearer $TORIFUNE_TOKEN" \
 | `createdAt` / `updatedAt` | string | `updatedAt` は承認の `expectedUpdatedAt` に使う（§4.10） |
 
 **応答に出ないもの**：どのトークンが登録したか・配信の進行中の印・資格情報。
+管理画面の投稿一覧には登録したトークンの**名前**が「登録元」として出るが（[手順書 §1](SNS投稿の外部連携.md#トークン-1-本--外部アプリ-1-つ)）、
+**API の応答の形は変わらない**（トークンの ID も名前も出さない）。
 
 ### 4.4 POST `/social/posts` — 投稿を登録する
 
@@ -662,6 +673,9 @@ curl -X POST https://torifune.example.com/api/v1/social/posts \
 サイトのトークンでは、そのサイトのアカウントの投稿と、同じサイトのトークンが共通のアカウントへ登録した投稿。
 自分が承認待ちを使っていなくても、区画の中の他のアプリや人が作った承認待ち（`awaiting_approval`）が含まれうる。自分の投稿だけを見たいときは、
 保存しておいた `id` で `GET /social/posts/{id}` を引くか、`externalRef` で見分ける。
+
+**登録元（どのトークンが登録したか）での絞り込みは無い。** 管理画面の投稿一覧には登録元の絞り込みがあるが、公開 API には足していない
+（他のアプリのトークンの名前が見えてしまうため）。クエリは上の表の 3 つだけ。
 
 ### 4.6 GET `/social/posts/{id}` — 結果を確かめる
 
@@ -955,6 +969,17 @@ draft ──承認を依頼（PATCH）──▶ awaiting_approval ──承認�
 **承認は強制ではない。** 承認を待つかは外部アプリが登録ごとに選ぶ（`publishTiming`）。`social.write` を持つ者は承認を経ない予約も
 作れる（`status: "scheduled"`）。そうした予約は `approvedAt: null` で、人が承認した予約（`approvedAt` あり）と見分けられる。
 **失敗した投稿を出し直すときは、新しい投稿として（新しい `externalRef` で）登録する。**
+
+**運用者の一括操作**：管理画面の投稿一覧では、運用者が投稿を選んでまとめて操作できる（§4.1 の画面専用の操作）。
+外部アプリから見ると **1 件ずつ操作されたのと同じ**で、新しい状態・応答の項目・イベントは無い。
+
+* **一括承認**：承認待ちが `scheduled` になり `approvedAt` が入る（§4.10 と同じ）。`social.post.approved` は承認された件数だけ届く。
+  「それぞれの希望日時」で承認されたとき、希望日時を過ぎていた・無かった投稿は承認されず `awaiting_approval` のまま残る
+* **今すぐ送る**：配信の順番がまだ来ていない予約（`scheduledAt` が未来か `null`）の **`scheduledAt` がいまに早まり**、次の定期実行で配信される
+  （手動投稿なら「手動投稿待ち」に並ぶ）。状態は `scheduled` のまま、**`approvedAt` は変わらない**（承認待ちへ戻らない）。
+  `nextAttemptAt` は `null` になり、`skipCount` は変わらない。イベントは無い
+* **一括取り消し**：下書き・承認待ち・予約（配信中を除く）の投稿が**削除される**。以後の `GET /social/posts/{id}` は 404
+  （承認待ちの依頼が取り下げられたことも 404 で分かる）。配信済み・失敗の投稿は一括では消えない。イベントは無い
 
 ### 6.2 進み具合の読み方
 
@@ -1390,6 +1415,7 @@ while True:
 | 2026-10-02 | 管理画面のアカウント一覧に ID の表示とコピーを足した（`051-social-account-id-display`）。画面で登録したアカウントの `id` は一覧の「アカウントID」列で写せる（§4.2）。**API の形・バージョン（v1）・OpenAPI は変わらない** |
 | 2026-10-08 | **SNS アカウントと API トークンを Web サイトに紐づけられるようにした**（`053-site-scoped-social`）。トークンの**区画**（§2.3）、アカウントの応答・作成・更新の **`siteId`**（§4.2）、区画の外の 404 / 422 / 403、サイトの削除・アーカイブでサイトのトークンが 401（§3.3）、再送で既存の投稿が区画の外なら 422 `externalRef`（§3.5）。API のバージョンは v1 のまま。**既存の外部アプリへの影響**：(1) アカウントの応答に `siteId` が増えた（既存のアカウントはすべて `null`）。(2) アカウントの作成・更新の `siteId` は送らなければ今までどおり（共通のトークンが値を送ると 422）。(3) **運用者がアカウントをサイトに紐づけたときだけ**、共通のトークンからそのアカウントは使えなくなる（登録は 422 `socialAccountId`、そのアカウントの投稿の取得・更新は 404）。(4) サイトのトークンが発行されたときだけ、そのトークンが共通のアカウントへ登録した投稿は共通のトークンから見えない。既存の投稿はすべて共通の区画のまま。(5) **運用者がトークンのサイトを変えると、そのトークンから見える範囲が次の要求から変わる**（§2.2）。(6) 共通のトークンどうしは今までどおり分離境界ではない。Plugin API・イベント・Webhook は変わらない |
 | 2026-10-08 | 053 の検証を受けて足した。**トークンから見えない投稿が載ったアカウントは、トークンから削除・資格情報の変更ができない**（403 `FORBIDDEN`。§2.3・§3.3・§4.2）。表示名・`handle`・`status` の変更は通る。見えない投稿が載るのは共通のアカウントへサイトのトークンが投稿を登録したときだけなので、**サイトを使っていない間は既存の外部アプリに影響しない**。あわせて、同じ `externalRef` の要求が同時に届いた場合も、既存の投稿が区画の外なら 422 `externalRef`（§3.5 の再送と同じ）にそろえた |
+| 2026-10-18 | **管理画面の投稿一覧に登録元・絞り込み・一括操作を足した**（`054-bulk-post-actions`）。OpenAPI に**画面専用の 3 操作**（`POST /social/posts/bulk/approve`・`/bulk/publish-now`・`/bulk/delete`。`security` は `session` だけ）が増えた（§3.7・§4.1）。**API トークンでは呼べない**（401）。API のバージョンは v1 のまま。**既存の外部アプリへの影響**：(1) `GET /social/posts` のクエリと投稿の応答（§4.3・§4.5）は変わらない。登録元の絞り込み・トークンの名前は公開 API に出ない。(2) **運用者が一括操作をすると、1 件ずつ操作されたのと同じに見える**：承認待ちの投稿が承認される・削除されて 404 になる、未来の予約の `scheduledAt` がいまに早まる（`approvedAt` は変わらない）（§6.1）。(3) 一括承認では承認された件数だけ `social.post.approved` が届く。(4) **トークンの名前が管理画面の投稿一覧に「登録元」として表示される**（`social.read` を持つ人に見える。[手順書 §1](SNS投稿の外部連携.md#トークン-1-本--外部アプリ-1-つ)）。Plugin API・イベントの形・Webhook は変わらない |
 
 ### 関連文書
 
@@ -1399,7 +1425,8 @@ while True:
 * API の全体方針：`docs/仕様書/05_API設計.md`（§10・§11 形式、§18 SNS API、§33 ページング、§36 Rate Limit、§37・§38 API Token）
 * 設計：`docs/設計/035-social-publishing/設計.md`、各 SNS は `036-sns-bluesky` / `037-sns-x` /
   `038-sns-instagram` / `040-sns-threads`、承認待ちは `048-social-post-approval`、
-  アカウントの ID の表示とコピーは `051-social-account-id-display`、トークンの区画は `053-site-scoped-social`
+  アカウントの ID の表示とコピーは `051-social-account-id-display`、トークンの区画は `053-site-scoped-social`、
+  投稿一覧の登録元と一括操作は `054-bulk-post-actions`
 
 ---
 
