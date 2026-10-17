@@ -307,7 +307,11 @@ export function SocialPosts(props: SocialPostsProps) {
     return null;
   }
 
-  const [posts, setPosts] = useState(props.initialPosts);
+  // **行は props から導く**（`approval-pending.tsx` と同じ。054 実装プラン §8 の 56）。
+  // 一括操作の後の `router.refresh()` で描き直された内容（状態・`updatedAt`）をそのまま映し、部品は作り直さない
+  // （成功の Toast を残す）。消した行だけを手元で隠す（次の描画を待つ間に二重に押させない）。
+  const [removed, setRemoved] = useState<ReadonlySet<string>>(() => new Set());
+  const posts = props.initialPosts.filter((post) => !removed.has(post.id));
   const [deleting, setDeleting] = useState<PostRow | null>(null);
   const [toast, setToast] = useState<ToastMessage | null>(null);
   // 選択は表示中のページの行の ID の集合（設計 §5.3・§9.3）。読み込み直すと消える。
@@ -350,6 +354,10 @@ export function SocialPosts(props: SocialPostsProps) {
   const sendTargetCount = sendNowPlan.approve.length + sendNowPlan.publishNow.length;
   const deletePlan = deletePlanOf(selectedRows);
 
+  /**
+   * 一括操作の後に読み込み直す。部品は作り直されない（`key` は絞り込みとページから作る）ので、
+   * 選択はここで自分で空にする（設計 §9.3・§9.7）。
+   */
   function reload(): void {
     setSelected(new Set());
     setRefreshCount((count) => count + 1);
@@ -473,7 +481,7 @@ export function SocialPosts(props: SocialPostsProps) {
     // 消えた行は読み込み直す前に手元でも隠す（1 件の削除と同じ）。
     const deleted = new Set(items.filter((item) => item.ok).map((item) => item.id));
     if (deleted.size > 0) {
-      setPosts((current) => current.filter((post) => !deleted.has(post.id)));
+      setRemoved((current) => new Set([...current, ...deleted]));
     }
     finish('delete', items, requestFailures);
   }
@@ -489,7 +497,7 @@ export function SocialPosts(props: SocialPostsProps) {
     });
 
     if (result.ok) {
-      setPosts((current) => current.filter((post) => post.id !== target.id));
+      setRemoved((current) => new Set([...current, target.id]));
       // 行が消えたら選択からも外す（054 設計 §9.3）。
       setSelected((current) => {
         const next = new Set(current);
