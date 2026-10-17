@@ -25,7 +25,11 @@ import {
   resolveAccountSiteOnCreate,
   type AccessScope,
 } from '@/domain/social/access-scope';
-import { APPROVAL_REQUIRED_MESSAGE, publishNowEligibility } from '@/domain/social/bulk';
+import {
+  APPROVAL_REQUIRED_MESSAGE,
+  bulkDeleteEligibility,
+  publishNowEligibility,
+} from '@/domain/social/bulk';
 import {
   CREDENTIAL_MAX_LENGTH,
   validateCredentialAgainstFields,
@@ -1463,26 +1467,71 @@ export const updateSocialPost = defineUseCase<UpdatePostInput, SocialPost>({
   },
 });
 
-export const deleteSocialPost = defineUseCase<{ id: string }, void>({
+export interface DeletePostInput {
+  readonly id: string;
+  /**
+   * 一括取り消しの条件（054-bulk-post-actions 設計 §8.4）。あるときだけ、消せる状態か（配信済み・失敗・配信中は
+   * 対象外）を確かめ、読んだ時点の状態のままの行だけを消す。`bulkId` は監査の `detail.bulkId` に残す。
+   * 無ければ今までどおり（配信済みも消せる。1 件の `DELETE` の振る舞いは変えない）。
+   */
+  readonly guard?: { readonly bulkId: string } | undefined;
+}
+
+/** 削除の結果。監査に残す値を運ぶ（監査の `detail` は `context` を見られない）。ルートは捨てる。 */
+export interface DeletePostOutput {
+  /** 消す前の状態。 */
+  readonly status: PostStatus;
+}
+
+export const deleteSocialPost = defineUseCase<DeletePostInput, DeletePostOutput>({
   name: 'social.post.delete',
   permission: 'social.delete',
-  audit: { action: 'deleted', resourceType: 'social_post', resourceId: (input) => input.id },
+  audit: {
+    action: 'deleted',
+    resourceType: 'social_post',
+    resourceId: (input) => input.id,
+    // 消す前の状態を残す（054 設計 §8.10）。本文は残さない。
+    detail: (input, output) => ({
+      status: output.status,
+      ...(input.guard === undefined ? {} : { bulkId: input.guard.bulkId }),
+    }),
+  },
   handler: async (context, input) => {
     // 区画の外は 404 で行は残す（053 設計 §8.3.3）。
-    const visible = await socialRepository.findPostById(
-      context.connection,
-      input.id,
-      scopeOf(context),
-    );
+    const scope = scopeOf(context);
+    const visible = await socialRepository.findPostById(context.connection, input.id, scope);
     if (visible === null) {
       throw new NotFoundError('SocialPost', input.id);
     }
+
+    if (input.guard === undefined) {
+      const deleted = await context.connection.transaction((tx) =>
+        socialRepository.deletePost(tx, input.id),
+      );
+      if (!deleted) {
+        throw new NotFoundError('SocialPost', input.id);
+      }
+      return { status: visible.status };
+    }
+
+    // 一括取り消しは出す前の投稿を止める操作（ユーザー裁定 6）。配信済みを消しても SNS 上の投稿は消えない。
+    const eligibility = bulkDeleteEligibility(visible);
+    if (!eligibility.ok) {
+      throw new SocialPostIneligibleError(eligibility.reason, eligibility.message);
+    }
+    // 判定と削除を 1 文で（設計 §8.4 の 3）。読んでから消すまでの着手・状態の変化は消さずに断る。
     const deleted = await context.connection.transaction((tx) =>
-      socialRepository.deletePost(tx, input.id),
+      socialRepository.deletePostIf(tx, input.id, { status: visible.status }),
     );
     if (!deleted) {
-      throw new NotFoundError('SocialPost', input.id);
+      // 当たらなかったのは、消えたか、状態か着手印が変わったか。読み直して分ける。
+      const latest = await socialRepository.findPostById(context.connection, input.id, scope);
+      if (latest === null) {
+        throw new NotFoundError('SocialPost', input.id);
+      }
+      throw new SocialPostStateChangedError(input.id);
     }
+    return { status: visible.status };
   },
 });
 
