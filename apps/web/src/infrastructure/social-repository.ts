@@ -869,6 +869,23 @@ export const socialRepository: SocialRepository = {
     return Number(result.numDeletedRows) > 0;
   },
 
+  async deletePostIf(
+    connection: Connection,
+    id: string,
+    expected: { readonly status: PostStatus },
+  ): Promise<boolean> {
+    if (!UUID_PATTERN.test(id)) return false;
+    // 判定と削除を 1 文で（054-bulk-post-actions 設計 §8.4 の 3）。着手印のある行を消すと、SNS へ出たのに
+    // 結果を記録する行が無くなる。
+    const result = await connection.db
+      .deleteFrom('social_posts')
+      .where('id', '=', id)
+      .where('status', '=', expected.status)
+      .where('publish_started_at', 'is', null)
+      .executeTakeFirst();
+    return Number(result.numDeletedRows) > 0;
+  },
+
   async listManualPending(
     connection: Connection,
     limit: number,

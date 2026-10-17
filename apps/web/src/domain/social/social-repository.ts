@@ -274,6 +274,17 @@ export interface SocialRepository {
     },
   ): Promise<SocialPost | null>;
   deletePost(connection: Connection, id: string): Promise<boolean>;
+  /**
+   * 読んだ時点の状態のままで、配信の着手印が無い行だけを消す（054-bulk-post-actions 設計 §5.5・§8.4 の 3）。
+   *
+   * 読んでから消すまでの間に配信ジョブが着手した・状態が変わった（承認された・配信された）行は消さずに false を返す。
+   * 無い・id の形が不正も false。区画の条件は持たない（区画は読み出しの時点で判定済み。053 設計 §8.3.3）。
+   */
+  deletePostIf(
+    connection: Connection,
+    id: string,
+    expected: { readonly status: PostStatus },
+  ): Promise<boolean>;
 
   /**
    * 手動投稿待ちを引く（035-social-publishing 設計 §6.6）。
