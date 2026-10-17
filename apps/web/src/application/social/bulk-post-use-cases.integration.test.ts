@@ -33,6 +33,8 @@ import { useScratchDatabase, type ScratchDatabase } from '@/test-support/databas
  *   承認を経ていない予約は成功（G5）
  * * #42：読んでから消すまでに着手された・状態が変わった行は `stale` で残る。`deletePostIf` を直接呼んでも 0 行（G6）
  * * #51 の取り消しの分（G6）
+ * * #45：時間の予算（`budgetMs`）を過ぎてから始まるはずの項目は `timeout` で処理しない。始めた項目は最後まで処理する。
+ *   承認の分に加え、今すぐ送る・取り消しにも同じ予算が掛かることを見る（設計 §8.6。G7）
  *
  * 一括の UseCase（`application/social/bulk-post-use-cases.ts`）と `publishSocialPostNow`（`social-use-cases.ts`）の
  * 未実装の口は、指定子を `string` の定数に置いた動的 import で読む（053 実装プラン §8 の 19）。入出力の型は設計 §8.1・
@@ -751,5 +753,180 @@ describe('#51 bulkDeleteSocialPosts を social.delete の無い文脈で呼ぶ',
     expect(find).not.toHaveBeenCalled();
     expect(await remaining(post.id)).not.toBeNull();
     expect(await auditCount('deleted')).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #45 時間の予算（G7）
+// ---------------------------------------------------------------------------
+
+/** 時間の予算を過ぎて処理しなかった項目の文言（設計 §8.6）。 */
+const TIMEOUT_MESSAGE = '時間内に処理できませんでした。もう一度操作してください。';
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * `validate()` が待つ publisher に差し替える（実装プラン §2 のテストの方法）。投稿を登録した**後に**呼ぶ
+ * （登録の `validate()` は待たせない）。`delayFor` は何回目の呼び出しかを受けて待つミリ秒を返す。
+ */
+function useSlowValidate(delayFor: (call: number) => number): void {
+  let calls = 0;
+  resetPublisherRegistry();
+  registerPublisher(
+    'test-plugin',
+    bothPublisher({
+      validate: async () => {
+        calls += 1;
+        await sleep(delayFor(calls));
+        return [];
+      },
+    }),
+  );
+}
+
+/** 予算を過ぎて処理しなかった項目の結果（設計 §8.6、実装プラン §8 の 8：`field` は `null`）。 */
+function timedOut(id: string | undefined): BulkItemResult {
+  return { id: id ?? '', ok: false, reason: 'timeout', field: null, message: TIMEOUT_MESSAGE };
+}
+
+describe('#45 (B) 一括承認の時間の予算（budgetMs: 50、validate() が 40ms かかる publisher で承認待ち 5 件）', () => {
+  async function fiveAwaiting(): Promise<Awaiting[]> {
+    const posts: Awaiting[] = [];
+    for (let index = 0; index < 5; index += 1) {
+      posts.push(await makeAwaiting());
+    }
+    return posts;
+  }
+
+  it('#45 results は 5 件で、要求の並びと同じ順', async () => {
+    const posts = await fiveAwaiting();
+    useSlowValidate(() => 40);
+
+    const output = await bulkApproveSocialPosts(admin, {
+      publishTiming: 'now',
+      items: posts,
+      budgetMs: 50,
+    });
+
+    expect(output.results.map((entry) => entry.id)).toEqual(posts.map((post) => post.id));
+  });
+
+  it('#45 先頭から処理した項目は成功し（1 件以上）、その後ろはすべて timeout', async () => {
+    const posts = await fiveAwaiting();
+    useSlowValidate(() => 40);
+
+    const output = await bulkApproveSocialPosts(admin, {
+      publishTiming: 'now',
+      items: posts,
+      budgetMs: 50,
+    });
+
+    const outcomes = output.results.map((entry) => entry.effect ?? entry.reason);
+    const firstNotApproved = outcomes.findIndex((outcome) => outcome !== 'approved_now');
+    // 1 件目は予算の前に始まる。成功の並びの後ろに、成功が混ざらない（予算を過ぎたら残りはすべて処理しない）
+    expect(firstNotApproved).toBeGreaterThanOrEqual(1);
+    expect(outcomes.slice(firstNotApproved).every((outcome) => outcome === 'timeout')).toBe(true);
+  });
+
+  it('#45 予算を過ぎてから始まるはずの 3〜5 件目は timeout（field: null・設計の文言）', async () => {
+    const posts = await fiveAwaiting();
+    useSlowValidate(() => 40);
+
+    const output = await bulkApproveSocialPosts(admin, {
+      publishTiming: 'now',
+      items: posts,
+      budgetMs: 50,
+    });
+
+    // 3 件目を始める時点で少なくとも 40ms × 2 = 80ms が経っている（> 50ms）
+    expect(output.results.slice(2)).toEqual(posts.slice(2).map((post) => timedOut(post.id)));
+  });
+
+  it('#45 timeout の行は承認待ちのまま変わらず、監査 approved は成功した項目の分だけ', async () => {
+    const posts = await fiveAwaiting();
+    const before = await Promise.all(posts.map((post) => rowOf(post.id)));
+    useSlowValidate(() => 40);
+
+    const output = await bulkApproveSocialPosts(admin, {
+      publishTiming: 'now',
+      items: posts,
+      budgetMs: 50,
+    });
+
+    const timeouts = output.results
+      .map((entry, index) => ({ entry, index }))
+      .filter(({ entry }) => entry.reason === 'timeout');
+    expect(timeouts.length).toBeGreaterThanOrEqual(3);
+    for (const { entry, index } of timeouts) {
+      const row = await rowOf(entry.id);
+      expect(row.status).toBe('awaiting_approval');
+      expect(row).toEqual(before[index]);
+      expect(await auditCount('approved', entry.id)).toBe(0);
+    }
+    const successes = output.results.filter((entry) => entry.ok).length;
+    expect(await auditCount('approved')).toBe(successes);
+  });
+
+  it('#45 予算を過ぎた時点で処理中だった項目は最後まで処理され、成功する（予算の検査は各項目を始める前だけ）', async () => {
+    const posts = await fiveAwaiting();
+    // 1 件目の validate() だけ予算（50ms）を大きく超えて待つ。始めた後に予算を過ぎる
+    useSlowValidate((call) => (call === 1 ? 120 : 0));
+
+    const output = await bulkApproveSocialPosts(admin, {
+      publishTiming: 'now',
+      items: posts,
+      budgetMs: 50,
+    });
+
+    expect(output.results[0]).toMatchObject({ id: posts[0]?.id, ok: true, effect: 'approved_now' });
+    const first = await rowOf(posts[0]?.id ?? '');
+    expect(first.status).toBe('scheduled');
+    expect(first.approved_at).not.toBeNull();
+    expect(output.results.slice(1)).toEqual(posts.slice(1).map((post) => timedOut(post.id)));
+  });
+
+  it('#45 判別力：budgetMs を渡さなければ（既定 BULK_BUDGET_MS）同じ 5 件はすべて成功する', async () => {
+    const posts = await fiveAwaiting();
+    useSlowValidate(() => 40);
+
+    const output = await bulkApproveSocialPosts(admin, { publishTiming: 'now', items: posts });
+
+    expect(output.results.map((entry) => entry.effect ?? entry.reason)).toEqual(
+      posts.map(() => 'approved_now'),
+    );
+  });
+});
+
+describe('#45 (B) 今すぐ送る・一括取り消しにも同じ時間の予算が掛かる（設計 §8.6「一括の UseCase」）', () => {
+  it('#45 今すぐ送る：処理中だった 1 件目は queued、2・3 件目は timeout で予約日時は変わらない', async () => {
+    const posts = [await makeScheduled(), await makeScheduled(), await makeScheduled()];
+    const before = await Promise.all(posts.map((post) => rowOf(post.id)));
+    useSlowValidate((call) => (call === 1 ? 120 : 0));
+
+    const output = await bulkPublishSocialPostsNow(admin, { items: posts, budgetMs: 50 });
+
+    expect(output.results[0]).toMatchObject({ id: posts[0]?.id, ok: true, effect: 'queued' });
+    expect(output.results.slice(1)).toEqual(posts.slice(1).map((post) => timedOut(post.id)));
+    expect(await rowOf(posts[1]?.id ?? '')).toEqual(before[1]);
+    expect(await rowOf(posts[2]?.id ?? '')).toEqual(before[2]);
+  });
+
+  it('#45 一括取り消し：処理中だった 1 件目は deleted、2・3 件目は timeout で行は残る', async () => {
+    const posts = [await makeScheduled(), await makeScheduled(), await makeScheduled()];
+    // 取り消しは validate() を呼ばない。1 件目の投稿の読み出しを予算より長く待たせる
+    interruptAfterPostRead(() => sleep(120));
+
+    const output = await bulkDeleteSocialPosts(admin, {
+      ids: posts.map((post) => post.id),
+      budgetMs: 50,
+    });
+
+    expect(output.results[0]).toMatchObject({ id: posts[0]?.id, ok: true, effect: 'deleted' });
+    expect(await remaining(posts[0]?.id ?? '')).toBeNull();
+    expect(output.results.slice(1)).toEqual(posts.slice(1).map((post) => timedOut(post.id)));
+    expect(await remaining(posts[1]?.id ?? '')).not.toBeNull();
+    expect(await remaining(posts[2]?.id ?? '')).not.toBeNull();
   });
 });
