@@ -32,6 +32,7 @@ import {
   VALIDATE_TIMEOUT_MS,
 } from '@/domain/social/publishing';
 import {
+  ApprovalScheduleError,
   canApprove,
   canTransition,
   DELIVERED_STATUSES,
@@ -44,6 +45,7 @@ import {
   isValidPostBody,
   isValidProvider,
   isValidScheduledAt,
+  POST_PUBLISHING_MESSAGE,
   resolveApprovalSchedule,
   resolveCreateTiming,
   revokesApproval,
@@ -58,6 +60,7 @@ import {
   type SocialAccount,
   type SocialPost,
 } from '@/domain/social/social';
+import type { PostSourceFilter, SocialPostSources } from '@/domain/social/post-source';
 import type { SocialAccountPage, SocialPostPage } from '@/domain/social/social-repository';
 import { encryptSecret } from '@/infrastructure/crypto/cipher';
 import { log } from '@/infrastructure/logging';
@@ -543,6 +546,11 @@ export interface ListPostsInput {
   readonly perPage: number;
   readonly socialAccountId: string | null;
   readonly status: PostStatus | null;
+  /**
+   * 登録元で絞る（054-bulk-post-actions 設計 §8.7。画面だけ）。省略・null は絞らない。
+   * 公開 API・Data API は渡さない。
+   */
+  readonly source?: PostSourceFilter | null | undefined;
 }
 
 export const listSocialPosts = defineUseCase<ListPostsInput, SocialPostPage>({
@@ -559,9 +567,23 @@ export const listSocialPosts = defineUseCase<ListPostsInput, SocialPostPage>({
         // 単一指定を配列へ畳む。`listCampaigns` と同じ形。
         statuses: input.status === null ? [] : [input.status],
         orderBy: 'created',
+        source: input.source ?? null,
       },
       scopeOf(context),
     ),
+});
+
+/**
+ * 区画から見える投稿の登録元（054-bulk-post-actions 設計 §8.8。画面だけ）。
+ *
+ * 投稿一覧の「登録元」の列と絞り込みの選択肢に使う。トークンの所有者を問わず、投稿を登録したトークンの
+ * 名前と失効の有無だけを返す（所有者・prefix・Scope は返さない。設計 §5.6）。
+ */
+export const listSocialPostSources = defineUseCase<undefined, SocialPostSources>({
+  name: 'social.post.listSources',
+  permission: 'social.read',
+  handler: async (context) =>
+    socialRepository.listPostSourceTokens(context.connection, scopeOf(context)),
 });
 
 export interface ListPostHistoryInput {
@@ -660,6 +682,20 @@ const VALIDATE_FIELD_PATTERN = /^[A-Za-z][A-Za-z0-9_.]{0,63}$/;
  */
 function safeMessage(error: unknown): string {
   return redactSecrets(error instanceof Error ? error.message : String(error));
+}
+
+/**
+ * 一括の操作の項目の想定外の失敗をサーバのログに残す（054-bulk-post-actions 設計 §8.1.1）。
+ *
+ * 応答には載せない（項目は `internal_error` と既定の文言だけを返す）。一括の UseCase は `infrastructure/` を
+ * import しないので（受け入れ条件 #56）、ログはここが引き受ける。例外の文言は秘密を伏せてから残す。
+ */
+export function logBulkItemFailure(operation: string, postId: string, error: unknown): void {
+  log.error('social bulk item failed', {
+    operation,
+    postId,
+    reason: safeMessage(error),
+  });
 }
 
 /** Plugin の関数を 1 回呼んだ結果。例外も制限時間超過も観測できる形に畳む。 */
@@ -1245,11 +1281,7 @@ export const updateSocialPost = defineUseCase<UpdatePostInput, SocialPost>({
       current.deliveryMode === 'auto' &&
       current.publishStartedAt !== null;
     if (publishing && PUBLISH_GUARDED_FIELDS.some((field) => input[field] !== undefined)) {
-      throw new ValidationError(
-        'SocialPost',
-        'status',
-        '配信を開始しているため変更できません。結果が記録されるまで待ってください。',
-      );
+      throw new ValidationError('SocialPost', 'status', POST_PUBLISHING_MESSAGE);
     }
 
     // 承認待ちを予約にするのは承認の操作だけ（048-social-post-approval 設計 §6.3.1）。
@@ -1460,6 +1492,11 @@ export interface ApprovePostInput {
   readonly scheduledAt?: Date | null | undefined;
   /** 画面（または `GET`）で読んだ投稿の `updatedAt`。合わなければ 409（設計 §6.4.3）。 */
   readonly expectedUpdatedAt: Date;
+  /**
+   * 一括の承認の要求の ID（054-bulk-post-actions 設計 §8.10）。あるときだけ監査の `detail.bulkId` に残す
+   * （1 件の承認の `detail` は変えない）。
+   */
+  readonly bulkId?: string | undefined;
 }
 
 /**
@@ -1517,13 +1554,14 @@ export const approveSocialPost = defineUseCase<ApprovePostInput, ApprovePostOutp
     resourceType: 'social_post',
     resourceId: (input) => input.id,
     // 本文は残さない。承認した人は actorUserId に残る。
-    detail: (_input, output) => ({
+    detail: (input, output) => ({
       requestedTiming: output.requestedTiming,
       effectiveTiming: output.effectiveTiming,
       scheduledAt: output.post.scheduledAt?.toISOString() ?? null,
       deliveryMode: output.post.deliveryMode,
       approvalForced: output.approvalForced,
       via: output.via,
+      ...(input.bulkId === undefined ? {} : { bulkId: input.bulkId }),
     }),
   },
   handler: async (context, input) => {
@@ -1554,7 +1592,8 @@ export const approveSocialPost = defineUseCase<ApprovePostInput, ApprovePostOutp
       now,
     });
     if (!schedule.ok) {
-      throw new ValidationError('SocialPost', schedule.field, schedule.message);
+      // 1 件の承認の応答（422 `details.scheduledAt` と文言）は変わらない。一括の承認は `reason` を項目の理由に写す。
+      throw new ApprovalScheduleError(schedule.field, schedule.message, schedule.reason);
     }
 
     // 8: 予約になった後の値に配信 Plugin の検査を掛ける。**承認は出口ではない**（設計 §6.4.4 の 8）。

@@ -1,5 +1,6 @@
 import type { Connection } from '../../database/provider';
 import type { AccessScope, PostOrigin } from './access-scope';
+import type { PostSourceFilter, SocialPostSources } from './post-source';
 import type { PublishVerdict, SkipVerdict } from './publishing';
 import type {
   AccountStatus,
@@ -122,6 +123,11 @@ export interface SocialPostListQuery {
    * 履歴画面が使う。作成順とは一致しない。
    */
   readonly orderBy: 'created' | 'delivered';
+  /**
+   * 登録元で絞る（054-bulk-post-actions 設計 §8.7。画面だけ）。省略・null は絞らない。
+   * UUID の形でないトークンの ID はどの行にも当たらない（空）。
+   */
+  readonly source?: PostSourceFilter | null | undefined;
 }
 
 export interface SocialPostPage {
@@ -214,6 +220,13 @@ export interface SocialRepository {
     query: SocialPostListQuery,
     scope: AccessScope,
   ): Promise<SocialPostPage>;
+  /**
+   * 区画から見える投稿の登録元（054-bulk-post-actions 設計 §8.8）。
+   *
+   * 投稿を登録したトークン（失効を含む。所有者を問わない）を名前 → 発行日時 → ID の順で返し、
+   * 画面で登録した投稿・トークンの行が消えた投稿があるかを添える。どれも区画を掛けた投稿から作る。
+   */
+  listPostSourceTokens(connection: Connection, scope: AccessScope): Promise<SocialPostSources>;
   /** 区画の外の投稿は null（存在しないのと同じ。053 設計 §8.3.2）。 */
   findPostById(connection: Connection, id: string, scope: AccessScope): Promise<SocialPost | null>;
   /**

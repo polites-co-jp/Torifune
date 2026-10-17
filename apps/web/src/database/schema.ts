@@ -252,6 +252,9 @@ export interface SocialPostsTable {
   origin_site_id: string | null;
   /** サイトのトークンが登録したか（共通のアカウントの投稿の区画に使う）。 */
   origin_site_scoped: Generated<boolean>;
+  // ここから 027_social_post_token_name.sql（054-bulk-post-actions 設計 §7.1）。
+  /** 登録したトークンの名前の写し。トークンを経ない登録は NULL。トークンの行が消えても残る。 */
+  created_by_token_name: string | null;
 }
 
 export interface PluginsTable {

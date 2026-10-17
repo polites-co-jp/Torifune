@@ -12,7 +12,12 @@ import { JobBusyError } from '@/domain/jobs/job';
 import type { PermissionName } from '@/domain/permission';
 import { ConflictError, NotFoundError, ValidationError } from '@/domain/repository';
 import { SiteGoneError, SiteInUseError } from '@/domain/site/site';
-import { SocialPostStateChangedError, StaleSocialPostError } from '@/domain/social/social';
+import {
+  POST_STATE_CHANGED_MESSAGE,
+  SocialPostStateChangedError,
+  STALE_POST_MESSAGE,
+  StaleSocialPostError,
+} from '@/domain/social/social';
 import { unusableTextDetailsOf } from '@/domain/text';
 import { log } from '@/infrastructure/logging';
 import { redactSecrets } from '@/infrastructure/secret-text';
@@ -65,6 +70,8 @@ export interface RouteDefinition<TBodySchema extends z.ZodType, TQuerySchema ext
   readonly method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   readonly path: string;
   readonly summary: string;
+  /** OpenAPI の操作の説明（`summary` に収まらない注意書き）。省略できる。 */
+  readonly description?: string;
   /** null なら認可しない。**理由を `reason` に書く。** */
   readonly permission: PermissionName | null;
   readonly reason?: string;
@@ -258,6 +265,7 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
     method: definition.method,
     path: definition.path,
     summary: definition.summary,
+    description: definition.description,
     permission: definition.permission,
     documented: definition.documented ?? true,
     sessionOnly: definition.sessionOnly ?? false,
@@ -451,15 +459,7 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
       // 承認の競合（048-social-post-approval 設計 §6.4.2）。見た後に内容が変わっていた。
       // 既定文言では理由が伝わらないので、**`ConflictError` より前に**説明を添えて返す。
       if (error instanceof StaleSocialPostError) {
-        return errorResponse(
-          'CONFLICT',
-          {
-            expectedUpdatedAt: [
-              '投稿の内容が変わっています。内容を確かめてから承認し直してください。',
-            ],
-          },
-          cors,
-        );
+        return errorResponse('CONFLICT', { expectedUpdatedAt: [STALE_POST_MESSAGE] }, cors);
       }
       // 紐づいた SNS アカウントがあるサイトの削除（053 設計 §8.6）。既定文言では直し方が伝わらないので、
       // **`ConflictError` より前に**件数と直し方を添えて返す。
@@ -476,11 +476,7 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
       }
       // 更新の競合（048 設計 §6.3.6）。読んでから書くまでに状態か承認の記録が変わった。
       if (error instanceof SocialPostStateChangedError) {
-        return errorResponse(
-          'CONFLICT',
-          { status: ['投稿の状態が変わっています。読み直してからやり直してください。'] },
-          cors,
-        );
+        return errorResponse('CONFLICT', { status: [POST_STATE_CHANGED_MESSAGE] }, cors);
       }
       if (error instanceof ConflictError) {
         return errorResponse('CONFLICT', undefined, cors);

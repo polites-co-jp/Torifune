@@ -268,3 +268,28 @@ export const SITE_FILTER_ALL = 'すべて';
 export function siteNameLabel(site: { readonly name: string; readonly status: string }): string {
   return site.status === 'archived' ? `${site.name}${SITE_ARCHIVED_SUFFIX}` : site.name;
 }
+
+/** 投稿一覧の「登録元」（054-bulk-post-actions 設計 §5.6・§9.1・§9.10）。 */
+export const POST_SOURCE_COLUMN_HEADER = '登録元';
+/** トークンを経ない（画面で）登録した投稿。 */
+export const POST_SOURCE_SCREEN_LABEL = '管理画面';
+/** 失効したトークンの名前に添える。 */
+export const POST_SOURCE_REVOKED_SUFFIX = '（失効）';
+/** 行が消えたトークン（所有者の削除）の名前に添える。 */
+export const POST_SOURCE_DELETED_SUFFIX = '（削除済み）';
+/** 絞り込みの「行が消えたトークン」の選択肢。 */
+export const POST_SOURCE_DELETED_OPTION = '削除されたトークン';
+/** 絞り込みで同じ名前のトークンを見分ける添え字。`{date}` は発行日。 */
+export const POST_SOURCE_ISSUED_SUFFIX = '（発行 {date}）';
+
+/** 投稿一覧の絞り込みの帯（設計 §9.2）。 */
+export const POST_FILTER_STATUS_LABEL = '状態';
+export const POST_FILTER_ACCOUNT_LABEL = 'アカウント';
+export const POST_FILTER_SOURCE_LABEL = '登録元';
+export const POST_FILTER_PER_PAGE_LABEL = '表示件数';
+export const POST_FILTER_ALL = 'すべて';
+export const POST_FILTER_CLEAR = '条件をクリア';
+export const POST_FILTER_EMPTY = '条件に合う投稿がありません。';
+
+/** 見出し「投稿」のアンカー（読み込み直した後に一覧へ戻る。設計 §9.2）。 */
+export const POSTS_ANCHOR = 'posts';

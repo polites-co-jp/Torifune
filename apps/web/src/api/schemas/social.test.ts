@@ -243,6 +243,9 @@ describe('#118 toPostResponse が飛ばした履歴を写す', () => {
       skipCount: 0,
       skipReason: null,
       approvedAt: null,
+      // 054 で足した（登録したトークンの名前の写し。054-bulk-post-actions 設計 §7.3）。
+      // スプレッドで足すのは、`SocialPost` に項目が増える前後のどちらでも型が通るようにするため（実装プラン §8 の 3）。
+      ...{ createdByTokenName: null },
       ...overrides,
     };
   }
