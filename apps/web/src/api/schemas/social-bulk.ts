@@ -95,6 +95,12 @@ export const bulkApproveSchema = z.object({
   csrfToken: z.string().optional(),
 });
 
+/** 今すぐ送るの要求（設計 §8.3）。`items` は一括承認と同じ形・制約。 */
+export const bulkPublishNowSchema = z.object({
+  items: bulkItemsSchema,
+  csrfToken: z.string().optional(),
+});
+
 /** 応答の項目（成功）。 */
 const bulkSuccessSchema = z.object({
   id: z.string(),
