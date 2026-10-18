@@ -6,6 +6,7 @@
  * 国際化はこの計画ではやらないが、差し替える場所を1つにはしておく。
  */
 
+import type { BulkEffect, BulkFailureReason } from '@/domain/social/bulk';
 import { PUBLISH_MAX_SKIPS } from '@/domain/social/publishing';
 import type { AccountStatus, DeliveryMode, PostStatus } from '@/domain/social/social';
 
@@ -293,3 +294,145 @@ export const POST_FILTER_EMPTY = '条件に合う投稿がありません。';
 
 /** 見出し「投稿」のアンカー（読み込み直した後に一覧へ戻る。設計 §9.2）。 */
 export const POSTS_ANCHOR = 'posts';
+
+// ---------------------------------------------------------------------------
+// 投稿の選択と一括操作（054-bulk-post-actions 設計 §9.3〜§9.7・§9.9・§9.10）
+// ---------------------------------------------------------------------------
+
+/** 見出しの一括選択のチェックボックスの `aria-label`（設計 §9.3）。 */
+export const SELECT_PAGE_LABEL = 'このページの投稿をすべて選択';
+
+/** 行のチェックボックスの `aria-label`。行を見分けるため本文の抜粋を添える（設計 §9.1）。 */
+export function SELECT_ROW_LABEL(excerpt: string): string {
+  return `この投稿を選択：${excerpt}`;
+}
+
+/** 一括の帯の選択の件数（設計 §9.3）。 */
+export function SELECTED_COUNT(count: number): string {
+  return `${count} 件を選択中`;
+}
+
+/** 表示中の全行を選んだが、絞り込みに合う投稿はほかのページにもあるとき（設計 §5.3・§9.3）。 */
+export function SELECTED_PAGE_COUNT(count: number, total: number): string {
+  return `このページの ${count} 件を選択中（全 ${total} 件）`;
+}
+
+/** 一括送信（設計 §9.4・§9.5）。帯のボタンは末尾に「…」を足す（ダイアログを開く）。 */
+export const BULK_SEND_LABEL = '一括送信（承認）';
+export const BULK_SEND_TITLE = '一括送信（承認）';
+export const BULK_SEND_NOW_OPTION = APPROVE_NOW_LABEL;
+export const BULK_SEND_DESIRED_OPTION = 'それぞれの希望日時に投稿';
+export const BULK_SEND_CONFIRM = '送る';
+
+/** 一括送信のダイアログの書き出し。 */
+export function BULK_SEND_LEAD(selected: number, targets: number): string {
+  return `選んだ ${selected} 件のうち、次の ${targets} 件を送ります。`;
+}
+
+export function BULK_SEND_APPROVE_LINE(count: number): string {
+  return `承認待ち ${count} 件を承認します`;
+}
+
+export function BULK_SEND_PUBLISH_NOW_LINE(count: number): string {
+  return `予約済み ${count} 件を今すぐ送ります`;
+}
+
+/** 「それぞれの希望日時」で承認されない行の警告（結果はサーバが返す。設計 §9.5）。 */
+export function BULK_SEND_WARN_DESIRED_PAST(count: number): string {
+  return `希望日時を過ぎている ${count} 件は、「${BULK_SEND_DESIRED_OPTION}」では承認されません（結果に出ます）。`;
+}
+
+export function BULK_SEND_WARN_NO_DESIRED(count: number): string {
+  return `希望日時が無い ${count} 件は、「${BULK_SEND_DESIRED_OPTION}」では承認されません（結果に出ます）。`;
+}
+
+/** 手動投稿のみの SNS の承認は常に即投稿になる（048 裁定 5）。 */
+export function BULK_SEND_NOTE_MANUAL_ONLY(count: number): string {
+  return `手動投稿のみの SNS の ${count} 件は、常に即投稿になります。`;
+}
+
+/** 今すぐ送る手動投稿は「手動投稿待ち」に並ぶ（設計 §5.4）。 */
+export function BULK_SEND_NOTE_MANUAL_DELIVERY(count: number): string {
+  return `手動投稿の ${count} 件は、「${MANUAL_PENDING_LABEL}」に並びます。`;
+}
+
+/** 一括取り消し（設計 §9.4・§9.6）。**ボタンの文言に「削除」を含めない**（既存の E2E の locator と取り違えない）。 */
+export const BULK_DELETE_LABEL = '一括取り消し';
+export const BULK_DELETE_TITLE = '投稿を一括で取り消しますか？';
+export const BULK_DELETE_CAMPAIGN_NOTE = 'キャンペーンとの紐づけも削除されます。';
+
+/** 一括取り消しのダイアログの本文。`breakdown` は状態ごとの内訳。 */
+export function BULK_DELETE_MESSAGE(selected: number, targets: number, breakdown: string): string {
+  return `選んだ ${selected} 件のうち ${targets} 件を削除します（${breakdown}）。`;
+}
+
+/** 対象外の理由ごとの表示名（設計 §9.5・§9.6）。状態の名前は `POST_STATUS_LABEL` と同じ。 */
+export const BULK_EXCLUDED_LABEL = {
+  no_permission: '承認の権限なし',
+  scheduled_unchanged: '予約済み（変更なし）',
+  due_or_publishing: '配信待ち・配信中',
+  publishing: '配信中',
+  draft: POST_STATUS_LABEL.draft,
+  published: POST_STATUS_LABEL.published,
+  failed: POST_STATUS_LABEL.failed,
+} as const satisfies Record<string, string>;
+
+export type BulkExcludedReason = keyof typeof BULK_EXCLUDED_LABEL;
+
+/** 対象外の件数と内訳。 */
+export function BULK_EXCLUDED_TEXT(count: number, breakdown: string): string {
+  return `対象外 ${count} 件（${breakdown}）`;
+}
+
+/** 結果（設計 §9.7）。 */
+export const BULK_RESULT_TITLE = '一括操作の結果';
+export const BULK_RESULT_RETRY_HINT = '処理されなかった投稿は、絞り込みで探して選び直せます。';
+export const BULK_RESULT_CLOSE = '閉じる';
+
+/** 成功の件数。`breakdown` は効果ごとの内訳（無ければ空）。 */
+export function BULK_RESULT_SUCCEEDED(count: number, breakdown: string): string {
+  return breakdown === ''
+    ? `${count} 件を処理しました。`
+    : `${count} 件を処理しました（${breakdown}）。`;
+}
+
+export function BULK_RESULT_FAILED(count: number): string {
+  return `${count} 件は処理されませんでした。`;
+}
+
+/** 一括取り消しが全件成功したときの Toast。 */
+export function BULK_DELETED_TOAST(count: number): string {
+  return `${count} 件を削除しました。`;
+}
+
+/** 要求そのものが失敗した項目の理由（設計 §9.5）。下にエラーの文言を出す。 */
+export const BULK_REQUEST_FAILED_LABEL = '要求が失敗しました';
+
+/** 成功の効果ごとの表示名（設計 §8.1 の `BULK_EFFECTS` とキーをちょうど一致させる）。 */
+export const BULK_EFFECT_LABEL: Record<BulkEffect, string> = {
+  approved_now: '承認',
+  approved_scheduled: '承認（希望日時）',
+  approved_forced_now: '承認（手動投稿のみのため即投稿）',
+  queued: '今すぐ送る',
+  manual_pending: '今すぐ送る（手動投稿待ち）',
+  deleted: '削除',
+};
+
+/** 失敗の理由ごとの表示名（設計 §8.1 の `BULK_FAILURE_REASONS` とキーをちょうど一致させる）。 */
+export const BULK_REASON_LABEL: Record<BulkFailureReason, string> = {
+  not_found: '見つかりませんでした',
+  not_applicable: '操作の対象の状態ではありません',
+  already_due: '既に配信の順番を待っています',
+  publishing: '配信中です',
+  approval_required: '承認の権限が要ります',
+  stale: '内容が変わっています。読み込み直してから操作してください',
+  no_desired_time: '希望日時がありません',
+  desired_time_passed: '希望日時を過ぎています',
+  validation: '配信の条件を満たしていません',
+  timeout: '時間内に処理できませんでした',
+  internal_error: 'エラーが発生しました',
+};
+
+/** 設定 → API の発行フォームの「名前」の説明に足す（設計 §9.9）。 */
+export const API_TOKEN_NAME_SOURCE_NOTE =
+  'この名前は、SNS 画面の投稿一覧に『登録元』として表示されます（SNS の閲覧権限を持つ人に見えます）。外部アプリが分かる名前にしてください。';

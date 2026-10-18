@@ -11,7 +11,8 @@ import type { ReactNode } from 'react';
 
 export interface Column<T> {
   readonly key: string;
-  readonly header: string;
+  /** 列の見出し。文字列も渡せる（要素は一括選択のチェックボックスなどに使う）。 */
+  readonly header: ReactNode;
   readonly render: (row: T) => ReactNode;
   readonly width?: string;
   /** 数値の列は右寄せ・等幅にして桁を揃える。 */

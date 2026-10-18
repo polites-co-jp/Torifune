@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { resolveAnalyticsTimeZone } from '@/application/analytics/timezone';
 import { helpLinkOfPlugin } from '@/application/plugin/plugin-help-use-cases';
 import { listSites } from '@/application/site/site-use-cases';
 import {
@@ -11,18 +12,28 @@ import {
   listApprovalPendingPosts,
   listManualPendingPosts,
   listSocialAccounts,
+  listSocialPostSources,
   listSocialPosts,
   resolveManualHandoff,
 } from '@/application/social/social-use-cases';
+import { dateInTimeZone } from '@/domain/analytics/day';
 import { normalizePage } from '@/domain/repository';
+import { postSourceOf } from '@/domain/social/post-source';
 import { MANUAL_HANDOFF_BUDGET_MS } from '@/domain/social/publishing';
-import { isManualPending, providerLabel } from '@/domain/social/social';
+import { isManualPending, providerLabel, type SocialPost } from '@/domain/social/social';
 import { Button } from '@/ui/components';
 import { AppShell } from '@/ui/layout/app-shell';
 import { ExtensionPoint, PluginActions } from '@/ui/plugin/plugin-slot';
 import { requirePageSession } from '@/ui/server/page-session';
 import { ApprovalPending, type ApprovalPendingRow } from '@/ui/social/approval-pending';
 import { ManualPending, type ManualPendingRow } from '@/ui/social/manual-pending';
+import {
+  parsePostListParams,
+  postListHref,
+  postSourceOptionsOf,
+  postSourceViewOf,
+  type PostListOption,
+} from '@/ui/social/post-list-params';
 import { buildProviderOptions } from '@/ui/social/provider-options';
 import {
   SocialAccounts,
@@ -32,6 +43,7 @@ import {
 import {
   SocialPosts,
   type AccountProvider,
+  type PostRow,
   type PublisherProvider,
 } from '@/ui/social/social-posts';
 import { AsyncState } from '@/ui/states/async-state';
@@ -90,6 +102,31 @@ function elapsedTextOf(scheduledAt: Date, now: Date): string {
 }
 
 /**
+ * 投稿一覧の行に足す、一括操作のための判定（054-bulk-post-actions 設計 §9.8）。
+ *
+ * **「いま」は呼び出し側で 1 回だけ決めて渡す**（行ごとに `Date.now()` を見ると値がばらつき、
+ * Client Component の中で見ると Server と Client で描画が食い違う）。
+ */
+function bulkFlagsOf(
+  post: SocialPost,
+  account: { readonly provider: string } | undefined,
+  now: Date,
+): Pick<PostRow, 'scheduledFuture' | 'publishing' | 'desiredPast' | 'manualOnly'> {
+  return {
+    scheduledFuture:
+      post.status === 'scheduled' &&
+      (post.scheduledAt === null || post.scheduledAt.getTime() > now.getTime()),
+    publishing:
+      post.status === 'scheduled' && post.deliveryMode === 'auto' && post.publishStartedAt !== null,
+    desiredPast:
+      post.status === 'awaiting_approval' &&
+      post.scheduledAt !== null &&
+      post.scheduledAt.getTime() <= now.getTime(),
+    manualOnly: account === undefined ? false : isManualOnlyProvider(account.provider),
+  };
+}
+
+/**
  * SNS画面（06_画面設計.md §13）。
  *
  * アカウントと投稿を1枚に並べる。**読み取りは Server Component から
@@ -114,16 +151,20 @@ export default async function SocialPage({
     );
   }
 
-  const postPage = normalizePage(params['postPage']);
-  const postPerPage = 20;
+  // 投稿一覧の条件は URL のクエリから読む。誤った値は無視して既定にする（054 設計 §9.2）。
+  // ページは今までどおり画面の `?page=` の共通の読み方で丸める（044。054 設計 §9.2 の表の `postPage`）。
+  const postFilters = { ...parsePostListParams(params), page: normalizePage(params['postPage']) };
 
   const accounts = await listSocialAccounts(context, { page: 1, perPage: 100, provider: null });
   const posts = await listSocialPosts(context, {
-    page: postPage,
-    perPage: postPerPage,
-    socialAccountId: null,
-    status: null,
+    page: postFilters.page,
+    perPage: postFilters.perPage,
+    socialAccountId: postFilters.accountId,
+    status: postFilters.status,
+    source: postFilters.source,
   });
+  // 登録元（054 設計 §8.8）。行の表示と絞り込みの選択肢の両方に使う。
+  const postSources = await listSocialPostSources(context, undefined);
 
   // 登録された publisher（`activate()` で埋まる。無ければ空）。
   const publishers = listPublishers();
@@ -229,6 +270,15 @@ export default async function SocialPage({
     }
   }
 
+  // 投稿一覧の絞り込みの選択肢（054 設計 §9.2）。
+  // 登録元の「（発行 …）」の日付は基準のタイムゾーンで作る（054 実装プラン §8 の 18）。
+  const timeZone = await resolveAnalyticsTimeZone();
+  const sourceOptions = postSourceOptionsOf(postSources, (date) => dateInTimeZone(date, timeZone));
+  // アカウントは読み込んだものを名前順に並べる（「すべて」は部品が足す）。
+  const accountOptions: readonly PostListOption[] = accounts.items
+    .map((account) => ({ value: account.id, label: accountNames[account.id] ?? account.id }))
+    .sort((left, right) => left.label.localeCompare(right.label, 'ja'));
+
   const accountProps: SocialAccountsProps = {
     initialAccounts: accounts.items.map((account) => ({
       id: account.id,
@@ -289,8 +339,13 @@ export default async function SocialPage({
         rows={manualRows}
         canWrite={permissions.has('social.write')}
       />
+      {/*
+        `key` は行の中身ではなく絞り込みとページから作る（054 実装プラン §8 の 56）。部品は行を props から導くので、
+        一括操作の後の `router.refresh()` では作り直さずに新しい行を映し、成功の Toast を残す。
+        ページ・絞り込みを変えたときは作り直されて選択が消える（054 設計 §5.3）。
+      */}
       <SocialPosts
-        key={posts.items.map((post) => `${post.id}:${post.updatedAt.getTime()}`).join(',')}
+        key={postListHref(postFilters)}
         initialPosts={posts.items.map((post) => ({
           id: post.id,
           socialAccountId: post.socialAccountId,
@@ -308,14 +363,22 @@ export default async function SocialPage({
           manualPending: isManualPending(post, now),
           // 承認を経た予約か（048 設計 §7.3）。
           approvedAt: post.approvedAt?.toISOString() ?? null,
+          // 一括操作の expectedUpdatedAt（054 設計 §9.8）。渡さない行は選べない。
+          updatedAt: post.updatedAt.toISOString(),
+          // 登録元の表示。**トークンの ID は行に渡さない**（054 設計 §5.6・§9.8）。
+          source: postSourceViewOf(postSourceOf(post, postSources.tokens)),
+          ...bulkFlagsOf(post, accountsById.get(post.socialAccountId), now),
         }))}
         accountNames={accountNames}
         accountProviders={accountProviders}
         publisherProviders={publisherProviders}
         total={posts.total}
-        page={postPage}
-        perPage={postPerPage}
+        page={postFilters.page}
+        perPage={postFilters.perPage}
         permissions={[...permissions]}
+        filters={postFilters}
+        sourceOptions={sourceOptions}
+        accountOptions={accountOptions}
       />
     </AppShell>
   );

@@ -34,7 +34,7 @@ import {
   tokenSiteRemovedScopesWarning,
   type TokenSiteOption,
 } from '@/ui/settings/api-token-site';
-import { SITE_COLUMN_HEADER } from '@/ui/social/labels';
+import { API_TOKEN_NAME_SOURCE_NOTE, SITE_COLUMN_HEADER } from '@/ui/social/labels';
 
 /**
  * 設定 → API（06_画面設計.md §16、05_API設計.md §37-38）。
@@ -326,7 +326,11 @@ export function ApiSettings({
         <h2 style={{ fontSize: '1rem', marginTop: 0 }}>APIトークンの発行</h2>
 
         <form onSubmit={onIssue}>
-          <FormField label="名前" description="どこで使うトークンかが分かる名前を付けます。">
+          {/* 名前は投稿一覧の「登録元」に出る（054-bulk-post-actions 設計 §9.9）。 */}
+          <FormField
+            label="名前"
+            description={`どこで使うトークンかが分かる名前を付けます。${API_TOKEN_NAME_SOURCE_NOTE}`}
+          >
             {(fieldProps) => (
               <Input
                 {...fieldProps}

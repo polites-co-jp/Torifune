@@ -274,6 +274,17 @@ export interface SocialRepository {
     },
   ): Promise<SocialPost | null>;
   deletePost(connection: Connection, id: string): Promise<boolean>;
+  /**
+   * 読んだ時点の状態のままで、配信の着手印が無い行だけを消す（054-bulk-post-actions 設計 §5.5・§8.4 の 3）。
+   *
+   * 読んでから消すまでの間に配信ジョブが着手した・状態が変わった（承認された・配信された）行は消さずに false を返す。
+   * 無い・id の形が不正も false。区画の条件は持たない（区画は読み出しの時点で判定済み。053 設計 §8.3.3）。
+   */
+  deletePostIf(
+    connection: Connection,
+    id: string,
+    expected: { readonly status: PostStatus },
+  ): Promise<boolean>;
 
   /**
    * 手動投稿待ちを引く（035-social-publishing 設計 §6.6）。
@@ -308,6 +319,26 @@ export interface SocialRepository {
     input: {
       readonly id: string;
       readonly scheduledAt: Date;
+      readonly now: Date;
+      readonly expectedUpdatedAt: Date;
+    },
+  ): Promise<SocialPost | null>;
+
+  /**
+   * 未来の予約を「いま」に早める（054-bulk-post-actions 設計 §8.3.1）。
+   *
+   * **判定と更新を 1 文で行う**：予約で、配信の着手印が無く、予約日時が未来か NULL で、`updated_at` をミリ秒に
+   * 切り詰めた値が `expectedUpdatedAt` と一致する行だけの `scheduled_at` と `updated_at` に `now` を、
+   * `next_attempt_at` に NULL を入れる。`approved_at`・`skip_count`・`skip_reason`・`attempt_count`・本文は書かない
+   * （承認を外さない。設計 §5.4）。
+   *
+   * 当てはまる行が無ければ（状態・着手印・内容が変わった・無い・id の形が不正）null で、何も変えない。
+   * 区画の条件は持たない（区画は読み出しの時点で判定済み。053 設計 §8.3.3）。
+   */
+  publishNow(
+    connection: Connection,
+    input: {
+      readonly id: string;
       readonly now: Date;
       readonly expectedUpdatedAt: Date;
     },

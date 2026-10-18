@@ -11,6 +11,9 @@ import { POST_PUBLISHING_MESSAGE, type PostStatus, type SocialPost } from './soc
 /** 1 回の要求の項目の上限。一覧の `perPage` の上限（`MAX_PER_PAGE`）と同じ値。 */
 export const BULK_MAX_ITEMS = 100;
 
+/** 項目の `id` の長さの上限（設計 §8.1.2）。投稿の ID は UUID（36 文字）なので、正しい要求に影響しない。 */
+export const BULK_ITEM_ID_MAX_LENGTH = 100;
+
 /** 1 回の要求の処理の時間の予算（設計 §8.6）。過ぎたら、まだ始めていない項目を `timeout` で返す。 */
 export const BULK_BUDGET_MS = 25_000;
 

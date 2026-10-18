@@ -1,7 +1,14 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { SocialPosts, type PostRow, type SocialPostsProps } from './social-posts';
+
+// 部品は一括操作の後に `router.refresh()` を呼ぶ（054-bulk-post-actions 設計 §9.7）。
+// `useRouter` は App Router の外では例外を投げるので差し替える（`approval-pending.test.ts` と同じ。
+// 054 実装プラン §8 の 4）。期待値は変えない。
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }),
+}));
 
 /**
  * SNS 投稿一覧の「配信方法」列と、配信の支度ができていない予約の警告

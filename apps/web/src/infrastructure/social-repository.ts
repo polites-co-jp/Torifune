@@ -869,6 +869,23 @@ export const socialRepository: SocialRepository = {
     return Number(result.numDeletedRows) > 0;
   },
 
+  async deletePostIf(
+    connection: Connection,
+    id: string,
+    expected: { readonly status: PostStatus },
+  ): Promise<boolean> {
+    if (!UUID_PATTERN.test(id)) return false;
+    // 判定と削除を 1 文で（054-bulk-post-actions 設計 §8.4 の 3）。着手印のある行を消すと、SNS へ出たのに
+    // 結果を記録する行が無くなる。
+    const result = await connection.db
+      .deleteFrom('social_posts')
+      .where('id', '=', id)
+      .where('status', '=', expected.status)
+      .where('publish_started_at', 'is', null)
+      .executeTakeFirst();
+    return Number(result.numDeletedRows) > 0;
+  },
+
   async listManualPending(
     connection: Connection,
     limit: number,
@@ -927,6 +944,38 @@ export const socialRepository: SocialRepository = {
       })
       .where('id', '=', input.id)
       .where('status', '=', 'awaiting_approval')
+      .where(sql<Date>`date_trunc('milliseconds', updated_at)`, '=', input.expectedUpdatedAt)
+      .returning(POST_COLUMNS)
+      .executeTakeFirst();
+
+    return row === undefined ? null : toPost(row as PostRow);
+  },
+
+  async publishNow(
+    connection: Connection,
+    input: {
+      readonly id: string;
+      readonly now: Date;
+      readonly expectedUpdatedAt: Date;
+    },
+  ): Promise<SocialPost | null> {
+    if (!UUID_PATTERN.test(input.id)) return null;
+
+    // 判定と更新を 1 文で（054-bulk-post-actions 設計 §8.3.1）。読んでから書くまでに承認が外れた・取りやめられた・
+    // 配信ジョブが着手した行には当たらない（`status`・着手印・`updated_at` のどれかが変わる）。
+    // 期限の来た予約（再試行待ち・支度待ちを含む）は対象にしない。待ち時刻と回数の規則を崩さない（設計 §5.4）。
+    // `approved_at`・`skip_*`・`attempt_count` は触らない。
+    const row = await connection.db
+      .updateTable('social_posts')
+      .set({
+        scheduled_at: input.now,
+        next_attempt_at: null,
+        updated_at: input.now,
+      })
+      .where('id', '=', input.id)
+      .where('status', '=', 'scheduled')
+      .where('publish_started_at', 'is', null)
+      .where((eb) => eb.or([eb('scheduled_at', 'is', null), eb('scheduled_at', '>', input.now)]))
       .where(sql<Date>`date_trunc('milliseconds', updated_at)`, '=', input.expectedUpdatedAt)
       .returning(POST_COLUMNS)
       .executeTakeFirst();

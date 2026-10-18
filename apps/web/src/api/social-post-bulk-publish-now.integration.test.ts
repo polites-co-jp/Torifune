@@ -1038,6 +1038,170 @@ describe('今すぐ送るの not_found（設計 §8.1・§8.3 の 1）', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #89〜#91 要求の配列の検査（設計 §8.1.2。検証 1 回目 security L1・M1）
+// ---------------------------------------------------------------------------
+
+/** 件数の 422 の文言（設計 §8.1.2 の 2）。 */
+const COUNT_MESSAGE = '1〜100 件で指定してください。';
+/** 重複の 422 の文言（設計 §8.1.2 の 4）。 */
+const DUPLICATE_MESSAGE = '同じ投稿が 2 回以上含まれています。';
+/** 要素ごとの文言の書き出し「N 件目：」（設計 §8.1.2 の 3。N の数え方は固定しない）。 */
+const ELEMENT_MESSAGE = /^\d+\s*件目：/;
+/** `id` が長すぎるときの要素の文言（設計 §8.1.2 の 3）。 */
+const ID_TOO_LONG_MESSAGE = /^\d+\s*件目：投稿の ID は100文字以内で入力してください。$/;
+
+function itemsMessagesOf(result: JsonResult): readonly string[] {
+  return errorOf(result).details?.['items'] ?? [];
+}
+
+/**
+ * 先頭に `head`、続けて形の誤った要素（数値・空文字の `id`・ISO でない `expectedUpdatedAt`）と
+ * 同じ `id` の 2 回を混ぜ、残りを正しい形の要素で埋めて `count` 件にする（設計 #89）。
+ */
+function mixedItems(count: number, head: Item): unknown[] {
+  const duplicate = { id: uuidv7(), expectedUpdatedAt: new Date().toISOString() };
+  const mixed: unknown[] = [
+    head,
+    123,
+    { id: '', expectedUpdatedAt: new Date().toISOString() },
+    { id: uuidv7(), expectedUpdatedAt: 'yesterday' },
+    duplicate,
+    duplicate,
+  ];
+  while (mixed.length < count) {
+    mixed.push({ id: uuidv7(), expectedUpdatedAt: new Date().toISOString() });
+  }
+  return mixed;
+}
+
+describe('#89 件数が 1〜100 を外れたら、要素の誤り・重複を混ぜても件数の 422 だけ', () => {
+  it('#89 101 件（要素の誤り・重複を混ぜる）→ 422 の details がちょうど { items: [件数の文言] }', async () => {
+    const post = await makeScheduled();
+
+    const result = await callPublishNow({ items: mixedItems(101, post) });
+
+    expect(result.status).toBe(422);
+    expect(errorOf(result).details).toEqual({ items: [COUNT_MESSAGE] });
+  });
+
+  it('#89 101 件の 422 では行も監査も変わらない', async () => {
+    const post = await makeScheduled();
+    const before = await rowOf(post.id);
+
+    await callPublishNow({ items: mixedItems(101, post) });
+
+    expect(await rowOf(post.id)).toEqual(before);
+    expect(await updatedAuditRows()).toHaveLength(0);
+  });
+
+  it('#89 0 件 → 422 の details がちょうど { items: [件数の文言] }', async () => {
+    const result = await callPublishNow({ items: [] });
+
+    expect(result.status).toBe(422);
+    expect(errorOf(result).details).toEqual({ items: [COUNT_MESSAGE] });
+  });
+
+  it('#89 判別力：同じ混ぜ方の 100 件では、要素の文言（N 件目：）と重複の文言が details.items に出る', async () => {
+    const post = await makeScheduled();
+    const before = await rowOf(post.id);
+
+    const result = await callPublishNow({ items: mixedItems(100, post) });
+
+    expect(result.status).toBe(422);
+    expect(detailKeysOf(result)).toEqual(['items']);
+    const messages = itemsMessagesOf(result);
+    expect(messages.some((message) => ELEMENT_MESSAGE.test(message))).toBe(true);
+    expect(messages).toContain(DUPLICATE_MESSAGE);
+    expect(messages).not.toContain(COUNT_MESSAGE);
+    expect(await rowOf(post.id)).toEqual(before);
+  });
+});
+
+describe('#90 項目の id は 100 文字まで（101 文字は要求全体の 422）', () => {
+  it('#90 101 文字の id を 1 つ含む → 422（キーは items、文言「N 件目：投稿の ID は100文字以内で入力してください。」）', async () => {
+    const post = await makeScheduled();
+
+    const result = await callPublishNow({
+      items: [post, { id: 'a'.repeat(101), expectedUpdatedAt: new Date().toISOString() }],
+    });
+
+    expect(result.status).toBe(422);
+    expect(detailKeysOf(result)).toEqual(['items']);
+    expect(itemsMessagesOf(result).some((message) => ID_TOO_LONG_MESSAGE.test(message))).toBe(true);
+  });
+
+  it('#90 101 文字の id を含む要求では、同じ要求の他の項目も処理しない（行も監査も変わらない）', async () => {
+    const post = await makeScheduled();
+    const before = await rowOf(post.id);
+
+    await callPublishNow({
+      items: [post, { id: 'a'.repeat(101), expectedUpdatedAt: new Date().toISOString() }],
+    });
+
+    expect(await rowOf(post.id)).toEqual(before);
+    expect(await updatedAuditRows()).toHaveLength(0);
+  });
+
+  it('#90 100 文字ちょうどの id（UUID の形でない）→ 200 で、その項目は not_found（境界）', async () => {
+    const post = await makeScheduled();
+    const id = 'a'.repeat(100);
+
+    const result = await callPublishNow({
+      items: [post, { id, expectedUpdatedAt: new Date().toISOString() }],
+    });
+
+    expect(result.status).toBe(200);
+    expect(resultsOf(result)).toHaveLength(2);
+    expect(resultsOf(result)[1]).toEqual({
+      id,
+      ok: false,
+      reason: 'not_found',
+      field: null,
+      message: NOT_FOUND_MESSAGE,
+    });
+  });
+});
+
+describe('#91 ID の重複は大文字・小文字を区別しない', () => {
+  it('#91 同じ投稿の UUID を小文字と大文字で 1 回ずつ → 422（キーは items、重複の文言）', async () => {
+    const post = await makeScheduled();
+
+    const result = await callPublishNow({
+      items: [post, { id: post.id.toUpperCase(), expectedUpdatedAt: post.expectedUpdatedAt }],
+    });
+
+    expect(result.status).toBe(422);
+    expect(detailKeysOf(result)).toEqual(['items']);
+    expect(itemsMessagesOf(result)).toContain(DUPLICATE_MESSAGE);
+  });
+
+  it('#91 大文字・小文字だけ違う重複の 422 では行も監査も変わらない', async () => {
+    const post = await makeScheduled();
+    const before = await rowOf(post.id);
+
+    await callPublishNow({
+      items: [post, { id: post.id.toUpperCase(), expectedUpdatedAt: post.expectedUpdatedAt }],
+    });
+
+    expect(await rowOf(post.id)).toEqual(before);
+    expect(await updatedAuditRows()).toHaveLength(0);
+  });
+
+  it('#91 判別力：別々の 2 つの投稿（一方を大文字）なら 200 で、results[].id は送った字面のまま', async () => {
+    const first = await makeScheduled();
+    const second = await makeScheduled();
+    const upper = second.id.toUpperCase();
+
+    const result = await callPublishNow({
+      items: [first, { id: upper, expectedUpdatedAt: second.expectedUpdatedAt }],
+    });
+
+    expect(result.status).toBe(200);
+    expect(resultsOf(result).map((entry) => entry.id)).toEqual([first.id, upper]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // #48 権限
 // ---------------------------------------------------------------------------
 
