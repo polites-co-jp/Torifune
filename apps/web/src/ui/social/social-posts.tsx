@@ -13,14 +13,14 @@ import { Alert, Badge, Button, Card, Pagination, Table, type Column } from '@/ui
 import { excerptOf } from '@/ui/social/bulk-plan';
 import { BulkPostActions, type BulkResultsInput } from '@/ui/social/bulk-post-actions';
 import {
-  APPROVAL_PENDING_ANCHOR,
   APPROVAL_PENDING_ROW_NOTE,
   APPROVED_ROW_NOTE,
   DELIVERY_MODE_LABEL,
-  MANUAL_PENDING_ANCHOR,
   MANUAL_PENDING_LABEL,
   NO_CREDENTIAL_BADGE,
   NO_PUBLISHER_BADGE,
+  PENDING_APPROVAL_HREF,
+  PENDING_MANUAL_HREF,
   POST_FILTER_ALL,
   POST_FILTER_CLEAR,
   POST_FILTER_EMPTY,
@@ -321,19 +321,20 @@ export function SocialPosts(props: SocialPostsProps) {
         {post.status === 'scheduled' && post.failureReason !== null && (
           <span style={CAPTION_STYLE}>{`（再試行待ち・${post.attemptCount + 1} 回目）`}</span>
         )}
-        {/* 承認待ちは区画で承認する（048-social-post-approval 設計 §7.3）。 */}
+        {/* 承認待ちは送信待ちタブで承認する（048 設計 §7.3、055-social-pending-tab 設計 §9.8）。 */}
         {post.status === 'awaiting_approval' && (
           <span style={CAPTION_STYLE}>
-            <a href={`#${APPROVAL_PENDING_ANCHOR}`}>{APPROVAL_PENDING_ROW_NOTE}</a>
+            <a href={PENDING_APPROVAL_HREF}>{APPROVAL_PENDING_ROW_NOTE}</a>
           </span>
         )}
         {/* 承認を経た予約。編集すると承認待ちへ戻ることの手がかり（048 設計 §7.3）。 */}
         {post.status === 'scheduled' &&
           post.approvedAt !== undefined &&
           post.approvedAt !== null && <span style={CAPTION_STYLE}>{APPROVED_ROW_NOTE}</span>}
+        {/* 手動投稿は送信待ちタブで投稿する（055 設計 §9.8）。 */}
         {post.status === 'scheduled' && post.manualPending === true && (
           <span style={CAPTION_STYLE}>
-            <a href={`#${MANUAL_PENDING_ANCHOR}`}>{MANUAL_PENDING_LABEL}</a>
+            <a href={PENDING_MANUAL_HREF}>{MANUAL_PENDING_LABEL}</a>
           </span>
         )}
         {/*
