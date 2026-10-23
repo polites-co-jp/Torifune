@@ -1,6 +1,6 @@
 import type { Connection } from '../../database/provider';
 import type { AccessScope, PostOrigin } from './access-scope';
-import type { PendingKind, PendingSort } from './pending';
+import type { ManualOutcome, PendingKind, PendingSort } from './pending';
 import type { PostSourceFilter, SocialPostSources } from './post-source';
 import type { PublishVerdict, SkipVerdict } from './publishing';
 import type {
@@ -395,6 +395,29 @@ export interface SocialRepository {
     query: SocialPendingListQuery,
     scope: AccessScope,
   ): Promise<Readonly<Record<PendingKind, number>>>;
+
+  /**
+   * 手動投稿の結果を記録する（055-social-pending-tab 設計 §5.6・§8.2）。
+   *
+   * **判定と更新を 1 文で行う**：手動の予約（`status = 'scheduled' AND delivery_mode = 'manual'`）で、`updated_at` を
+   * ミリ秒に切り詰めた値が `expectedUpdatedAt` と一致する行だけを書く。`posted` は `published` と `published_at`
+   * （`externalUrl` が null でなければ `external_url` も）、`not_posted` は `failed` と `failed_at`・固定の
+   * `failure_reason`。どちらも `next_attempt_at` を NULL、`updated_at` を `now` にする。`scheduled_at`・`approved_at` は
+   * 書かない。
+   *
+   * 当てはまる行が無ければ（状態・配信方法・内容が変わった・無い・id の形が不正）null で、何も変えない。
+   * 区画の条件は持たない（区画は読み出しの時点で判定済み。053 設計 §8.3.3）。
+   */
+  recordManualOutcome(
+    connection: Connection,
+    input: {
+      readonly id: string;
+      readonly outcome: ManualOutcome;
+      readonly externalUrl: string | null;
+      readonly now: Date;
+      readonly expectedUpdatedAt: Date;
+    },
+  ): Promise<SocialPost | null>;
 
   // -------------------------------------------------------------------------
   // 配信ジョブ（035-social-publishing 設計 §6.5.3 / §6.5.4 / §6.5.6）

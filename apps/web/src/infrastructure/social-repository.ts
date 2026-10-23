@@ -23,7 +23,12 @@ import type { AccessScope, PostOrigin } from '../domain/social/access-scope';
 import type { PostSourceFilter, SocialPostSources } from '../domain/social/post-source';
 import type { PublishVerdict, SkipReason, SkipVerdict } from '../domain/social/publishing';
 import { isSkipReason } from '../domain/social/publishing';
-import { PENDING_KINDS, type PendingKind } from '../domain/social/pending';
+import {
+  MANUAL_NOT_POSTED_REASON,
+  PENDING_KINDS,
+  type ManualOutcome,
+  type PendingKind,
+} from '../domain/social/pending';
 import type {
   DueCursor,
   InterruptedPost,
@@ -1127,6 +1132,46 @@ export const socialRepository: SocialRepository = {
       }
     }
     return counts;
+  },
+
+  async recordManualOutcome(
+    connection: Connection,
+    input: {
+      readonly id: string;
+      readonly outcome: ManualOutcome;
+      readonly externalUrl: string | null;
+      readonly now: Date;
+      readonly expectedUpdatedAt: Date;
+    },
+  ): Promise<SocialPost | null> {
+    if (!UUID_PATTERN.test(input.id)) return null;
+
+    // 判定と更新を 1 文で（055-social-pending-tab 設計 §8.2 の 6）。読んでから書くまでに配信方法を自動へ変えられた・
+    // 取りやめられた・他の人が記録した行には当たらない（`status`・`delivery_mode`・`updated_at` のどれかが変わる）。
+    // 予約日時と承認の記録は書き換えない（事実の時刻は `published_at` / `failed_at`。設計 §5.6）。
+    const values =
+      input.outcome === 'posted'
+        ? {
+            status: 'published' as const,
+            published_at: input.now,
+            ...(input.externalUrl === null ? {} : { external_url: input.externalUrl }),
+          }
+        : {
+            status: 'failed' as const,
+            failed_at: input.now,
+            failure_reason: MANUAL_NOT_POSTED_REASON,
+          };
+    const row = await connection.db
+      .updateTable('social_posts')
+      .set({ ...values, next_attempt_at: null, updated_at: input.now })
+      .where('id', '=', input.id)
+      .where('status', '=', 'scheduled')
+      .where('delivery_mode', '=', 'manual')
+      .where(sql<Date>`date_trunc('milliseconds', updated_at)`, '=', input.expectedUpdatedAt)
+      .returning(POST_COLUMNS)
+      .executeTakeFirst();
+
+    return row === undefined ? null : toPost(row as PostRow);
   },
 
   async failInterrupted(
