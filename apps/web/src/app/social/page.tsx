@@ -8,6 +8,7 @@ import {
   listPublishers,
   publisherLabels,
 } from '@/application/social/publisher-registry';
+import { settleManualHandoff } from '@/application/social/manual-handoff-settle';
 import {
   listSocialAccounts,
   listSocialPendingPosts,
@@ -285,10 +286,14 @@ export default async function SocialPage({
               : {}),
             ...(canOpenManualHandoff(post)
               ? {
-                  handoff: await resolveManualHandoff(context, {
-                    id: post.id,
-                    deadline: handoffDeadline,
-                  }),
+                  // 読んだ後に行が自動へ変わった・消されたときも、タブ全体は描きその行だけを
+                  // `changed` の開けない行にする（設計 §8.3。検証 1 回目 S1）。
+                  handoff: await settleManualHandoff(
+                    resolveManualHandoff(context, {
+                      id: post.id,
+                      deadline: handoffDeadline,
+                    }),
+                  ),
                 }
               : {}),
             link: post.link,

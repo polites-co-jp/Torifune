@@ -2081,7 +2081,11 @@ export type ManualHandoffOutcome =
   | { readonly ok: true; readonly url: string; readonly note: string | null }
   | {
       readonly ok: false;
-      readonly reason: 'unsupported' | 'invalid_url' | 'plugin_error' | 'not_scheduled';
+      /**
+       * `changed` は `resolveManualHandoff` 自身は返さない。描画の途中で行が変わった例外を
+       * `settleManualHandoff` が読み替えた結果だけ（055-social-pending-tab 設計 §8.3）。
+       */
+      readonly reason: 'unsupported' | 'invalid_url' | 'plugin_error' | 'not_scheduled' | 'changed';
     };
 
 export interface ManualHandoffInput {
