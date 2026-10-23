@@ -16,7 +16,7 @@ import {
   type Column,
   type StatDelta,
 } from '@/ui/components';
-import { APPROVAL_PENDING_ANCHOR, APPROVAL_REMINDER } from '@/ui/social/labels';
+import { APPROVAL_REMINDER, PENDING_APPROVAL_HREF, PENDING_MANUAL_HREF } from '@/ui/social/labels';
 
 /**
  * Core の Widget（06_画面設計.md §9-10、014-dashboard、028-analytics-dashboard-redesign 設計 §7.2）。
@@ -600,7 +600,8 @@ export function ManualPendingReminder({ count }: { readonly count: number }) {
   return (
     <Alert tone="warning">
       {`手動投稿待ちが ${formatCount(count)} 件あります。SNS 画面で投稿してください。`}{' '}
-      <Link href="/social#manual-pending" style={LINK_STYLE}>
+      {/* 送信待ちタブの手動投稿待ちの絞り込みへ（055-social-pending-tab 設計 §9.8）。 */}
+      <Link href={PENDING_MANUAL_HREF} style={LINK_STYLE}>
         SNS 画面へ →
       </Link>
     </Alert>
@@ -621,7 +622,8 @@ export function ApprovalPendingReminder({ count }: { readonly count: number }) {
   return (
     <Alert tone="info">
       {APPROVAL_REMINDER(formatCount(count))}{' '}
-      <Link href={`/social#${APPROVAL_PENDING_ANCHOR}`} style={LINK_STYLE}>
+      {/* 送信待ちタブの承認待ちの絞り込みへ（055 設計 §9.8）。 */}
+      <Link href={PENDING_APPROVAL_HREF} style={LINK_STYLE}>
         SNS 画面へ →
       </Link>
     </Alert>
