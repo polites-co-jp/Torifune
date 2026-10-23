@@ -105,6 +105,14 @@ function recordBreakdownOf(records: readonly ManualSequenceRecord[]): string {
     .join('・');
 }
 
+/** ダイアログの下のボタンの並び。入りきらなければ次の行へ折り返す。 */
+const FOOTER_STYLE: CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  justifyContent: 'flex-end',
+  gap: 'var(--tf-space-2)',
+};
+
 export function ManualSequence(props: ManualSequenceProps) {
   const targets = props.plan.targets;
   const [index, setIndex] = useState(props.initialIndex ?? 0);
@@ -216,7 +224,10 @@ export function ManualSequence(props: ManualSequenceProps) {
       open
       title={MANUAL_SEQUENCE_TITLE(index + 1, targets.length)}
       onClose={close}
-      footer={footer}
+      footer={
+        // 幅 375px では 3 つのボタンが 1 行に入らないので折り返す（Modal の帯は折り返さない。設計 §9.10）。
+        <div style={FOOTER_STYLE}>{footer}</div>
+      }
     >
       {confirming ? (
         <div style={{ display: 'grid', gap: 'var(--tf-space-2)', ...WRAP_ANYWHERE }}>

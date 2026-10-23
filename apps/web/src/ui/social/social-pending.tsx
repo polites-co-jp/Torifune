@@ -279,7 +279,17 @@ export function SocialPending(props: SocialPendingProps) {
         ? {}
         : { initialDeletingId: props.initialDeletingId })}
     >
-      {({ rows, selectColumn, band, requestDelete, hideRow, showToast, refresh, reload }) => {
+      {({
+        rows,
+        selectColumn,
+        band,
+        requestDelete,
+        hideRow,
+        unselectRow,
+        showToast,
+        refresh,
+        reload,
+      }) => {
         /** 1 件の操作が通った行を隠し、Toast を出して読み込み直す（設計 §9.3.4）。 */
         function succeeded(id: string, text: string): void {
           hideRow(id);
@@ -646,10 +656,15 @@ export function SocialPending(props: SocialPendingProps) {
               onClose={() => setApprovingId(null)}
               onApproved={(row) => {
                 setApprovingId(null);
-                succeeded(
-                  row.id,
-                  row.deliveryMode === 'manual' ? APPROVED_TOAST_MANUAL : APPROVED_TOAST_AUTO,
-                );
+                // 承認した投稿は送信待ち（予約済み・手動投稿待ち）に残るので、行を隠さずに選択から外し、
+                // 読み込み直して新しい状態を映す（設計 §13.10 #65。実装プラン §8 の 75）。
+                unselectRow(row.id);
+                showToast({
+                  id: row.id,
+                  text: row.deliveryMode === 'manual' ? APPROVED_TOAST_MANUAL : APPROVED_TOAST_AUTO,
+                  tone: 'success',
+                });
+                refresh();
               }}
               onReload={() => {
                 setApprovingId(null);

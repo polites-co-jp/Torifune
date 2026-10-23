@@ -107,6 +107,8 @@ export interface BulkPostActionsApi<R extends BulkActionRow> {
   readonly requestDelete: (row: R) => void;
   /** 1 件の操作が通った行を手元で隠し、選択から外す。 */
   readonly hideRow: (id: string) => void;
+  /** 行を選択から外す（隠さない。操作の後も表に残る行。055 設計 §13.10 #65）。 */
+  readonly unselectRow: (id: string) => void;
   readonly showToast: (message: ToastMessage) => void;
   /** 画面を読み込み直す（`router.refresh()`）。 */
   readonly refresh: () => void;
@@ -220,13 +222,17 @@ export function BulkPostActions<R extends BulkActionRow>(props: BulkPostActionsP
     refresh();
   }
 
-  function hideRow(id: string): void {
-    setRemoved((current) => new Set([...current, id]));
+  function unselectRow(id: string): void {
     setSelected((current) => {
       const next = new Set(current);
       next.delete(id);
       return next;
     });
+  }
+
+  function hideRow(id: string): void {
+    setRemoved((current) => new Set([...current, id]));
+    unselectRow(id);
   }
 
   function toggleRow(id: string): void {
@@ -460,6 +466,7 @@ export function BulkPostActions<R extends BulkActionRow>(props: BulkPostActionsP
         busy: busy !== null,
         requestDelete: (row) => setDeleting(row),
         hideRow,
+        unselectRow,
         showToast: (message) => setToast(message),
         refresh,
         reload,
