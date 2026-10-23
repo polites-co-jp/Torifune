@@ -1,9 +1,9 @@
 'use client';
 
-import Link from 'next/link';
 import type { PostStatus } from '@/domain/social/social';
 import { Alert, Button, Card, Pagination, Table, type Column } from '@/ui/components';
 import { POST_STATUS_LABEL } from '@/ui/social/labels';
+import { historyListHref } from '@/ui/social/social-tabs';
 import { AsyncState } from '@/ui/states/async-state';
 
 /**
@@ -15,6 +15,9 @@ import { AsyncState } from '@/ui/states/async-state';
  *
  * **失敗の理由を必ず列に出す。** 「失敗」とだけ出ても、
  * 見た人は何をすればよいか分からない。
+ *
+ * SNS 画面の「配信履歴」タブの中身（055-social-pending-tab 設計 §9.6）。h1「SNS」はページに 1 つなので見出しは h2。
+ * クエリは送信待ち・投稿のタブと混ざらない `historyStatus`・`historyPage`。
  */
 
 export interface HistoryRow {
@@ -52,19 +55,6 @@ export interface SocialHistoryProps {
   readonly perPage: number;
   /** 'published' / 'failed' / '' （すべて）。 */
   readonly status: string;
-}
-
-/** 絞り込みを保ったままページを送る。 */
-function hrefFor(page: number, status: string): string {
-  const params = new URLSearchParams();
-  if (status !== '') {
-    params.set('status', status);
-  }
-  if (page > 1) {
-    params.set('page', String(page));
-  }
-  const query = params.toString();
-  return query === '' ? '/social/history' : `/social/history?${query}`;
 }
 
 export function SocialHistory(props: SocialHistoryProps) {
@@ -122,22 +112,19 @@ export function SocialHistory(props: SocialHistoryProps) {
 
   return (
     <div style={{ display: 'grid', gap: 'var(--tf-space-4)' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h1 style={{ fontSize: '1.25rem', margin: 0 }}>配信履歴</h1>
-        <Link href="/social">
-          <Button variant="secondary">SNSへ戻る</Button>
-        </Link>
-      </div>
+      <h2 style={{ fontSize: '1.05rem', margin: 'var(--tf-space-6) 0 0' }}>配信履歴</h2>
 
       <Card>
         {/*
           絞り込みは form の GET で行う。Client の状態にすると、
           ページを送ったときに絞り込みが外れる。
+          送ると `tab` が落ちて送信待ちタブへ戻らないよう、タブを hidden で持ち回る（055 設計 §9.6）。
         */}
         <form method="get" style={{ display: 'flex', gap: 'var(--tf-space-3)', alignItems: 'end' }}>
+          <input type="hidden" name="tab" value="history" />
           <label>
             結果
-            <select name="status" defaultValue={props.status}>
+            <select name="historyStatus" defaultValue={props.status}>
               <option value="">すべて</option>
               <option value="published">配信済み</option>
               <option value="failed">失敗</option>
@@ -165,7 +152,9 @@ export function SocialHistory(props: SocialHistoryProps) {
             page={props.page}
             perPage={props.perPage}
             total={props.total}
-            onChange={(next) => window.location.assign(hrefFor(next, props.status))}
+            onChange={(next) =>
+              window.location.assign(historyListHref({ status: props.status, page: next }))
+            }
           />
         </Card>
       </AsyncState>
