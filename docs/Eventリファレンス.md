@@ -29,8 +29,8 @@ Plugin は `context.events.on(...)` で購読する。使い方は
 | `social.account.disconnected` | SNSアカウントの接続を切った | `SocialAccountEventPayload` |
 | `social.post.created` | SNS投稿を作った（承認待ちで登録したときは `status` が `'awaiting_approval'`） | `SocialPostEventPayload` |
 | `social.post.approved` | 承認待ちのSNS投稿が承認されて予約になった（`POST /api/v1/social/posts/{id}/approve` が成功したとき。1 回の承認で 1 回。差し戻し・承認が外れたときは発火しない。048-social-post-approval） | `SocialPostEventPayload` |
-| `social.post.published` | SNS投稿の配信が完了した（**本体の定期実行が配信を終えたとき**、または手動投稿を「投稿した」と記録したとき） | `SocialPostEventPayload` |
-| `social.post.failed` | SNS投稿の配信が失敗した（本体の定期実行が失敗・打ち切り・中断と判定したとき、または `PATCH /api/v1/social/posts/{id}` で `failed` にしたとき） | `SocialPostEventPayload` |
+| `social.post.published` | SNS投稿の配信が完了した（**本体の定期実行が配信を終えたとき**、または手動投稿を「投稿した」と記録したとき。手動投稿では `publishedAt` が `scheduledAt` より前になりうる） | `SocialPostEventPayload` |
+| `social.post.failed` | SNS投稿の配信が失敗した（本体の定期実行が失敗・打ち切り・中断と判定したとき、`PATCH /api/v1/social/posts/{id}` で `failed` にしたとき、または管理画面で手動投稿を「投稿しなかった」と記録したとき（`failureReason` は固定の文言）） | `SocialPostEventPayload` |
 | `campaign.created` | キャンペーンを作った | `CampaignEventPayload` |
 | `campaign.updated` | キャンペーンを更新した | `CampaignEventPayload` |
 | `campaign.deleted` | キャンペーンを削除した | `CampaignEventPayload` |
