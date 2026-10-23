@@ -385,20 +385,21 @@ export function fromQuery(siteId) {
 });
 
 /* -------------------------------------------------------------------------- */
-/* #61 20 個の handler が scopeOf(context) を呼ぶ・述語は scopePredicate の 1 か所     */
+/* #61 21 個の handler が scopeOf(context) を呼ぶ・述語は scopePredicate の 1 か所     */
 /* -------------------------------------------------------------------------- */
 
 const SOCIAL_USE_CASES_FILE = 'application/social/social-use-cases.ts';
 const SOCIAL_REPOSITORY_FILE = 'infrastructure/social-repository.ts';
 
 /**
- * 設計 §8.3.4 の 17 個と、054 で足した 2 個と、055 で足した 1 個の計 20 個（`name` の値）。
+ * 設計 §8.3.4 の 17 個と、054 で足した 2 個と、055 で足した 2 個の計 21 個（`name` の値）。
  *
  * 054 の `listSocialPostSources`（`social.post.listSources`）と `publishSocialPostNow`（`social.post.publishNow`）も
  * 区画を掛ける（054-bulk-post-actions 設計 §8.3・§8.8・§13.10 #57。段階は 054 実装プラン §8 の 14）。
  *
- * 055 の `listSocialPendingPosts`（`social.post.listPending`）も区画を掛ける（055-social-pending-tab 設計 §8.1・
- * §13.7 #35）。`recordManualOutcome` の 1 個は G3 で足して 21 個にする（055 実装プラン §8 の 48）。
+ * 055 の `listSocialPendingPosts`（`social.post.listPending`。G2）と `recordManualOutcome`
+ * （`social.post.recordManualOutcome`。G3）も区画を掛ける（055-social-pending-tab 設計 §8.1・§8.2・§13.7 #35。
+ * 段階は 055 実装プラン §8 の 48）。
  */
 const SCOPED_USE_CASE_NAMES = [
   'social.account.list',
@@ -421,6 +422,7 @@ const SCOPED_USE_CASE_NAMES = [
   'social.post.listSources',
   'social.post.publishNow',
   'social.post.listPending',
+  'social.post.recordManualOutcome',
 ];
 
 interface UseCaseHandler {
@@ -465,7 +467,7 @@ describe('#61 SNS の UseCase は scopeOf(context) を呼び、区画の述語�
   const handlers = (): UseCaseHandler[] =>
     useCaseHandlers(readFileSync(join(SRC_DIR, SOCIAL_USE_CASES_FILE), 'utf8'));
 
-  it('#61 social-use-cases.ts の defineUseCase は設計 §8.3.4 の 17 個と 054 の 2 個と 055 の 1 個の計 20 個', () => {
+  it('#61 social-use-cases.ts の defineUseCase は設計 §8.3.4 の 17 個と 054 の 2 個と 055 の 2 個の計 21 個', () => {
     // 並びは問わない（定義の順を変えても落とさない）。数と名前の集合を見る。
     expect(
       handlers()
