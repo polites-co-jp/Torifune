@@ -3,7 +3,7 @@ import { expect, test, type APIRequestContext, type Page } from '@playwright/tes
 /**
  * 画面の `?page=` の解釈（044-screen-page-param 設計 §6・§10.3、受け入れ条件 #11〜#16）。
  *
- * 画面は URL の `?page=`（`/social` は `?postPage=`）を `normalizePage` で丸めてから UseCase へ渡す。
+ * 画面は URL の `?page=`（`/social` は `?postPage=`・`?pendingPage=`・`?historyPage=`）を `normalizePage` で丸めてから UseCase へ渡す。
  * `Infinity`・小数・`1e18` のような値で開いても **500 にならず、200 でその画面が出る**ことを見る。
  *
  * - 1 ページ目に倒れる値（`Infinity`・`1.01` など）では 1 ページ目が出る
@@ -146,16 +146,34 @@ test.describe('#13 /settings?tab=users', () => {
 
 test.describe('#14 /social/history', () => {
   for (const value of THREE_VALUES) {
-    test(`#14 /social/history?page=${value} は 200 で見出しが出る`, async ({ page }) => {
-      await expectScreen(page, `/social/history?page=${value}`, '配信履歴');
+    // 055 で `/social/history` は配信履歴タブへの転送になった（055 設計 §9.7）。
+    // 転送の後に h1「SNS」と配信履歴タブの見出し h2「配信履歴」が出る。
+    test(`#14 /social/history?page=${value} は転送の後 200 で見出しが出る`, async ({ page }) => {
+      await expectScreen(page, `/social/history?page=${value}`, 'SNS');
+      await expect(
+        page.getByRole('heading', { level: 2, name: '配信履歴', exact: true }),
+      ).toBeVisible();
     });
   }
 });
 
 test.describe('#15 /social の postPage', () => {
   for (const value of THREE_VALUES) {
-    test(`#15 /social?postPage=${value} は 200 で見出しが出る`, async ({ page }) => {
-      await expectScreen(page, `/social?postPage=${value}`, 'SNS');
+    test(`#15 /social?tab=posts&postPage=${value} は 200 で見出しが出る`, async ({ page }) => {
+      await expectScreen(page, `/social?tab=posts&postPage=${value}`, 'SNS');
+    });
+  }
+});
+
+/** 055 で足したタブのページのクエリ（055 設計 §9.2・§9.6・§14）。 */
+test.describe('#15 /social の pendingPage・historyPage', () => {
+  for (const value of THREE_VALUES) {
+    test(`#15 /social?pendingPage=${value} は 200 で見出しが出る`, async ({ page }) => {
+      await expectScreen(page, `/social?pendingPage=${value}`, 'SNS');
+    });
+
+    test(`#15 /social?tab=history&historyPage=${value} は 200 で見出しが出る`, async ({ page }) => {
+      await expectScreen(page, `/social?tab=history&historyPage=${value}`, 'SNS');
     });
   }
 });

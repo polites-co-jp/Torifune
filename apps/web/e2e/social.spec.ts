@@ -196,7 +196,7 @@ test('未認証では 401', async ({ request }) => {
 
 test('SNS画面が表示され、資格情報がマスクされる', async ({ page, request }) => {
   await createAccount(request);
-  await page.goto('/social');
+  await page.goto('/social?tab=accounts');
 
   await expect(page.getByRole('heading', { name: 'SNS' })).toBeVisible();
 
@@ -208,7 +208,7 @@ test('SNS画面が表示され、資格情報がマスクされる', async ({ pa
 
 test('SNS画面に「配信はプラグインが行う」旨が出る', async ({ page }) => {
   // 出さないと「投稿したつもりで配信されていない」という誤解が起きる。
-  await page.goto('/social');
+  await page.goto('/social?tab=accounts');
 
   await expect(page.getByText(/実際の配信は、連携プラグインが行います/)).toBeVisible();
 });
@@ -244,7 +244,7 @@ test('SNS画面に投稿一覧が出る', async ({ page, request }) => {
   const account = await createAccount(request);
   const post = await createPost(request, account.id);
 
-  await page.goto('/social');
+  await page.goto('/social?tab=posts');
 
   await expect(page.getByRole('heading', { name: '投稿' })).toBeVisible();
   await expect(page.getByText(post.body)).toBeVisible();
@@ -261,7 +261,7 @@ test('画面から投稿を作成できる', async ({ page, request }) => {
   await page.getByLabel('本文').fill(body);
   await page.getByRole('button', { name: '保存' }).click();
 
-  await page.waitForURL('**/social');
+  await page.waitForURL('**/social?tab=posts');
   await expect(page.getByText(body)).toBeVisible();
 });
 
@@ -274,7 +274,7 @@ test('画面から投稿を編集できる', async ({ page, request }) => {
   await page.getByLabel('本文').fill(edited);
   await page.getByRole('button', { name: '保存' }).click();
 
-  await page.waitForURL('**/social');
+  await page.waitForURL('**/social?tab=posts');
   await expect(page.getByText(edited)).toBeVisible();
 });
 
@@ -295,7 +295,7 @@ test('画面から投稿を削除できる', async ({ page, request }) => {
   const account = await createAccount(request);
   const post = await createPost(request, account.id);
 
-  await page.goto('/social');
+  await page.goto('/social?tab=posts');
   await expect(page.getByText(post.body)).toBeVisible();
 
   const row = page.getByRole('row').filter({ hasText: post.body });

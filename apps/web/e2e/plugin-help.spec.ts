@@ -542,7 +542,7 @@ test.describe('#61 アカウント追加の Modal のヘルプボタン', () => 
   test('#61 サービスに example を選ぶとヘルプボタンが見え、押すと新しいページで手順書が開き、元の Modal と入力が残る', async ({
     page,
   }) => {
-    await page.goto('/social');
+    await page.goto('/social?tab=accounts');
     await page.getByRole('button', { name: '+ アカウントを追加' }).click();
 
     const dialog = page.getByRole('dialog', { name: ADD_TITLE });
@@ -581,7 +581,7 @@ test.describe('#62 「資格情報を設定」の Modal のヘルプボタン', 
   }) => {
     const displayName = await createExampleAccount(request);
 
-    await page.goto('/social');
+    await page.goto('/social?tab=accounts');
     await accountRow(page, displayName).getByRole('button', { name: SET_CREDENTIAL }).click();
 
     const dialog = page.getByRole('dialog', { name: SET_CREDENTIAL });

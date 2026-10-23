@@ -13,8 +13,8 @@ import {
 /**
  * SNS 投稿の一括操作の画面（054-bulk-post-actions 設計 §9・§9.8・§9.11、受け入れ条件 #80〜#88）。
  *
- * * #80 登録元の列（トークンの名前／「管理画面」）と登録元の絞り込み、URL の `postSource=token:` と `#posts`
- * * #81 承認待ちを絞って一括選択 →「一括送信（承認）」→「即投稿」→ Toast・予約済み・承認待ちの区画が消える
+ * * #80 登録元の列（トークンの名前／「管理画面」）と登録元の絞り込み、URL の `postSource=token:` と `tab=posts`（055 でアンカーなし）
+ * * #81 承認待ちを絞って一括選択 →「一括送信（承認）」→「即投稿」→ Toast・予約済み・送信待ちタブで承認待ちでなくなる（055 で区画が送信待ちの表に替わった）
  * * #82 希望日時が過去と未来の承認待ち →「それぞれの希望日時に投稿」→ 結果のダイアログ、過去は承認待ちのまま。
  *   検証 1 回目で強めた分：選んだ直後の警告（中-1）、選んだ未来の予約を今すぐ送らない（低-1）、閉じた後に選択が消える（低-2）
  * * #83 未来の予約を「即投稿」→ 予約日時がいま → 配信の後に「配信済み」。強めた分：成功の Toast の後に選択が消える（低-2）
@@ -240,9 +240,12 @@ async function chooseFilter(
   await expect(page).toHaveURL(expectedUrl);
 }
 
-/** 「承認待ち」区画（`#approval-pending`）。 */
-function approvalSection(page: Page): Locator {
-  return page.locator('#approval-pending');
+/**
+ * 送信待ちタブ（`/social`）の表の本文の行（055 設計 §9.3）。055 で承認待ちの区画
+ * （`#approval-pending`）が無くなり、承認待ちは送信待ちタブの表に並ぶ。
+ */
+function pendingRow(page: Page, body: string): Locator {
+  return page.getByRole('table').locator('tbody tr').filter({ hasText: body });
 }
 
 function sendDialog(page: Page): Locator {
@@ -296,7 +299,7 @@ async function expectWithinViewport(locator: Locator): Promise<void> {
 
 function sourceFilteredPath(): string {
   // 登録元の絞り込みのクエリ（設計 §9.2 の `postSource=token:<UUID>`）。
-  return `/social?postSource=token:${tokenId}#posts`;
+  return `/social?tab=posts&postSource=token:${tokenId}`;
 }
 
 /** 指定のロールの利用者を作り、その利用者でログインした画面のコンテキストを返す。 */
@@ -430,7 +433,7 @@ test.describe('#80 登録元の列と絞り込み', () => {
     const blog2 = await createByToken('ブログ2');
     const screen = await createBySession(request, '画面');
 
-    await page.goto('/social');
+    await page.goto('/social?tab=posts');
     await expect(postsTable(page).getByRole('columnheader', { name: SOURCE_COLUMN })).toBeVisible();
 
     for (const post of [blog1, blog2]) {
@@ -445,7 +448,7 @@ test.describe('#80 登録元の列と絞り込み', () => {
     await expect(screenRow).not.toContainText(tokenName);
   });
 
-  test('#80 登録元で「ブログ連携」を選ぶと 2 件だけになり、URL に postSource=token: と #posts が付く', async ({
+  test('#80 登録元で「ブログ連携」を選ぶと 2 件だけになり、URL に postSource=token: と tab=posts が付き、# が付かない', async ({
     page,
     request,
   }) => {
@@ -453,9 +456,10 @@ test.describe('#80 登録元の列と絞り込み', () => {
     const blog2 = await createByToken('ブログ2');
     const screen = await createBySession(request, '画面');
 
-    await page.goto('/social');
+    await page.goto('/social?tab=posts');
     await chooseFilter(page, FILTER_SOURCE, tokenName, /[?&]postSource=token:[0-9a-fA-F-]+/);
-    await expect(page).toHaveURL(/#posts$/);
+    await expect(page).toHaveURL(/[?&]tab=posts(&|$)/);
+    await expect(page).not.toHaveURL(/#/);
 
     await expect(postsRows(page)).toHaveCount(2);
     await expect(postRow(page, blog1.body)).toHaveCount(1);
@@ -475,8 +479,13 @@ test.describe('#81 一括送信（即投稿）', () => {
     const first = await createByToken('承認1', { publishTiming: 'after_approval' });
     const second = await createByToken('承認2', { publishTiming: 'after_approval' });
 
+    // 送る前：送信待ちタブに 2 件が「承認待ち」で並ぶ（055 で区画が送信待ちの表に替わった）。
     await page.goto('/social');
-    await expect(approvalSection(page)).toBeVisible();
+    for (const post of [first, second]) {
+      await expect(pendingRow(page, post.body)).toContainText('承認待ち');
+    }
+
+    await page.goto('/social?tab=posts');
 
     await chooseFilter(page, FILTER_STATUS, '承認待ち', /[?&]postStatus=awaiting_approval/);
     await chooseFilter(page, FILTER_SOURCE, tokenName, /[?&]postSource=token:/);
@@ -494,9 +503,15 @@ test.describe('#81 一括送信（即投稿）', () => {
     await dialog.getByRole('button', { name: BULK_SEND_CONFIRM, exact: true }).click();
 
     await expect(successToast(page, /2\s*件を処理しました/)).toBeVisible();
-    await expect(approvalSection(page)).toHaveCount(0);
     // 読み込み直すと、承認待ちの絞り込みには何も残らない。
     await expect(page.getByText(FILTER_EMPTY)).toBeVisible();
+
+    // 送った後：送信待ちタブで 2 件が「承認待ち」でない（予約済み、または配信済みで表から消えている）。
+    await page.goto('/social');
+    await expect(page.getByRole('heading', { level: 2, name: '送信待ち' })).toBeVisible();
+    for (const post of [first, second]) {
+      await expect(pendingRow(page, post.body)).not.toContainText('承認待ち');
+    }
 
     // 定期実行が先に配信していれば「配信済み」（実装プラン §8 の 23）。
     for (const post of [first, second]) {
@@ -525,7 +540,7 @@ test.describe('#82 一括送信（それぞれの希望日時）', () => {
       scheduledAt: minutesFromNow(24 * 60),
     });
 
-    await page.goto('/social');
+    await page.goto('/social?tab=posts');
     await rowCheckbox(page, past.body).check();
     await rowCheckbox(page, future.body).check();
 
@@ -564,7 +579,7 @@ test.describe('#82 一括送信（それぞれの希望日時）', () => {
     // 希望日時の無い承認待ち（`scheduledAt` を送らない）。
     const noDesired = await createByToken('希望なし', { publishTiming: 'after_approval' });
 
-    await page.goto('/social');
+    await page.goto('/social?tab=posts');
     await rowCheckbox(page, past.body).check();
     await rowCheckbox(page, future.body).check();
     await rowCheckbox(page, noDesired.body).check();
@@ -609,7 +624,7 @@ test.describe('#82 一括送信（それぞれの希望日時）', () => {
       }
     });
 
-    await page.goto('/social');
+    await page.goto('/social?tab=posts');
     for (const post of [past, future, scheduled]) {
       await rowCheckbox(page, post.body).check();
     }
@@ -647,7 +662,7 @@ test.describe('#82 一括送信（それぞれの希望日時）', () => {
       scheduledAt: minutesFromNow(24 * 60),
     });
 
-    await page.goto('/social');
+    await page.goto('/social?tab=posts');
     for (const post of [past, future, scheduled]) {
       await rowCheckbox(page, post.body).check();
     }
@@ -684,7 +699,7 @@ test.describe('#83 予約を今すぐ送る', () => {
       scheduledAt: minutesFromNow(24 * 60),
     });
 
-    await page.goto('/social');
+    await page.goto('/social?tab=posts');
     await expect(postRow(page, post.body)).toContainText('予約済み');
     await rowCheckbox(page, post.body).check();
 
@@ -716,7 +731,7 @@ test.describe('#83 予約を今すぐ送る', () => {
       scheduledAt: minutesFromNow(24 * 60),
     });
 
-    await page.goto('/social');
+    await page.goto('/social?tab=posts');
     await rowCheckbox(page, post.body).check();
     // 判別力：送る前は選ばれていて、帯のボタンが押せる。
     await expect(page.getByRole('button', { name: BULK_SEND })).toBeEnabled();
@@ -745,7 +760,7 @@ test.describe('#84 一括取り消し', () => {
     const published = await createByToken('既配信', { publishTiming: 'now' });
     await publishUntilPublished(request, published.id);
 
-    await page.goto('/social');
+    await page.goto('/social?tab=posts');
     await expect(postRow(page, draft.body)).toContainText('下書き');
     await expect(postRow(page, published.body)).toContainText('配信済み');
     await rowCheckbox(page, draft.body).check();
@@ -781,7 +796,7 @@ test.describe('#85 閲覧者・編集者', () => {
     const context = await roleBrowserContext(request, browser, 'viewer');
     try {
       const page = await context.newPage();
-      await page.goto('/social');
+      await page.goto('/social?tab=posts');
 
       await expect(postRow(page, post.body)).toContainText(tokenName);
       await expect(
@@ -808,7 +823,7 @@ test.describe('#85 閲覧者・編集者', () => {
     const context = await roleBrowserContext(request, browser, 'editor');
     try {
       const page = await context.newPage();
-      await page.goto('/social');
+      await page.goto('/social?tab=posts');
 
       await expect(postRow(page, post.body)).toBeVisible();
       await expect(selectPageCheckbox(page)).toHaveCount(1);
@@ -889,7 +904,7 @@ test.describe('#87 絞り込みとページ送り', () => {
       posts.push(await createByToken(`頁${String(index).padStart(2, '0')}`));
     }
 
-    await page.goto('/social');
+    await page.goto('/social?tab=posts');
     await chooseFilter(page, FILTER_SOURCE, tokenName, /[?&]postSource=token:/);
     await expect(postsRows(page)).toHaveCount(20);
 
@@ -903,7 +918,8 @@ test.describe('#87 絞り込みとページ送り', () => {
       .click();
     await expect(page).toHaveURL(/[?&]postPage=2(&|#|$)/);
     await expect(page).toHaveURL(/[?&]postSource=token:/);
-    await expect(page).toHaveURL(/#posts$/);
+    await expect(page).toHaveURL(/[?&]tab=posts(&|$)/);
+    await expect(page).not.toHaveURL(/#/);
 
     await expect(postsRows(page)).toHaveCount(1);
     // 最も古い 1 件が 2 ページ目に回る（新しい順）。
@@ -916,10 +932,12 @@ test.describe('#87 絞り込みとページ送り', () => {
     await expect(page.getByText(/^\s*0\s*件を選択中\s*$/)).toBeVisible();
   });
 
-  test('#87 /social?postStatus=xxx&postPerPage=abc&postSource=token:zzz は 200 で、絞り込みは「すべて」・20 件', async ({
+  test('#87 /social?tab=posts&postStatus=xxx&postPerPage=abc&postSource=token:zzz は 200 で、絞り込みは「すべて」・20 件', async ({
     page,
   }) => {
-    const response = await page.goto('/social?postStatus=xxx&postPerPage=abc&postSource=token:zzz');
+    const response = await page.goto(
+      '/social?tab=posts&postStatus=xxx&postPerPage=abc&postSource=token:zzz',
+    );
     expect(response?.status()).toBe(200);
 
     await expect(filterSelect(page, FILTER_STATUS).locator('option:checked')).toHaveText(
