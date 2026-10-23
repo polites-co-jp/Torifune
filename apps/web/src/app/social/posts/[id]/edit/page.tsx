@@ -7,11 +7,19 @@ import { AppShell } from '@/ui/layout/app-shell';
 import { ExtensionPoint, hasExtensions } from '@/ui/plugin/plugin-slot';
 import { requirePageSession } from '@/ui/server/page-session';
 import { SocialPostForm } from '@/ui/social/social-post-form';
+import { postFormReturnTo } from '@/ui/social/social-tabs';
 
 export const dynamic = 'force-dynamic';
 
-export default async function EditSocialPostPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function EditSocialPostPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const { id } = await params;
+  const query = await searchParams;
   const { context, displayName, permissions } = await requirePageSession();
 
   if (!permissions.has('social.write')) {
@@ -36,6 +44,8 @@ export default async function EditSocialPostPage({ params }: { params: Promise<{
       <SocialPostForm
         title="投稿を編集"
         postId={post.id}
+        // 開いたタブへ戻す（送信待ちタブからは ?from=pending。許す値は 2 つだけ。055 設計 §5.7）。
+        returnTo={postFormReturnTo(query['from'])}
         accounts={accounts.items.map((account) => ({
           id: account.id,
           label: `${account.displayName}（${providerLabel(account.provider, labels)}）`,

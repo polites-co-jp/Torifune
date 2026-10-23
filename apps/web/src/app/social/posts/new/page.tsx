@@ -5,13 +5,19 @@ import { providerLabel } from '@/domain/social/social';
 import { AppShell } from '@/ui/layout/app-shell';
 import { requirePageSession } from '@/ui/server/page-session';
 import { SocialPostForm } from '@/ui/social/social-post-form';
+import { postFormReturnTo, socialTabHref } from '@/ui/social/social-tabs';
 import { AsyncState } from '@/ui/states/async-state';
 import { Button } from '@/ui/components';
 import Link from 'next/link';
 
 export const dynamic = 'force-dynamic';
 
-export default async function NewSocialPostPage() {
+export default async function NewSocialPostPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const query = await searchParams;
   const { context, displayName, permissions } = await requirePageSession();
 
   // 権限が無ければ画面を出さない。ただし本体の認可は UseCase 側にある。
@@ -30,7 +36,8 @@ export default async function NewSocialPostPage() {
           status="empty"
           emptyMessage="投稿先のSNSアカウントがありません。先にアカウントを登録してください。"
           emptyAction={
-            <Link href="/social">
+            // アカウントはアカウントタブで登録する（055-social-pending-tab 設計 §5.7）。
+            <Link href={socialTabHref('accounts')}>
               <Button variant="primary">SNS画面へ</Button>
             </Link>
           }
@@ -48,6 +55,8 @@ export default async function NewSocialPostPage() {
     <AppShell displayName={displayName} permissions={permissions}>
       <SocialPostForm
         title="投稿を作成"
+        // 開いたタブへ戻す（送信待ちタブからは ?from=pending。許す値は 2 つだけ。055 設計 §5.7）。
+        returnTo={postFormReturnTo(query['from'])}
         accounts={accounts.items.map((account) => ({
           id: account.id,
           label: `${account.displayName}（${providerLabel(account.provider, labels)}）`,
