@@ -831,6 +831,7 @@ test.describe('#68 送信待ちタブの一括操作', () => {
     const scheduled = await createAutoScheduled(request, '一括取消');
 
     await page.goto(pendingPath());
+    await expectCurrentTab(page, '送信待ち');
     await rowCheckbox(page, scheduled.body).check();
     await page.getByRole('button', { name: BULK_DELETE }).click();
     const dialog = page.getByRole('dialog', { name: BULK_DELETE_TITLE });
@@ -1104,6 +1105,7 @@ test.describe('#81 行の削除', () => {
     const post = await createAutoScheduled(request, '行削除');
 
     await page.goto(pendingPath());
+    await expectCurrentTab(page, '送信待ち');
     await rowOf(page, post.body).getByRole('button', { name: '削除', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: DELETE_TITLE });
     await expect(dialog).toContainText('この操作は取り消せません。');
@@ -1126,6 +1128,7 @@ test.describe('#81 行の削除', () => {
     try {
       const page = await context.newPage();
       await page.goto(pendingPath());
+      await expectCurrentTab(page, '送信待ち');
       const row = rowOf(page, post.body);
       // 判別力：行と「編集」は見えている。
       await expect(editControl(row).first()).toBeVisible();
