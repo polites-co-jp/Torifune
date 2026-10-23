@@ -404,6 +404,9 @@ export function BULK_RESULT_FAILED(count: number): string {
   return `${count} 件は処理されませんでした。`;
 }
 
+/** 行の「削除」が通ったときの Toast（投稿タブ・送信待ちタブ。055-social-pending-tab 設計 §9.3.4）。 */
+export const SINGLE_DELETED_TOAST = '削除しました。';
+
 /** 一括取り消しが全件成功したときの Toast。 */
 export function BULK_DELETED_TOAST(count: number): string {
   return `${count} 件を削除しました。`;

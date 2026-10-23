@@ -10,6 +10,7 @@ import {
   BULK_REASON_LABEL,
   BULK_REQUEST_FAILED_LABEL,
   POST_STATUS_LABEL,
+  SINGLE_DELETED_TOAST,
   type BulkExcludedReason,
 } from './labels';
 
@@ -361,5 +362,44 @@ export function deleteExcludedOf(plan: BulkDeletePlan<BulkPlanRow>): {
       .filter(([, count]) => count > 0)
       .map(([label, count]) => `${label} ${count}`)
       .join('・'),
+  };
+}
+
+/** 1 件の削除の前の状態（手元で隠した行と選択。055-social-pending-tab 設計 §9.12）。 */
+export interface SingleDeleteState {
+  readonly hiddenIds: ReadonlySet<string>;
+  readonly selectedIds: ReadonlySet<string>;
+}
+
+/** 1 件の削除の `DELETE` の結果（`apiRequest` の戻り値のうち使う項目）。 */
+export type SingleDeleteResult =
+  { readonly ok: true } | { readonly ok: false; readonly error: { readonly message: string } };
+
+/**
+ * 1 件の削除の後の状態（055-social-pending-tab 設計 §9.3.4・§9.12。投稿タブと送信待ちタブの行の「削除」）。
+ *
+ * 成功なら行を隠し、選択から外し、Toast「削除しました。」。失敗なら行は残し、サーバの文言の Toast。
+ * **渡した集合を書き換えない**（新しい集合を返す）。
+ */
+export function afterSingleDelete(
+  state: SingleDeleteState,
+  id: string,
+  result: SingleDeleteResult,
+): SingleDeleteState & {
+  readonly toast: {
+    readonly id: string;
+    readonly text: string;
+    readonly tone: 'success' | 'danger';
+  };
+} {
+  if (!result.ok) {
+    return { ...state, toast: { id, text: result.error.message, tone: 'danger' } };
+  }
+  const selectedIds = new Set(state.selectedIds);
+  selectedIds.delete(id);
+  return {
+    hiddenIds: new Set([...state.hiddenIds, id]),
+    selectedIds,
+    toast: { id, text: SINGLE_DELETED_TOAST, tone: 'success' },
   };
 }
