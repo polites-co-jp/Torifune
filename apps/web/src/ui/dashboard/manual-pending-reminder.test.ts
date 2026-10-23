@@ -11,7 +11,7 @@ import { ManualPendingReminder } from './core-widgets';
  * ManualPendingReminder({ count: number })
  * ```
  *
- * **操作は置かない。** 「投稿した／取りやめ」は `/social` の区画だけに置く
+ * **操作は置かない。** 「投稿した／取りやめ」は `/social` の送信待ちタブだけに置く
  * （2 か所に置くと片方だけ直す事故が起きる。設計 §7.1）。
  * ここに出すのは**件数と導線だけ**で、0 件なら何も描かない。
  *
@@ -46,9 +46,9 @@ describe('ManualPendingReminder', () => {
     expect(textOf(render(2))).toContain('SNS 画面で投稿してください');
   });
 
-  it('#72 /social#manual-pending へのリンクを出す', () => {
-    // 区画そのものへ飛ばす（設計 §7.1 の `id="manual-pending"`）。
-    expect(render(2)).toContain('href="/social#manual-pending"');
+  it('#72 /social?pendingStatus=manual_pending へのリンクを出す', () => {
+    // 送信待ちタブの手動投稿待ちの絞り込みへ飛ばす（055-social-pending-tab 設計 §9.8・§14。区画は無くなった）。
+    expect(render(2)).toContain('href="/social?pendingStatus=manual_pending"');
   });
 
   it('#72 count: 1 でも出す', () => {

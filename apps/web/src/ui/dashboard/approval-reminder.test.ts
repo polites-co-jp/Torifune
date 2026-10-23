@@ -42,8 +42,10 @@ describe('#71 ApprovalPendingReminder', () => {
     expect(textOf(render(3))).toContain('SNS 画面で確かめてください');
   });
 
-  it('#71 /social#approval-pending へのリンクを出す', () => {
-    expect(render(3)).toContain('href="/social#approval-pending"');
+  // 055-social-pending-tab 設計 §9.8：承認待ちの区画は送信待ちタブの表に吸収された。
+  // 導線は送信待ちタブの承認待ちの絞り込みへ向ける（055 設計 §14）。
+  it('#71 /social?pendingStatus=awaiting_approval へのリンクを出す', () => {
+    expect(render(3)).toContain('href="/social?pendingStatus=awaiting_approval"');
   });
 
   it('#71 count: 1 でも出す', () => {
