@@ -251,6 +251,28 @@ const BAND_STYLE: CSSProperties = {
   marginBottom: 'var(--tf-space-4)',
 };
 
+/**
+ * 登録元の表示（054 設計 §5.6・§9.1）。画面の登録は「管理画面」、トークンは名前（失効・削除済みを添える）。
+ * 渡さない行は「—」。送信待ちの表と承認のダイアログも使う（055-social-pending-tab 設計 §9.3.1・§9.3.4）。
+ */
+export function PostSourceLabel({ source }: { readonly source: PostSourceView | undefined }) {
+  if (source === undefined) return '—';
+  if (source.kind === 'screen') return POST_SOURCE_SCREEN_LABEL;
+  return (
+    <span>
+      <span title={source.label} style={ELLIPSIS_STYLE}>
+        {source.label}
+      </span>
+      {source.kind === 'token' && source.revoked && (
+        <span style={CAPTION_STYLE}>{POST_SOURCE_REVOKED_SUFFIX}</span>
+      )}
+      {source.kind === 'deleted_token' && (
+        <span style={CAPTION_STYLE}>{POST_SOURCE_DELETED_SUFFIX}</span>
+      )}
+    </span>
+  );
+}
+
 export interface SocialPostsProps {
   readonly initialPosts: readonly PostRow[];
   /** アカウントIDから表示名を引くための対応表。 */
@@ -525,25 +547,6 @@ export function SocialPosts(props: SocialPostsProps) {
     }
   }
 
-  function sourceCell(post: PostRow) {
-    const source = post.source;
-    if (source === undefined) return '—';
-    if (source.kind === 'screen') return POST_SOURCE_SCREEN_LABEL;
-    return (
-      <span>
-        <span title={source.label} style={ELLIPSIS_STYLE}>
-          {source.label}
-        </span>
-        {source.kind === 'token' && source.revoked && (
-          <span style={CAPTION_STYLE}>{POST_SOURCE_REVOKED_SUFFIX}</span>
-        )}
-        {source.kind === 'deleted_token' && (
-          <span style={CAPTION_STYLE}>{POST_SOURCE_DELETED_SUFFIX}</span>
-        )}
-      </span>
-    );
-  }
-
   const selectColumn: Column<PostRow> = {
     key: 'select',
     header: (
@@ -610,7 +613,7 @@ export function SocialPosts(props: SocialPostsProps) {
       key: 'source',
       header: POST_SOURCE_COLUMN_HEADER,
       width: '10rem',
-      render: sourceCell,
+      render: (post) => <PostSourceLabel source={post.source} />,
     },
     {
       key: 'scheduledAt',

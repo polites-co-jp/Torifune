@@ -3,21 +3,9 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState, type CSSProperties } from 'react';
-import type { ApprovalTiming, DeliveryMode } from '@/domain/social/social';
-import { apiRequest } from '@/ui/client/api-client';
-import {
-  Alert,
-  Badge,
-  Button,
-  Card,
-  ConfirmDialog,
-  Input,
-  Modal,
-  Toast,
-  type ToastMessage,
-} from '@/ui/components';
-import { approveRequestBody, defaultApprovalTiming } from '@/ui/social/approval-request';
-import { toLocalInputValue } from '@/ui/social/datetime-local';
+import type { DeliveryMode } from '@/domain/social/social';
+import { Alert, Badge, Button, Card, Toast, type ToastMessage } from '@/ui/components';
+import { ApprovalDialog, RejectDialog, type ApprovalDialogRow } from '@/ui/social/approval-dialog';
 import {
   APPROVAL_DESIRED_LABEL,
   APPROVAL_DESIRED_PAST_NOTE,
@@ -28,22 +16,13 @@ import {
   APPROVAL_PENDING_LABEL,
   APPROVAL_REQUESTED_LABEL,
   APPROVAL_VIA_LABEL,
-  APPROVE_DESIRED_PAST_WARNING,
-  APPROVE_DIALOG_TITLE,
-  APPROVE_LABEL,
-  APPROVE_NOW_LABEL,
   APPROVE_OPEN_LABEL,
-  APPROVE_RELOAD_LABEL,
-  APPROVE_SCHEDULED_LABEL,
-  APPROVE_STALE_MESSAGE,
   APPROVED_TOAST_AUTO,
   APPROVED_TOAST_MANUAL,
   DELIVERY_MODE_LABEL,
   MANUAL_ONLY_APPROVAL_NOTE,
   NO_CREDENTIAL_BADGE,
   NO_PUBLISHER_BADGE,
-  REJECT_CONFIRM_MESSAGE,
-  REJECT_CONFIRM_TITLE,
   REJECT_LABEL,
   REJECTED_TOAST,
 } from '@/ui/social/labels';
@@ -111,41 +90,26 @@ const WRAP_ANYWHERE: CSSProperties = { overflowWrap: 'anywhere', wordBreak: 'bre
 
 const LINK_STYLE: CSSProperties = { color: 'var(--tf-color-primary)', ...WRAP_ANYWHERE };
 
-const FIELD_ERROR_STYLE: CSSProperties = {
-  display: 'block',
-  marginTop: 'var(--tf-space-1)',
-  color: 'var(--tf-color-danger)',
-  fontSize: 'var(--tf-text-caption)',
-};
-
 function formatDateTime(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('ja-JP');
 }
 
-/** 承認のダイアログの状態。 */
-interface ApprovingState {
-  readonly id: string;
-  readonly timing: ApprovalTiming;
-  readonly scheduledAtLocal: string;
-  /** 409：見た後に内容が変わっていた。 */
-  readonly stale: boolean;
-  /** 日時の欄の下に出す 422 の文言。 */
-  readonly scheduledAtErrors: readonly string[];
-  /** ダイアログの上に出す文言（日時以外の 422・その他の失敗）。 */
-  readonly errors: readonly string[];
-  readonly busy: boolean;
-}
-
-function openState(row: ApprovalPendingRow): ApprovingState {
+/** 承認のダイアログに渡す行（055-social-pending-tab 設計 §9.3.4）。区画の行は登録元のトークン名を持たない。 */
+function dialogRowOf(row: ApprovalPendingRow): ApprovalDialogRow {
   return {
     id: row.id,
-    timing: defaultApprovalTiming(row),
-    scheduledAtLocal: toLocalInputValue(row.desiredScheduledAt),
-    stale: false,
-    scheduledAtErrors: [],
-    errors: [],
-    busy: false,
+    body: row.body,
+    deliveryMode: row.deliveryMode,
+    scheduledAt: row.desiredScheduledAt,
+    desiredPast: row.desiredPast,
+    manualOnly: row.manualOnly,
+    updatedAt: row.updatedAt,
+    ...(row.viaApi ? {} : { source: { kind: 'screen' } as const }),
+    link: row.link,
+    media: row.media,
+    requestedAt: row.requestedAt,
+    warning: row.warning,
   };
 }
 
@@ -156,87 +120,34 @@ export function ApprovalPending(props: ApprovalPendingProps) {
   const [removed, setRemoved] = useState<ReadonlySet<string>>(() => new Set());
   const rows = props.rows.filter((row) => !removed.has(row.id));
 
-  const [approving, setApproving] = useState<ApprovingState | null>(() => {
-    const initial = props.rows.find((row) => row.id === props.initialApprovingId);
-    return initial === undefined ? null : openState(initial);
-  });
+  const [approvingId, setApprovingId] = useState<string | null>(
+    () => props.rows.find((row) => row.id === props.initialApprovingId)?.id ?? null,
+  );
   const [rejecting, setRejecting] = useState<ApprovalPendingRow | null>(null);
   const [toast, setToast] = useState<ToastMessage | null>(null);
 
-  const approvingRow = approving === null ? undefined : rows.find((row) => row.id === approving.id);
+  const approvingRow =
+    approvingId === null ? undefined : rows.find((row) => row.id === approvingId);
 
   function hide(id: string): void {
     setRemoved((current) => new Set([...current, id]));
   }
 
-  async function submitApproval(): Promise<void> {
-    if (approving === null || approvingRow === undefined) return;
-    const row = approvingRow;
-    // 手動投稿しかできない配信 Plugin の行は「即投稿」だけ（サーバも読み替える。設計 §6.7.3）。
-    const timing: ApprovalTiming = row.manualOnly ? 'now' : approving.timing;
-    setApproving({ ...approving, busy: true, errors: [], scheduledAtErrors: [] });
-
-    const result = await apiRequest(`/api/v1/social/posts/${row.id}/approve`, {
-      method: 'POST',
-      body: approveRequestBody({
-        timing,
-        scheduledAtLocal: approving.scheduledAtLocal,
-        updatedAt: row.updatedAt,
-      }),
+  function approved(row: ApprovalDialogRow): void {
+    setApprovingId(null);
+    hide(row.id);
+    setToast({
+      id: row.id,
+      text: row.deliveryMode === 'manual' ? APPROVED_TOAST_MANUAL : APPROVED_TOAST_AUTO,
+      tone: 'success',
     });
-
-    if (result.ok) {
-      setApproving(null);
-      hide(row.id);
-      setToast({
-        id: row.id,
-        text: row.deliveryMode === 'manual' ? APPROVED_TOAST_MANUAL : APPROVED_TOAST_AUTO,
-        tone: 'success',
-      });
-      // 予約になった行を投稿一覧へ、手動投稿なら「手動投稿待ち」へ映す（設計 §7.2）。
-      router.refresh();
-      return;
-    }
-
-    const { error } = result;
-    if (error.status === 409 || error.code === 'CONFLICT') {
-      setApproving({ ...approving, busy: false, stale: true });
-      return;
-    }
-    const details = error.details ?? {};
-    const scheduledAtErrors = details['scheduledAt'] ?? [];
-    const others = Object.entries(details)
-      .filter(([key]) => key !== 'scheduledAt')
-      .flatMap(([, messages]) => messages);
-    setApproving({
-      ...approving,
-      busy: false,
-      scheduledAtErrors,
-      errors: others.length > 0 || scheduledAtErrors.length > 0 ? others : [error.message],
-    });
-  }
-
-  function reloadAfterStale(): void {
-    setApproving(null);
+    // 予約になった行を投稿一覧へ、手動投稿なら「手動投稿待ち」へ映す（設計 §7.2）。
     router.refresh();
   }
 
-  async function confirmReject(): Promise<void> {
-    const target = rejecting;
-    if (target === null) return;
-    setRejecting(null);
-
-    const result = await apiRequest(`/api/v1/social/posts/${target.id}`, {
-      method: 'PATCH',
-      body: { status: 'draft' },
-    });
-    if (result.ok) {
-      hide(target.id);
-      setToast({ id: target.id, text: REJECTED_TOAST, tone: 'success' });
-      router.refresh();
-    } else {
-      setToast({ id: target.id, text: result.error.message, tone: 'danger' });
-    }
+  function reloadAfterStale(): void {
+    setApprovingId(null);
+    router.refresh();
   }
 
   // 0 件なら区画そのものを描かない（設計 §7.1）。
@@ -348,7 +259,7 @@ export function ApprovalPending(props: ApprovalPendingProps) {
                 </Button>
               )}
               {props.canApprove && (
-                <Button variant="primary" onClick={() => setApproving(openState(row))}>
+                <Button variant="primary" onClick={() => setApprovingId(row.id)}>
                   {APPROVE_OPEN_LABEL}
                 </Button>
               )}
@@ -357,111 +268,25 @@ export function ApprovalPending(props: ApprovalPendingProps) {
         ))}
       </div>
 
-      {approving !== null && approvingRow !== undefined && (
-        <Modal
-          open
-          title={APPROVE_DIALOG_TITLE}
-          onClose={() => setApproving(null)}
-          footer={
-            approving.stale ? (
-              <Button variant="primary" onClick={reloadAfterStale}>
-                {APPROVE_RELOAD_LABEL}
-              </Button>
-            ) : (
-              <>
-                <Button variant="secondary" onClick={() => setApproving(null)}>
-                  キャンセル
-                </Button>
-                <Button
-                  variant="primary"
-                  disabled={approving.busy}
-                  onClick={() => void submitApproval()}
-                >
-                  {APPROVE_LABEL}
-                </Button>
-              </>
-            )
-          }
-        >
-          {approving.stale && (
-            <div style={{ marginBottom: 'var(--tf-space-3)' }}>
-              <Alert tone="danger">{APPROVE_STALE_MESSAGE}</Alert>
-            </div>
-          )}
-          {approving.errors.length > 0 && (
-            <div style={{ marginBottom: 'var(--tf-space-3)' }}>
-              <Alert tone="danger">{approving.errors.join(' ')}</Alert>
-            </div>
-          )}
+      <ApprovalDialog
+        key={approvingRow?.id ?? 'closed'}
+        row={approvingRow === undefined ? null : dialogRowOf(approvingRow)}
+        accountName={approvingRow?.accountName ?? ''}
+        open={approvingRow !== undefined}
+        onClose={() => setApprovingId(null)}
+        onApproved={approved}
+        onReload={reloadAfterStale}
+      />
 
-          <div style={{ display: 'grid', gap: 'var(--tf-space-3)' }}>
-            <label style={{ display: 'flex', gap: 'var(--tf-space-2)', alignItems: 'center' }}>
-              <input
-                type="radio"
-                name="approvalTiming"
-                value="now"
-                checked={approvingRow.manualOnly || approving.timing === 'now'}
-                onChange={() => setApproving({ ...approving, timing: 'now' })}
-              />
-              {APPROVE_NOW_LABEL}
-            </label>
-
-            {approvingRow.manualOnly ? (
-              <Alert tone="warning">{MANUAL_ONLY_APPROVAL_NOTE}</Alert>
-            ) : (
-              <div>
-                <label style={{ display: 'flex', gap: 'var(--tf-space-2)', alignItems: 'center' }}>
-                  <input
-                    type="radio"
-                    name="approvalTiming"
-                    value="scheduled"
-                    checked={approving.timing === 'scheduled'}
-                    onChange={() => setApproving({ ...approving, timing: 'scheduled' })}
-                  />
-                  {APPROVE_SCHEDULED_LABEL}
-                </label>
-                <div style={{ marginTop: 'var(--tf-space-2)', paddingLeft: '1.6em' }}>
-                  <Input
-                    type="datetime-local"
-                    name="approvalScheduledAt"
-                    aria-label={APPROVE_SCHEDULED_LABEL}
-                    value={approving.scheduledAtLocal}
-                    disabled={approving.timing === 'now'}
-                    onChange={(event) =>
-                      setApproving({ ...approving, scheduledAtLocal: event.target.value })
-                    }
-                    style={{ maxWidth: '100%' }}
-                  />
-                  {approvingRow.desiredScheduledAt !== null && (
-                    <span style={{ ...CAPTION_STYLE, marginLeft: 'var(--tf-space-2)' }}>
-                      （{APPROVAL_DESIRED_LABEL}）
-                    </span>
-                  )}
-                  {approving.scheduledAtErrors.map((message) => (
-                    <span key={message} style={FIELD_ERROR_STYLE}>
-                      {message}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {!approvingRow.manualOnly &&
-              approvingRow.desiredScheduledAt !== null &&
-              approvingRow.desiredPast && (
-                <Alert tone="warning">{APPROVE_DESIRED_PAST_WARNING}</Alert>
-              )}
-          </div>
-        </Modal>
-      )}
-
-      <ConfirmDialog
-        open={rejecting !== null}
-        title={REJECT_CONFIRM_TITLE}
-        message={REJECT_CONFIRM_MESSAGE}
-        confirmLabel={REJECT_LABEL}
-        onConfirm={() => void confirmReject()}
+      <RejectDialog
+        target={rejecting}
         onCancel={() => setRejecting(null)}
+        onRejected={(id) => {
+          hide(id);
+          setToast({ id, text: REJECTED_TOAST, tone: 'success' });
+          router.refresh();
+        }}
+        onFailed={(id, message) => setToast({ id, text: message, tone: 'danger' })}
       />
 
       <Toast message={toast} onDismiss={() => setToast(null)} />
