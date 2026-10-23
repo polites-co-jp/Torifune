@@ -144,6 +144,14 @@ export function remainingSkipsLabel(skipCount: number): string {
 }
 
 /**
+ * 再試行待ちの補足（設計 §5.8）。**再試行待ちは状態ではない。** `scheduled` のまま失敗理由が残っている行がそれで、
+ * 次は `attemptCount + 1` 回目になる。投稿タブと送信待ちタブの状態の列で使う。
+ */
+export function retryingNoteLabel(attemptCount: number): string {
+  return `（再試行待ち・${attemptCount + 1} 回目）`;
+}
+
+/**
  * 投稿フォームの配信の説明（設計 §7.4）。
  *
  * **前半は変えない。** 「実際の配信は、連携プラグインが行います」は E2E が見ている。
@@ -499,6 +507,26 @@ export const PENDING_AWAITING_MANUAL_NOTE = MANUAL_HANDOFF_REASON_LABEL.not_sche
 /** ダッシュボード・投稿一覧から送信待ちタブの絞り込みへ飛ぶ先（設計 §9.8）。 */
 export const PENDING_MANUAL_HREF = '/social?pendingStatus=manual_pending';
 export const PENDING_APPROVAL_HREF = '/social?pendingStatus=awaiting_approval';
+
+/** 自動配信の予約で配信に着手している（設計 §9.3.1）。 */
+export const PENDING_PUBLISHING_NOTE = '（配信中）';
+
+/** 承認待ちで手動投稿しかできない SNS（承認は常に即投稿。048 裁定 5。設計 §9.3.1）。 */
+export const PENDING_MANUAL_ONLY_NOTE = '承認は常に即投稿になります';
+
+/** 行の「投稿した」のダイアログ（035-social-publishing 設計 §7.1 の区画のまま。055 設計 §9.3.4）。 */
+export const MANUAL_DONE_DIALOG_TITLE = '投稿を記録しますか？';
+export const MANUAL_DONE_DIALOG_MESSAGE =
+  'SNS 側で投稿し終えたことを記録します。投稿の URL が分かれば、履歴から辿れます。';
+export const MANUAL_DONE_URL_LABEL = '投稿の URL（任意）';
+export const MANUAL_DONE_CONFIRM_LABEL = '記録する';
+export const MANUAL_DONE_TOAST = '投稿したことを記録しました。';
+
+/** 行の「取りやめ」の確認（035 設計 §7.1 の区画のまま）。 */
+export const MANUAL_CANCEL_CONFIRM_TITLE = '予約を取りやめますか？';
+export const MANUAL_CANCEL_CONFIRM_MESSAGE = '下書きに戻します。予約は解除されます。';
+export const MANUAL_CANCEL_CONFIRM_LABEL = '取りやめる';
+export const MANUAL_CANCELLED_TOAST = '予約を取りやめ、下書きに戻しました。';
 
 /** 行の「投稿した」の 409 の Toast（設計 §9.3.4）。他の失敗はサーバの文言。 */
 export const MANUAL_OUTCOME_STALE_MESSAGE =

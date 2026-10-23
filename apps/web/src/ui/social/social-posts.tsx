@@ -30,6 +30,7 @@ import {
   POST_SOURCE_SCREEN_LABEL,
   POST_STATUS_LABEL,
   remainingSkipsLabel,
+  retryingNoteLabel,
 } from '@/ui/social/labels';
 import { PostFilterBar } from '@/ui/social/post-filter-bar';
 import {
@@ -319,7 +320,7 @@ export function SocialPosts(props: SocialPostsProps) {
           残っている行がそれで、次は `attemptCount + 1` 回目になる。
         */}
         {post.status === 'scheduled' && post.failureReason !== null && (
-          <span style={CAPTION_STYLE}>{`（再試行待ち・${post.attemptCount + 1} 回目）`}</span>
+          <span style={CAPTION_STYLE}>{retryingNoteLabel(post.attemptCount)}</span>
         )}
         {/* 承認待ちは送信待ちタブで承認する（048 設計 §7.3、055-social-pending-tab 設計 §9.8）。 */}
         {post.status === 'awaiting_approval' && (
