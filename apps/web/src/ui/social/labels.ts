@@ -56,6 +56,8 @@ export const MANUAL_HANDOFF_REASON_LABEL = {
   unsupported: 'この SNS の Plugin が無効です',
   invalid_url: 'Plugin が返した URL を開けません',
   plugin_error: 'Plugin でエラーが起きました',
+  // 予約でない手動投稿（承認待ちなど）には投稿画面の URL を作らない（055-social-pending-tab 設計 §8.3）。
+  not_scheduled: '承認すると投稿画面を開けます',
 } as const satisfies Record<string, string>;
 
 // ---------------------------------------------------------------------------

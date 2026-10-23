@@ -71,6 +71,7 @@ import {
   type SocialPost,
 } from '@/domain/social/social';
 import {
+  canOpenManualHandoff,
   DEFAULT_PENDING_SORT,
   manualOutcomeEligibility,
   type ManualOutcome,
@@ -2078,7 +2079,10 @@ export const listManualPendingPosts = defineUseCase<ListManualPendingInput, Soci
  */
 export type ManualHandoffOutcome =
   | { readonly ok: true; readonly url: string; readonly note: string | null }
-  | { readonly ok: false; readonly reason: 'unsupported' | 'invalid_url' | 'plugin_error' };
+  | {
+      readonly ok: false;
+      readonly reason: 'unsupported' | 'invalid_url' | 'plugin_error' | 'not_scheduled';
+    };
 
 export interface ManualHandoffInput {
   readonly id: string;
@@ -2137,6 +2141,12 @@ export const resolveManualHandoff = defineUseCase<ManualHandoffInput, ManualHand
     if (publisher === null || manual === undefined) {
       // Plugin を無効にした後の画面がこれ（設計 §7.1 の「この SNS の Plugin が無効です」）。
       return { ok: false, reason: 'unsupported' };
+    }
+
+    // 予約でない手動投稿（承認待ち・下書き・配信済み・失敗）には `manual()` を呼ばない（055-social-pending-tab 設計 §5.5・
+    // §8.3。ユーザー裁定 4）。承認を経ずに SNS へ出す手がかり（投稿画面の URL）を作らない。締切の検査より前に見る。
+    if (!canOpenManualHandoff(post)) {
+      return { ok: false, reason: 'not_scheduled' };
     }
 
     // 1 回の描画の絶対の締切（壁時計。設計 §6.6。裁定 #12-c）。**過ぎていれば呼ばない。**
