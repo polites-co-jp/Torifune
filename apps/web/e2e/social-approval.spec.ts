@@ -91,9 +91,14 @@ interface Post {
   readonly body: string;
 }
 
-/** 外部アプリとして承認待ちの投稿を登録する（`publishTiming: 'after_approval'`）。 */
+/**
+ * 外部アプリとして承認待ちの投稿を登録する（`publishTiming: 'after_approval'`）。
+ *
+ * **本文に「承認待ち」の字を入れない。** 行の状態を `toContainText('承認待ち')` で見るので、
+ * 本文が含むと状態の表示に関係なく当たる（承認した後も送信待ちに残る行が落ちる。実装プラン §8 の 77）。
+ */
 async function requestApproval(overrides: Record<string, unknown> = {}): Promise<Post> {
-  const body = String(overrides['body'] ?? `E2E承認待ち${unique()}`);
+  const body = String(overrides['body'] ?? `E2E承認の投稿${unique()}`);
   const response = await app().post('/api/v1/social/posts', {
     data: {
       socialAccountId: accountId,
@@ -286,7 +291,10 @@ test.describe('#72 承認して配信に回す', () => {
     await dialog.getByLabel(/即投稿/).check();
     await dialog.getByRole('button', { name: '承認する', exact: true }).click();
 
+    // 承認した行は送信待ちに残り、状態が「予約済み（承認済み）」になる（055 設計 §9.3.4・#65）。
     await expect(pendingRow(page, post.body)).not.toContainText('承認待ち');
+    await expect(pendingRow(page, post.body)).toContainText('予約済み');
+    await expect(pendingRow(page, post.body)).toContainText('（承認済み）');
     expect(await fetchStatus(request, post.id)).toBe('scheduled');
     await page.goto('/social?tab=posts');
     await expect(postListRow(page, post.body)).toContainText('予約済み');

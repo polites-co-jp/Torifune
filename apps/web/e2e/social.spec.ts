@@ -248,8 +248,12 @@ test('SNS画面に投稿一覧が出る', async ({ page, request }) => {
 
   await expect(page.getByRole('heading', { name: '投稿' })).toBeVisible();
   await expect(page.getByText(post.body)).toBeVisible();
-  // アカウントIDではなく人が読める名前で出す。
-  await expect(page.getByText(account.displayName, { exact: false }).first()).toBeVisible();
+  // アカウントIDではなく人が読める名前で出す。投稿タブにアカウント一覧は無い（055 設計 §5.1）ので、
+  // 絞り込みの帯の `<option>` に当たらないよう、投稿一覧の表の、その投稿の行の中で引く。
+  const row = page.getByRole('table').getByRole('row').filter({ hasText: post.body });
+  await expect(row).toHaveCount(1);
+  await expect(row).toContainText(account.displayName);
+  await expect(row).not.toContainText(account.id);
 });
 
 test('画面から投稿を作成できる', async ({ page, request }) => {

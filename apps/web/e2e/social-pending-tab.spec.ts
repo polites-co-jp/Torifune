@@ -51,6 +51,8 @@ const origin = 'http://127.0.0.1:3000';
 const PLUGIN_ID = 'example-plugin';
 const ADMIN_STORAGE = './e2e/.auth/admin.json';
 const NARROW = { width: 375, height: 720 };
+/** API トークンを発行する要求が名乗る送信元（`beforeAll` の注記）。 */
+const TOKEN_ISSUE_IP = '198.51.100.55';
 
 /* 設計 §9.3.4・§9.5・§9.9 の文言（`ui/social/labels.ts`） */
 const TABS_LABEL = 'SNSのタブ';
@@ -393,9 +395,19 @@ test.beforeAll(async ({ playwright }) => {
     accountId = ((await account.json()) as { data: { id: string } }).data.id;
     createdAccountIds.push(accountId);
 
-    const issued = await postJson(request, '/api/v1/api-tokens', {
-      name: `e2e pending ${unique()}`,
-      scopes: ['social.read', 'social.write'],
+    // **トークンの発行だけ、この spec の送信元の IP を名乗る。** 発行の Rate Limit（1 分 10 回）の
+    // キーは `operationId:IP`（`clientIpOf` は `X-Forwarded-For` の先頭を取る）で、E2E の全ファイルが
+    // 1 つのバケツを共有する。全件では直前の spec（`site-scoped-social`・`social-approval`・
+    // `social-bulk-actions`）の発行と同じ 1 分に入り 429 になった（実装プラン §8 の 77）。
+    // Rate Limit の実装は変えず、文書用のアドレス（RFC 5737）で別のバケツを使う。
+    const tokenCsrf = await csrf(request);
+    const issued = await request.post('/api/v1/api-tokens', {
+      headers: { ...headers(tokenCsrf), 'X-Forwarded-For': TOKEN_ISSUE_IP },
+      data: {
+        name: `e2e pending ${unique()}`,
+        scopes: ['social.read', 'social.write'],
+        csrfToken: tokenCsrf,
+      },
     });
     expect(issued.status(), await issued.text()).toBe(201);
     const token = (await issued.json()) as { data: { token: string; id: string } };
