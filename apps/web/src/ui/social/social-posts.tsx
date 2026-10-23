@@ -91,7 +91,6 @@ import {
   POST_SOURCE_REVOKED_SUFFIX,
   POST_SOURCE_SCREEN_LABEL,
   POST_STATUS_LABEL,
-  POSTS_ANCHOR,
   remainingSkipsLabel,
   SELECT_PAGE_LABEL,
   SELECT_ROW_LABEL,
@@ -99,6 +98,7 @@ import {
   SELECTED_PAGE_COUNT,
 } from '@/ui/social/labels';
 import {
+  DEFAULT_POST_PER_PAGE,
   openPostListPage,
   POST_PER_PAGE_OPTIONS,
   postListHref,
@@ -199,6 +199,21 @@ interface BulkResponse {
   readonly bulkId: string;
   readonly results: readonly BulkResultItem[];
 }
+
+/**
+ * 見出し「投稿」の `id`（054 設計 §9.2 のアンカー）。リンクの組み立てには使わないが、古いブックマーク
+ * （`/social?tab=posts#posts`）も見出しへ着くよう残す（055-social-pending-tab 設計 §9.8）。
+ */
+const POSTS_HEADING_ID = 'posts';
+
+/** 「条件をクリア」の行き先の条件（条件の無い投稿タブ。055 設計 §9.8）。 */
+const CLEARED_FILTERS: PostListFilters = {
+  status: null,
+  accountId: null,
+  source: null,
+  perPage: DEFAULT_POST_PER_PAGE,
+  page: 1,
+};
 
 function formatDateTime(value: string | null): string {
   if (value === null) {
@@ -683,7 +698,8 @@ export function SocialPosts(props: SocialPostsProps) {
 
   const unreadyCount = posts.filter((post) => unreadyOf(post) !== null).length;
 
-  const clearLink = <a href={`/social#${POSTS_ANCHOR}`}>{POST_FILTER_CLEAR}</a>;
+  // 条件の無い投稿タブ（`postListHref` の既定値。055-social-pending-tab 設計 §9.8）。
+  const clearLink = <a href={postListHref(CLEARED_FILTERS)}>{POST_FILTER_CLEAR}</a>;
 
   const sourceValue = filters.source === null ? '' : postSourceParamOf(filters.source);
   const sourceOptions = props.sourceOptions ?? [{ value: '', label: POST_FILTER_ALL }];
@@ -710,7 +726,7 @@ export function SocialPosts(props: SocialPostsProps) {
         }}
       >
         {/* 絞り込み・ページ送りで読み込み直した後に一覧へ戻る先（054 設計 §9.2）。 */}
-        <h2 id={POSTS_ANCHOR} style={{ fontSize: '1.05rem', margin: 0 }}>
+        <h2 id={POSTS_HEADING_ID} style={{ fontSize: '1.05rem', margin: 0 }}>
           投稿
         </h2>
         {canWrite && (
