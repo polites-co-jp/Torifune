@@ -336,6 +336,14 @@ describe('#36 #76 labels.ts の定数（設計 §9.9）', () => {
     ).toBe('承認すると投稿画面を開けます');
   });
 
+  it('#83 MANUAL_HANDOFF_REASON_LABEL.changed が「投稿が変わりました。読み込み直してください」（設計 §8.3。検証 1 回目 S1）', () => {
+    expect(
+      (labelValue('MANUAL_HANDOFF_REASON_LABEL') as Record<string, unknown> | undefined)?.[
+        'changed'
+      ],
+    ).toBe('投稿が変わりました。読み込み直してください');
+  });
+
   it('#36 判別力：キーが 1 つ欠けた・余る写しは一致しない', () => {
     const missing = Object.fromEntries(PENDING_KINDS.slice(1).map((key) => [key, 'x']));
     const extra = Object.fromEntries([...PENDING_SORTS, 'created'].map((key) => [key, 'x']));

@@ -699,3 +699,60 @@ describe('#13 区画の外の投稿は items にも counts にも入らない', 
     expect(page.counts).toEqual({ manual_pending: 0, awaiting_approval: 0, scheduled: 0 });
   });
 });
+
+// ---------------------------------------------------------------------------
+// #8 承認待ちの並びの鍵（作成順と希望日時の順が逆の組。別のアカウントで足し、終わったら消す。G12・検証 1 回目 spec 中-2）
+// ---------------------------------------------------------------------------
+
+describe('#8 作成順と希望日時の順が逆の承認待ちの組（設計 §5.3 (A)・§13.2 の 8）', () => {
+  let accOrder = '';
+  const added: string[] = [];
+
+  beforeAll(async () => {
+    accOrder = await makeAccount(BOTH_PROVIDER, '並びの鍵のアカウント');
+    // 先に作った B1 ほど希望日時が遅い。created_at は SQL で固定して、作成の順を確かにする。
+    const b1 = await make('B1', {
+      accountId: accOrder,
+      deliveryMode: 'manual',
+      scheduledAt: at(3 * HOUR),
+      kind: 'awaiting',
+    });
+    const b2 = await make('B2', {
+      accountId: accOrder,
+      deliveryMode: 'auto',
+      scheduledAt: at(10 * MINUTE),
+      kind: 'awaiting',
+    });
+    await rewrite(b1, sql`created_at = ${at(-2 * HOUR)}`);
+    await rewrite(b2, sql`created_at = ${at(-HOUR)}`);
+    added.push(b1, b2);
+  });
+
+  afterAll(async () => {
+    await deletePosts(added);
+  });
+
+  it("#8 kind: 'awaiting_approval'・sort: 'action' → 依頼の古い順（created_at）の B1, B2", async () => {
+    const page = await listSocialPendingPosts(
+      admin,
+      input({ kind: 'awaiting_approval', sort: 'action', socialAccountId: accOrder }),
+    );
+
+    expect(namesOf(page)).toEqual(['B1', 'B2']);
+  });
+
+  it('#8 kind: null・sort 省略（手が要るもの順）でも承認待ちは B1, B2', async () => {
+    const page = await listSocialPendingPosts(admin, input({ socialAccountId: accOrder }));
+
+    expect(namesOf(page)).toEqual(['B1', 'B2']);
+  });
+
+  it("#8 対照：sort: 'time' は予定の時刻順の B2, B1", async () => {
+    const page = await listSocialPendingPosts(
+      admin,
+      input({ kind: 'awaiting_approval', sort: 'time', socialAccountId: accOrder }),
+    );
+
+    expect(namesOf(page)).toEqual(['B2', 'B1']);
+  });
+});

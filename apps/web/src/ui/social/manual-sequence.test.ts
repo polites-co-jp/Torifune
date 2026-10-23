@@ -1,7 +1,18 @@
 import { createElement, type ComponentType, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  buttonsLabelled,
+  change,
+  click,
+  findAll,
+  flush,
+  hookHarness,
+  textOfNodes,
+  type HostNode,
+} from '@/test-support/hook-harness';
 import type { ButtonProps } from '@/ui/components';
+import { MANUAL_SEQUENCE_STALE_MESSAGE } from './labels';
 
 /**
  * 選んだ手動投稿を順に投稿のダイアログ（055-social-pending-tab 設計 §9.5.2、受け入れ条件 #55〜#57）。
@@ -22,6 +33,13 @@ import type { ButtonProps } from '@/ui/components';
  * 閉じたときの呼び返しは押さないと呼ばれないので、名前に依らない。
  * 部品はまだ無いので、指定子を `string` の定数に置いた動的 import で読み、props の型をテストに写して `as` で渡す。
  */
+
+// 押した後の状態を見るために、描画器（`test-support/hook-harness.ts`）が動いている間だけフックを差し替える
+// （G12。実装プラン §8 の 78）。それ以外の描画（`renderToStaticMarkup`）は本物のフックのまま。
+vi.mock('react', async (importOriginal) => {
+  const { withHookHarness } = await import('@/test-support/hook-harness');
+  return withHookHarness(await importOriginal());
+});
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }),
@@ -455,5 +473,203 @@ describe('#57 ManualSequence（すべて記録した後）', () => {
     expect(textOf(await render({ initialIndex: 3, initialRecords: withSkip }))).toContain(
       'すべての手動投稿を記録しました（投稿した 1・投稿しなかった 1・飛ばした 1）。',
     );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* G12 押した後の状態（検証 1 回目 spec 低-1・軽微-1。変異 M21・M22・M25・M26）            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 描画の後の状態（409 の `Alert`・「飛ばして次へ」の記録・入れた URL・保存中の `disabled`）は SSR では見られないので、
+ * 描画器（`test-support/hook-harness.ts`）で部品を関数として呼び、押して描き直す（実装プラン §8 の 78）。
+ * 見るのは外への作用（`apiRequest`・`onClose` に渡された記録）と描かれた文字・`disabled` だけ。
+ */
+describe('G12 順に投稿の押した後の状態（設計 §9.5.2）', () => {
+  let ManualSequence: ComponentType<SequenceProps>;
+  let onClose: ReturnType<typeof vi.fn<() => void>>;
+
+  beforeEach(async () => {
+    hookHarness.reset();
+    ManualSequence = await loadComponent();
+    onClose = vi.fn<() => void>();
+  });
+
+  function draw(overrides: Partial<SequenceProps> = {}): readonly HostNode[] {
+    return hookHarness.render(
+      createElement(ManualSequence, {
+        plan: PLAN,
+        accountNames: { [ACCOUNT_ID]: 'X（@torifune）' },
+        onClose,
+        ...overrides,
+      }),
+    );
+  }
+
+  function only(nodes: readonly HostNode[], label: string): HostNode {
+    const found = buttonsLabelled(nodes, label);
+    expect(found, `「${label}」のボタン`).toHaveLength(1);
+    return found[0] as HostNode;
+  }
+
+  function urlInput(nodes: readonly HostNode[]): HostNode | undefined {
+    return findAll(
+      nodes,
+      (node) => node.type === 'input' && node.props['name'] === 'externalUrl',
+    )[0];
+  }
+
+  function alertText(nodes: readonly HostNode[]): string {
+    return findAll(nodes, (node) => node.props['role'] === 'alert')
+      .map((node) => node.text)
+      .join('');
+  }
+
+  const STALE = {
+    ok: false,
+    error: { code: 'CONFLICT', message: 'サーバの 409 の文言です。', status: 409 },
+  } as const;
+
+  /** 解決を手で決める Promise（保存中の状態を見る）。 */
+  function deferred(): { promise: Promise<unknown>; resolve: (value: unknown) => void } {
+    let resolve: (value: unknown) => void = () => undefined;
+    const promise = new Promise<unknown>((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  }
+
+  it('G12 軽微-1（M26）：URL を入れて「投稿した」→ manual-outcome に externalUrl を送る', async () => {
+    const first = TARGETS[0] as PendingRow;
+
+    change(urlInput(draw()), 'https://x.com/i/status/1');
+    click(only(draw(), '投稿した'));
+    await flush();
+
+    expect(capture.apiRequest).toHaveBeenCalledTimes(1);
+    expect(capture.apiRequest).toHaveBeenCalledWith(
+      `/api/v1/social/posts/${first.id}/manual-outcome`,
+      {
+        method: 'POST',
+        body: {
+          outcome: 'posted',
+          expectedUpdatedAt: first.updatedAt,
+          externalUrl: 'https://x.com/i/status/1',
+        },
+      },
+    );
+  });
+
+  it('G12 軽微-1：成功した「投稿した」の後は次の件（2 / 3 件目）を表示し、URL の欄は空に戻る', async () => {
+    change(urlInput(draw()), 'https://x.com/i/status/1');
+    click(only(draw(), '投稿した'));
+    await flush();
+    const after = draw();
+
+    expect(textOfNodes(after)).toContain('手動投稿（2 / 3 件目）');
+    expect(urlInput(after)?.props['value']).toBe('');
+  });
+
+  it('G12 低-1（M22）：「投稿した」が 409 → Alert は MANUAL_SEQUENCE_STALE_MESSAGE（サーバの文言ではない）', async () => {
+    capture.apiRequest.mockResolvedValue(STALE);
+
+    click(only(draw(), '投稿した'));
+    await flush();
+    const text = alertText(draw());
+
+    expect(text).toBe(MANUAL_SEQUENCE_STALE_MESSAGE);
+    expect(text).not.toContain('サーバの 409 の文言です。');
+  });
+
+  it('G12 低-1 対照：409 以外の失敗（422）はサーバの文言を出す', async () => {
+    capture.apiRequest.mockResolvedValue({
+      ok: false,
+      error: { code: 'VALIDATION_ERROR', message: '入力の内容を確かめてください。', status: 422 },
+    });
+
+    click(only(draw(), '投稿した'));
+    await flush();
+
+    expect(alertText(draw())).toBe('入力の内容を確かめてください。');
+  });
+
+  it('G12 低-1：「失敗にする」が 409 でも MANUAL_SEQUENCE_STALE_MESSAGE', async () => {
+    capture.apiRequest.mockResolvedValue(STALE);
+
+    click(only(draw({ initialConfirming: true }), '失敗にする'));
+    await flush();
+
+    expect(alertText(draw({ initialConfirming: true }))).toBe(MANUAL_SEQUENCE_STALE_MESSAGE);
+  });
+
+  it('G12 軽微-1（M21）：409 の後の「飛ばして次へ」は skipped と記録し、posted と数えない', async () => {
+    const first = TARGETS[0] as PendingRow;
+    capture.apiRequest.mockResolvedValue(STALE);
+
+    click(only(draw(), '投稿した'));
+    await flush();
+    click(only(draw(), '飛ばして次へ'));
+    const next = draw();
+
+    expect(textOfNodes(next)).toContain('手動投稿（2 / 3 件目）');
+    expect(textOfNodes(next)).toContain('記録済み 1 件（飛ばした 1）');
+    expect(textOfNodes(next)).not.toContain('投稿した 1');
+
+    click(only(next, 'やめる'));
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledWith([{ id: first.id, outcome: 'skipped' }]);
+  });
+
+  it('G12 軽微-1（M21）：最後の件を飛ばした終わりの表示は「飛ばした 1」で「投稿した 0」', async () => {
+    capture.apiRequest.mockResolvedValue(STALE);
+    const last: Partial<SequenceProps> = {
+      plan: { targets: [TARGETS[0] as PendingRow], excluded: [] },
+    };
+
+    click(only(draw(last), '投稿した'));
+    await flush();
+    click(only(draw(last), '飛ばして次へ'));
+
+    expect(textOfNodes(draw(last))).toContain(
+      'すべての手動投稿を記録しました（投稿した 0・投稿しなかった 0・飛ばした 1）。',
+    );
+  });
+
+  it('G12 軽微-1（M25）：保存中は「投稿した」「投稿しなかった」「やめる」が disabled（押す前は disabled でない）', async () => {
+    const pending = deferred();
+    capture.apiRequest.mockReturnValue(pending.promise);
+    const before = draw();
+
+    for (const label of ['投稿した', '投稿しなかった', 'やめる']) {
+      expect(only(before, label).props['disabled'], `押す前の「${label}」`).not.toBe(true);
+    }
+
+    click(only(before, '投稿した'));
+    const saving = draw();
+
+    for (const label of ['投稿した', '投稿しなかった', 'やめる']) {
+      expect(only(saving, label).props['disabled'], `保存中の「${label}」`).toBe(true);
+    }
+
+    pending.resolve({ ok: true, data: {} });
+    await flush();
+  });
+
+  it('G12 軽微-1（M25）：確認の「失敗にする」で保存中は「戻る」「失敗にする」が disabled', async () => {
+    const pending = deferred();
+    capture.apiRequest.mockReturnValue(pending.promise);
+    const before = draw({ initialConfirming: true });
+
+    expect(only(before, '失敗にする').props['disabled']).not.toBe(true);
+
+    click(only(before, '失敗にする'));
+    const saving = draw({ initialConfirming: true });
+
+    expect(only(saving, '戻る').props['disabled']).toBe(true);
+    expect(only(saving, '失敗にする').props['disabled']).toBe(true);
+
+    pending.resolve({ ok: true, data: {} });
+    await flush();
   });
 });

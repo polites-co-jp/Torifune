@@ -135,3 +135,39 @@ describe('#38 /social/history は配信履歴タブへの転送だけ', () => {
     expect(calls(`const session = await requirePageSession();`, 'requirePageSession')).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #84 行ごとの handoff の解決を settleManualHandoff で包む（設計 §8.3・§9.12・§13.12。検証 1 回目 security S1）
+// ---------------------------------------------------------------------------
+
+/** `resolveManualHandoff(` の呼び出しがすべて `settleManualHandoff(` の直下にあるか。 */
+function everyHandoffIsSettled(source: string): boolean {
+  const all = source.match(/\bresolveManualHandoff\s*\(/g) ?? [];
+  const settled = source.match(/\bsettleManualHandoff\s*\(\s*resolveManualHandoff\s*\(/g) ?? [];
+  return all.length > 0 && all.length === settled.length;
+}
+
+describe('#84 app/social/page.tsx は行ごとの resolveManualHandoff を settleManualHandoff で包む', () => {
+  it('#84 settleManualHandoff を @/application/social/manual-handoff-settle から値として import する', () => {
+    const source = readSource('app/social/page.tsx');
+
+    expect(
+      importsValueFrom(source, 'settleManualHandoff', '@/application/social/manual-handoff-settle'),
+    ).toBe(true);
+  });
+
+  it('#84 resolveManualHandoff( の呼び出しはすべて settleManualHandoff( で包まれている', () => {
+    expect(everyHandoffIsSettled(readSource('app/social/page.tsx'))).toBe(true);
+  });
+
+  it('#84 判別力：包まない呼び出しが 1 つ残る写し・呼び出しの無い写しは通らない', () => {
+    const wrapped =
+      'settleManualHandoff(resolveManualHandoff(context, { id, deadline: handoffDeadline }))';
+    const bare = 'resolveManualHandoff(context, { id, deadline: handoffDeadline })';
+
+    expect(everyHandoffIsSettled(wrapped)).toBe(true);
+    expect(everyHandoffIsSettled(`${wrapped}\n${bare}`)).toBe(false);
+    expect(everyHandoffIsSettled(bare)).toBe(false);
+    expect(everyHandoffIsSettled('')).toBe(false);
+  });
+});

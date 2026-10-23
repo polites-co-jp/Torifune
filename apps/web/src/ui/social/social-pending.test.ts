@@ -1,7 +1,18 @@
 import { createElement, type ComponentType, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import Link from 'next/link';
 import type { BulkEffect, BulkFailureReason } from '@/domain/social/bulk';
+import {
+  buttonsLabelled,
+  change,
+  click,
+  findAll,
+  flush,
+  hookHarness,
+  textOfNodes,
+  type HostNode,
+} from '@/test-support/hook-harness';
 import type { ButtonProps, ConfirmDialogProps, PaginationProps } from '@/ui/components';
 import * as bulkPlan from './bulk-plan';
 import {
@@ -39,6 +50,13 @@ import {
  * props を捕まえ、`onClick` / `onConfirm` / `onChange` を直接呼ぶ（`manual-pending.test.ts` の流儀）。
  * 描画の後の `setState` は何もしないので、見られるのは外への作用（`open`・`apiRequest`・`window.location.assign`）だけ。
  */
+
+// 押した後の状態（行の「投稿した」のダイアログ・Toast）を見るために、描画器（`test-support/hook-harness.ts`）が
+// 動いている間だけフックを差し替える（G12。実装プラン §8 の 78）。`renderToStaticMarkup` は本物のフックのまま。
+vi.mock('react', async (importOriginal) => {
+  const { withHookHarness } = await import('@/test-support/hook-harness');
+  return withHookHarness(await importOriginal());
+});
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }),
@@ -1604,5 +1622,186 @@ describe('#78 送信待ちの行の「削除」', () => {
       expect([...state.hiddenIds]).toEqual(['01900000-0000-7000-8000-000000005599']);
       expect([...state.selectedIds].sort()).toEqual([AUTO_SCHEDULED.id, AWAITING_AUTO.id].sort());
     });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* G12 行の「投稿した」の経路（検証 1 回目 spec 中-1。変異 M1・M2）                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 行の「投稿した」は確認のダイアログ（URL は任意）を開き、「記録する」で
+ * `POST /social/posts/{id}/manual-outcome { outcome: 'posted', expectedUpdatedAt: row.updatedAt, externalUrl? }` を送る
+ * （設計 §9.3.4・冒頭の裁定の記録「行の 1 件の『投稿した』もこれに替える」）。409 の Toast は部品の文言
+ * `MANUAL_OUTCOME_STALE_MESSAGE`、他の失敗はサーバの文言（§9.9）。
+ *
+ * ダイアログを開くのも Toast も描画の後の状態なので、描画器（`test-support/hook-harness.ts`）で部品を関数として呼び、
+ * 押して描き直す（実装プラン §8 の 78）。`next/link` は辿らない（葉）。
+ */
+describe('G12 中-1 行の「投稿した」は manual-outcome で記録する（設計 §9.3.4）', () => {
+  let SocialPending: ComponentType<PendingProps>;
+  const DONE_CONFIRM_LABEL = '記録する';
+  const STALE_TOAST = '内容が変わっています。読み込み直してから操作してください。';
+
+  beforeEach(async () => {
+    hookHarness.reset();
+    hookHarness.leaves.add(Link);
+    SocialPending = await loadComponent();
+  });
+
+  function draw(overrides: Partial<PendingProps> = {}): readonly HostNode[] {
+    return hookHarness.render(
+      createElement(SocialPending, { ...BASE, rows: [MANUAL_PENDING], total: 1, ...overrides }),
+    );
+  }
+
+  function only(nodes: readonly HostNode[], label: string): HostNode {
+    const found = buttonsLabelled(nodes, label);
+    expect(found, `「${label}」のボタン`).toHaveLength(1);
+    return found[0] as HostNode;
+  }
+
+  function toastText(nodes: readonly HostNode[]): string {
+    return findAll(nodes, (node) => node.props['aria-live'] === 'polite')
+      .map((node) => node.text)
+      .join('');
+  }
+
+  /** 行の「投稿した」→ ダイアログを描き直して返す。 */
+  function openDone(): readonly HostNode[] {
+    click(only(draw(), DONE_LABEL));
+    return draw();
+  }
+
+  it('G12 中-1：行の「投稿した」で確認のダイアログ（「記録する」）が開く（押す前は無い）', () => {
+    expect(buttonsLabelled(draw(), DONE_CONFIRM_LABEL)).toHaveLength(0);
+    expect(buttonsLabelled(openDone(), DONE_CONFIRM_LABEL)).toHaveLength(1);
+  });
+
+  it('G12 中-1（M1）：「記録する」→ manual-outcome に { outcome: posted, expectedUpdatedAt } を 1 回送る', async () => {
+    click(only(openDone(), DONE_CONFIRM_LABEL));
+    await flush();
+
+    expect(capture.apiRequest).toHaveBeenCalledTimes(1);
+    expect(capture.apiRequest).toHaveBeenCalledWith(
+      `/api/v1/social/posts/${MANUAL_PENDING.id}/manual-outcome`,
+      {
+        method: 'POST',
+        body: { outcome: 'posted', expectedUpdatedAt: MANUAL_PENDING.updatedAt },
+      },
+    );
+  });
+
+  it('G12 中-1（M1）：PATCH /social/posts/{id} を送らない', async () => {
+    click(only(openDone(), DONE_CONFIRM_LABEL));
+    await flush();
+
+    for (const call of capture.apiRequest.mock.calls) {
+      expect((call[1] as { method?: string } | undefined)?.method).not.toBe('PATCH');
+      expect(call[0]).not.toBe(`/api/v1/social/posts/${MANUAL_PENDING.id}`);
+    }
+  });
+
+  it('G12 中-1：URL を入れると externalUrl も送る', async () => {
+    const dialog = openDone();
+    const input = findAll(
+      dialog,
+      (node) => node.type === 'input' && node.props['name'] === 'externalUrl',
+    )[0];
+    change(input, 'https://x.com/i/status/55');
+    click(only(draw(), DONE_CONFIRM_LABEL));
+    await flush();
+
+    expect(capture.apiRequest).toHaveBeenCalledWith(
+      `/api/v1/social/posts/${MANUAL_PENDING.id}/manual-outcome`,
+      {
+        method: 'POST',
+        body: {
+          outcome: 'posted',
+          expectedUpdatedAt: MANUAL_PENDING.updatedAt,
+          externalUrl: 'https://x.com/i/status/55',
+        },
+      },
+    );
+  });
+
+  it('G12 中-1（M2）：409 → Toast は MANUAL_OUTCOME_STALE_MESSAGE（サーバの文言ではない）', async () => {
+    capture.apiRequest.mockResolvedValue({
+      ok: false,
+      error: { code: 'CONFLICT', message: 'サーバの 409 の文言です。', status: 409 },
+    });
+
+    click(only(openDone(), DONE_CONFIRM_LABEL));
+    await flush();
+    const text = toastText(draw());
+
+    expect(text).toBe(STALE_TOAST);
+    expect(text).not.toContain('サーバの 409 の文言です。');
+  });
+
+  it('G12 中-1 対照：409 以外の失敗（422）はサーバの文言の Toast', async () => {
+    capture.apiRequest.mockResolvedValue({
+      ok: false,
+      error: { code: 'VALIDATION_ERROR', message: '手動投稿の予約ではありません。', status: 422 },
+    });
+
+    click(only(openDone(), DONE_CONFIRM_LABEL));
+    await flush();
+
+    expect(toastText(draw())).toBe('手動投稿の予約ではありません。');
+  });
+
+  it('G12 中-1 対照：成功 → 行を隠し、成功の Toast', async () => {
+    click(only(openDone(), DONE_CONFIRM_LABEL));
+    await flush();
+    const after = draw();
+
+    expect(textOfNodes(after)).not.toContain(MANUAL_PENDING.body);
+    expect(toastText(after)).toBe('投稿したことを記録しました。');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* #83 描画の途中で行が変わった手動の予約（検証 1 回目 security S1。設計 §8.3・§9.3.4）        */
+/* -------------------------------------------------------------------------- */
+
+describe('#83 handoff が changed の行（設計 §8.3・§9.3.4）', () => {
+  const CHANGED_LABEL = '投稿が変わりました。読み込み直してください';
+  const CHANGED = row({
+    body: '描画の途中で自動へ変わった手動の予約',
+    deliveryMode: 'manual',
+    kind: 'manual_pending',
+    manualPending: true,
+    scheduledAt: '2026-10-24T00:00:00.000Z',
+    scheduledFuture: false,
+    elapsedText: '5 分',
+    // `changed` は G12 で足す理由（設計 §8.3）。テストの写しの型には無いので `as` で渡す。
+    handoff: { ok: false, reason: 'changed' } as unknown as ManualHandoffOutcome,
+  });
+
+  it('#83 changed の行：「投稿画面を開く」が disabled', async () => {
+    const html = await render({ rows: [CHANGED, ...ROWS], total: ROWS.length + 1 });
+    const open = buttons(rowOf(html, CHANGED.body)).find((button) => button.text === OPEN_LABEL);
+
+    expect(open, OPEN_LABEL).toBeDefined();
+    expect(isDisabled(open?.openTag ?? '')).toBe(true);
+  });
+
+  it('#83 changed の行：理由「投稿が変わりました。読み込み直してください」を出す', async () => {
+    const html = await render({ rows: [CHANGED, ...ROWS], total: ROWS.length + 1 });
+
+    expect(textOf(rowOf(html, CHANGED.body))).toContain(CHANGED_LABEL);
+  });
+
+  it('#83 同じ表の他の行（開ける手動の予約・承認待ち・自動の予約）は今までどおり描かれる', async () => {
+    const html = await render({ rows: [CHANGED, ...ROWS], total: ROWS.length + 1 });
+
+    for (const other of ROWS) {
+      expect(textOf(rowOf(html, other.body)), other.body).toContain(other.body);
+    }
+    const open = buttons(rowOf(html, MANUAL_PENDING.body)).find(
+      (button) => button.text === OPEN_LABEL,
+    );
+    expect(isDisabled(open?.openTag ?? '')).toBe(false);
   });
 });
