@@ -44,6 +44,10 @@ const SCREENS: readonly { readonly file: string; readonly key: string }[] = [
   { file: 'social/history/page.tsx', key: 'page' },
   { file: 'social/page.tsx', key: 'postPage' },
   { file: 'analytics/page.tsx', key: 'page' },
+  // 055 で `/social` がタブに分かれ、送信待ち・配信履歴のページも同じ画面で読む
+  // （055-social-pending-tab 設計 §9.2・§9.6・§14、受け入れ条件 #38）。
+  { file: 'social/page.tsx', key: 'pendingPage' },
+  { file: 'social/page.tsx', key: 'historyPage' },
 ];
 
 describe('#17 6 画面は page を normalizePage で読む', () => {
