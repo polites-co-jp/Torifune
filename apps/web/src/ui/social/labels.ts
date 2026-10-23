@@ -570,6 +570,9 @@ export function MANUAL_SEQUENCE_TOAST(total: number, posted: number, notPosted: 
   return `${total} 件を記録しました（${MANUAL_SEQUENCE_POSTED} ${posted}・${MANUAL_SEQUENCE_NOT_POSTED} ${notPosted}）。`;
 }
 
+/** ダイアログの今の件の予約日時に添える（設計 §9.5.2）。 */
+export const MANUAL_SEQUENCE_SCHEDULED_LABEL = '予約';
+
 /** 記録の内訳の「飛ばした」（設計 §9.5.2）。 */
 export const MANUAL_SEQUENCE_SKIPPED = '飛ばした';
 
