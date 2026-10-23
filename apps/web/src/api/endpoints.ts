@@ -46,6 +46,7 @@ import '@/app/api/v1/social/accounts/[id]/route';
 import '@/app/api/v1/social/posts/route';
 import '@/app/api/v1/social/posts/[id]/route';
 import '@/app/api/v1/social/posts/[id]/approve/route';
+import '@/app/api/v1/social/posts/[id]/manual-outcome/route';
 import '@/app/api/v1/social/posts/bulk/approve/route';
 import '@/app/api/v1/social/posts/bulk/delete/route';
 import '@/app/api/v1/social/posts/bulk/publish-now/route';
