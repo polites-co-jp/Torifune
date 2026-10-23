@@ -25,6 +25,7 @@ import {
   MANUAL_PENDING_LABEL,
   MANUAL_PENDING_OPEN_LABEL,
 } from '@/ui/social/labels';
+import { openManualWindow, type OpenManualWindow } from '@/ui/social/manual-handoff';
 
 /**
  * 「手動投稿待ち」区画（035-social-publishing 設計 §7.1 / §7.2）。
@@ -40,19 +41,6 @@ import {
  * 操作ボタンの出し分けは**表示制御であって認可ではない**。認可は UseCase が行う
  * （`CLAUDE.md`「認可を書く場所」、設計 §8）。
  */
-
-/** 窓の名前を固定する。同じ名前を使い回すので、2 件目を開いても窓が増えない（設計 §7.2）。 */
-const MANUAL_WINDOW_NAME = 'torifune-manual-post';
-
-/**
- * 子ウィンドウの開き方（設計 §7.2）。
- *
- * **`noopener` を付ける。** 開いた先は外部 SNS の画面で、`window.opener` から
- * とりふねの画面へ戻れる状態にしない。`noreferrer` も付け、URL を Referer で渡さない。
- * その代わり `window.open` は `null` を返し、ブロックされたか判別できないので、
- * 同じ URL のリンクを併置する。
- */
-const MANUAL_WINDOW_FEATURES = 'popup=yes,width=600,height=720,noopener=yes,noreferrer=yes';
 
 /** 一覧に本文を全部出すと表が崩れる。1 行に収まる長さで切る。 */
 const EXCERPT_LENGTH = 60;
@@ -84,7 +72,7 @@ export interface ManualPendingProps {
    * `vi.spyOn(window, 'open')` が使えないため props にしてある
    * （実装プラン §7 の 13）。既定値なので通常の経路は変わらない。
    */
-  readonly open?: (url: string, name: string, features: string) => unknown;
+  readonly open?: OpenManualWindow;
 }
 
 function excerpt(body: string): string {
@@ -110,16 +98,6 @@ export function ManualPending(props: ManualPendingProps) {
   const [externalUrl, setExternalUrl] = useState('');
   const [cancelling, setCancelling] = useState<ManualPendingRow | null>(null);
   const [toast, setToast] = useState<ToastMessage | null>(null);
-
-  /** 押した瞬間に開く。押してから問い合わせるとポップアップとして扱われない（設計 §7.1）。 */
-  function openManualWindow(url: string): void {
-    const opener = props.open;
-    if (opener === undefined) {
-      window.open(url, MANUAL_WINDOW_NAME, MANUAL_WINDOW_FEATURES);
-      return;
-    }
-    opener(url, MANUAL_WINDOW_NAME, MANUAL_WINDOW_FEATURES);
-  }
 
   async function patch(
     row: ManualPendingRow,
@@ -214,8 +192,9 @@ export function ManualPending(props: ManualPendingProps) {
             variant="primary"
             disabled={!row.handoff.ok}
             onClick={() => {
+              // 押した瞬間に開く。押してから問い合わせるとポップアップとして扱われない（設計 §7.1）。
               if (row.handoff.ok) {
-                openManualWindow(row.handoff.url);
+                openManualWindow(row.handoff.url, props.open);
               }
             }}
           >
