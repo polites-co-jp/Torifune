@@ -70,7 +70,13 @@ import {
   type SocialAccount,
   type SocialPost,
 } from '@/domain/social/social';
-import { DEFAULT_PENDING_SORT, type PendingKind, type PendingSort } from '@/domain/social/pending';
+import {
+  DEFAULT_PENDING_SORT,
+  manualOutcomeEligibility,
+  type ManualOutcome,
+  type PendingKind,
+  type PendingSort,
+} from '@/domain/social/pending';
 import type { PostSourceFilter, SocialPostSources } from '@/domain/social/post-source';
 import type { SocialAccountPage, SocialPostPage } from '@/domain/social/social-repository';
 import { encryptSecret } from '@/infrastructure/crypto/cipher';
@@ -1914,6 +1920,130 @@ export const listSocialPendingPosts = defineUseCase<ListPendingPostsInput, Socia
     const page = await socialRepository.listPendingPosts(context.connection, query, scope);
     const counts = await socialRepository.countPendingByKind(context.connection, query, scope);
     return { items: page.items, total: page.total, counts };
+  },
+});
+
+// ---------------------------------------------------------------------------
+// 手動投稿の結果（055-social-pending-tab 設計 §5.6・§8.2）
+// ---------------------------------------------------------------------------
+
+export interface RecordManualOutcomeInput {
+  readonly id: string;
+  readonly outcome: ManualOutcome;
+  /** 画面で読んだ投稿の `updatedAt`。合わなければ 409（見た後に内容が変わった）。 */
+  readonly expectedUpdatedAt: Date;
+  /** SNS 側の投稿の URL。`posted` のときだけ送れる（`not_posted` に送ると 422）。 */
+  readonly externalUrl?: string | null | undefined;
+}
+
+/** 結果の記録の出力。監査の `detail` に使う。ルートは `post` だけを応答にする。 */
+export interface RecordManualOutcomeOutput {
+  readonly post: SocialPost;
+}
+
+/** 手動投稿の予約でない投稿に結果を記録しようとしたときの文言（設計 §8.2 の 422 `status`）。 */
+const NOT_MANUAL_SCHEDULED_MESSAGE = '手動投稿の予約ではありません。';
+
+/**
+ * 手動投稿の結果を記録する（設計 §5.6・§8.2）。**単独のルートは画面（セッション）専用**（外部アプリは `PATCH` を使う）。
+ *
+ * `posted` は配信済み、`not_posted` は失敗（固定の理由）で確定する。対象は手動の予約だけ（予約時刻の前後を問わない。
+ * 承認待ちは対象外）。画面で見た内容のまま（`expectedUpdatedAt`）の行にだけ書く。予約日時・承認の記録は変えない。
+ */
+export const recordManualOutcome = defineUseCase<
+  RecordManualOutcomeInput,
+  RecordManualOutcomeOutput
+>({
+  name: 'social.post.recordManualOutcome',
+  permission: 'social.write',
+  audit: {
+    action: 'updated',
+    resourceType: 'social_post',
+    resourceId: (input) => input.id,
+    // `PATCH` の監査と同じ `action`。人の判断による記録だと `manualOutcome` で分かる。本文は残さない。
+    detail: (input, output) => ({
+      changed: [
+        'status',
+        ...(input.externalUrl === undefined || input.externalUrl === null ? [] : ['externalUrl']),
+      ],
+      status: output.post.status,
+      manualOutcome: input.outcome,
+    }),
+  },
+  handler: async (context, input) => {
+    // 1: 使えない文字（NUL など）を断る。
+    assertUsableText('SocialPost', { externalUrl: input.externalUrl });
+
+    // 2〜4: 投稿があり（区画の外は 404。053 設計 §8.3.3）、見た内容のままで、手動の予約か。
+    //       見た後に他の人が記録した行は「対象外」より「見た後に変わった」のほうが状況の説明になる（設計 §5.6）。
+    const scope = scopeOf(context);
+    const post = await socialRepository.findPostById(context.connection, input.id, scope);
+    if (post === null) {
+      throw new NotFoundError('SocialPost', input.id);
+    }
+    // 応答の `updatedAt` は `toISOString()`（ミリ秒）。ミリ秒で比べる（048 設計 §6.4.3 と同じ）。
+    if (post.updatedAt.getTime() !== input.expectedUpdatedAt.getTime()) {
+      throw new StaleSocialPostError(post.id);
+    }
+    if (!manualOutcomeEligibility(post)) {
+      throw new ValidationError('SocialPost', 'status', NOT_MANUAL_SCHEDULED_MESSAGE);
+    }
+
+    // 5: SNS 側の URL は投稿したときだけ。https で長さの上限以内（`PATCH` と同じ文言）。
+    const externalUrl = input.externalUrl ?? null;
+    if (externalUrl !== null) {
+      if (input.outcome === 'not_posted') {
+        throw new ValidationError(
+          'SocialPost',
+          'externalUrl',
+          '投稿しなかったときは URL を送れません。',
+        );
+      }
+      if (!isValidExternalUrl(externalUrl)) {
+        throw new ValidationError(
+          'SocialPost',
+          'externalUrl',
+          `投稿の URL は https で ${EXTERNAL_URL_MAX_LENGTH} 文字以内にしてください。`,
+        );
+      }
+    }
+
+    // 6: 判定と更新を 1 文で（設計 §8.2 の 6）。
+    const now = new Date();
+    const recorded = await context.connection.transaction((tx) =>
+      socialRepository.recordManualOutcome(tx, {
+        id: post.id,
+        outcome: input.outcome,
+        externalUrl,
+        now,
+        expectedUpdatedAt: input.expectedUpdatedAt,
+      }),
+    );
+    if (recorded === null) {
+      // 間に配信方法を変えられた・取りやめられた・今すぐ送られた・他の人が記録した・消えた。
+      const latest = await socialRepository.findPostById(context.connection, input.id, scope);
+      if (latest === null) {
+        throw new NotFoundError('SocialPost', input.id);
+      }
+      throw new SocialPostStateChangedError(input.id);
+    }
+
+    // 7: 既存のイベントに揃える（`PATCH` と同じ Payload。理由は載せない）。
+    if (input.outcome === 'posted') {
+      await emit('social.post.published', {
+        postId: recorded.id,
+        accountId: recorded.socialAccountId,
+        status: 'published',
+      });
+    } else {
+      await emit('social.post.failed', {
+        postId: recorded.id,
+        accountId: recorded.socialAccountId,
+        status: 'failed',
+      });
+    }
+
+    return { post: recorded };
   },
 });
 
