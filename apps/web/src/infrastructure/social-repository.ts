@@ -1111,7 +1111,8 @@ export const socialRepository: SocialRepository = {
     const rows = await scopedPosts(connection.db.selectFrom('social_posts'), scope)
       .select((eb) => [kind.as('pending_kind'), eb.fn.countAll<string>().as('count')])
       .where((eb) => eb.and(pendingBaseConditions(eb, query)))
-      .groupBy(kind)
+      // 出力の別名で束ねる（式を 2 度書くと「いま」の値が別のパラメータになり、同じ式と見なされない）。
+      .groupBy(sql`pending_kind`)
       .execute();
 
     const counts: Record<PendingKind, number> = {

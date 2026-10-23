@@ -70,6 +70,7 @@ import {
   type SocialAccount,
   type SocialPost,
 } from '@/domain/social/social';
+import { DEFAULT_PENDING_SORT, type PendingKind, type PendingSort } from '@/domain/social/pending';
 import type { PostSourceFilter, SocialPostSources } from '@/domain/social/post-source';
 import type { SocialAccountPage, SocialPostPage } from '@/domain/social/social-repository';
 import { encryptSecret } from '@/infrastructure/crypto/cipher';
@@ -1862,6 +1863,58 @@ export const listApprovalPendingPosts = defineUseCase<ListApprovalPendingInput, 
   // 画面（`all`）では全件。トークンの文脈では区画の中だけ（053 設計 §8.3.4）。
   handler: async (context, input) =>
     socialRepository.listApprovalPending(context.connection, input.limit, scopeOf(context)),
+});
+
+// ---------------------------------------------------------------------------
+// 送信待ち（055-social-pending-tab 設計 §5.2・§5.3・§8.1）
+// ---------------------------------------------------------------------------
+
+export interface ListPendingPostsInput {
+  readonly page: number;
+  /** 画面は 20 / 50 / 100 しか渡さない。範囲は検査しない（`listSocialPosts` と同じ。実装プラン §8 の 45）。 */
+  readonly perPage: number;
+  /** 区分で絞る。null はすべて。 */
+  readonly kind: PendingKind | null;
+  readonly socialAccountId: string | null;
+  /** 登録元で絞る。省略・null は絞らない。 */
+  readonly source?: PostSourceFilter | null | undefined;
+  /** 並び順。省略は `DEFAULT_PENDING_SORT`（手が要るもの順。ユーザー裁定 7）。 */
+  readonly sort?: PendingSort | undefined;
+  /** 区分の判定と並びに使う「いま」。画面が行の判定に使う値と同じものを渡す（設計 §6）。 */
+  readonly now: Date;
+}
+
+export interface SocialPendingPage {
+  readonly items: readonly SocialPost[];
+  /** `kind` を掛けた後の全件数。 */
+  readonly total: number;
+  /** 区分ごとの件数。アカウント・登録元は掛け、`kind` は掛けない（ユーザー裁定 7）。 */
+  readonly counts: Readonly<Record<PendingKind, number>>;
+}
+
+/**
+ * 送信待ち（承認待ち・予約済み・手動投稿待ち）の一覧（設計 §8.1）。画面の Server Component から呼ぶだけ。
+ * 読み出しなので監査は残さない。
+ */
+export const listSocialPendingPosts = defineUseCase<ListPendingPostsInput, SocialPendingPage>({
+  name: 'social.post.listPending',
+  permission: 'social.read',
+  // 画面（`all`）では全件。トークンの文脈では区画の中だけ（053 設計 §8.3.4）。
+  handler: async (context, input) => {
+    const scope = scopeOf(context);
+    const query = {
+      page: input.page,
+      perPage: input.perPage,
+      kind: input.kind,
+      socialAccountId: input.socialAccountId,
+      source: input.source ?? null,
+      sort: input.sort ?? DEFAULT_PENDING_SORT,
+      now: input.now,
+    };
+    const page = await socialRepository.listPendingPosts(context.connection, query, scope);
+    const counts = await socialRepository.countPendingByKind(context.connection, query, scope);
+    return { items: page.items, total: page.total, counts };
+  },
 });
 
 // ---------------------------------------------------------------------------
