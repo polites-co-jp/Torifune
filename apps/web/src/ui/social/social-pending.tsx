@@ -151,7 +151,7 @@ export interface SocialPendingProps {
   readonly accountOptions?: readonly PostListOption[];
   /**
    * 子ウィンドウを開く口。既定は `window.open`（単体テストの環境には `window` が無い。
-   * `manual-pending.tsx` と同じ）。既定値なので通常の経路は変わらない。
+   * 035 の手動投稿待ちの区画と同じ）。既定値なので通常の経路は変わらない。
    */
   readonly open?: OpenManualWindow;
   /**

@@ -38,9 +38,6 @@ export const DELIVERY_MODE_LABEL: Record<DeliveryMode, string> = {
 
 export const MANUAL_PENDING_LABEL = '手動投稿待ち';
 
-/** ダッシュボードから飛んで来る先（設計 §7.6）。 */
-export const MANUAL_PENDING_ANCHOR = 'manual-pending';
-
 export const MANUAL_PENDING_OPEN_LABEL = '投稿画面を開く';
 export const MANUAL_PENDING_FALLBACK_LABEL = '別のタブで開く';
 export const MANUAL_PENDING_DONE_LABEL = '投稿した';
@@ -67,9 +64,6 @@ export const MANUAL_HANDOFF_REASON_LABEL = {
 // ---------------------------------------------------------------------------
 
 export const APPROVAL_PENDING_LABEL = '承認待ち';
-
-/** ダッシュボードと投稿一覧から飛んで来る先（設計 §7.1・§7.3・§7.5）。 */
-export const APPROVAL_PENDING_ANCHOR = 'approval-pending';
 
 export const APPROVAL_PENDING_GUIDE =
   '外部アプリなどから確認を求められている投稿です。内容を確かめて「承認する」を押すと配信に回ります。「差し戻す」と下書きに戻ります。';
