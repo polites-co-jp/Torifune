@@ -1805,3 +1805,167 @@ describe('#83 handoff が changed の行（設計 §8.3・§9.3.4）', () => {
     expect(isDisabled(open?.openTag ?? '')).toBe(false);
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* 検証 2 回目 軽微-B 順に投稿を閉じたときの後始末（設計 §9.5.2。変異 M23）                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 順に投稿を閉じたとき、「投稿した」「投稿しなかった」で 1 件でも保存していれば Toast・読み込み直し・選択を空にする。
+ * **「飛ばした」だけで閉じたときは何もしない**（Toast も読み込み直しも出さず、選択もそのまま。設計 §9.5.2）。
+ *
+ * 描画器で `SocialPending` を描き、一括の帯の「選んだ手動投稿を順に投稿…」→ ダイアログの中の「投稿した」（409 なら
+ * 「飛ばして次へ」）→ 終わりの表示の「閉じる」と押す。読み込み直しは `RefreshOnMount` を描くことなので
+ * （`bulk-post-actions.tsx`。`useEffect` は描画器では走らない）、それを葉にして描かれたかを見る。
+ */
+describe('検証 2 回目 軽微-B 順に投稿を閉じたときの後始末（設計 §9.5.2）', () => {
+  let SocialPending: ComponentType<PendingProps>;
+  let RefreshOnMount: unknown;
+  const TARGETS: readonly PendingRow[] = [MANUAL_PENDING, MANUAL_FUTURE];
+  const SKIP_LABEL = '飛ばして次へ';
+  const CLOSE_LABEL = '閉じる';
+  const STALE = {
+    ok: false,
+    error: { code: 'CONFLICT', message: 'サーバの 409 の文言です。', status: 409 },
+  } as const;
+
+  beforeEach(async () => {
+    hookHarness.reset();
+    hookHarness.leaves.clear();
+    hookHarness.leaves.add(Link);
+    RefreshOnMount = ((await import('./bulk-post-actions')) as Record<string, unknown>)[
+      'RefreshOnMount'
+    ];
+    hookHarness.leaves.add(RefreshOnMount);
+    SocialPending = await loadComponent();
+  });
+
+  function draw(): readonly HostNode[] {
+    return hookHarness.render(
+      createElement(SocialPending, {
+        ...BASE,
+        rows: TARGETS,
+        total: TARGETS.length,
+        initialSelectedIds: TARGETS.map((item) => item.id),
+      }),
+    );
+  }
+
+  function dialogOf(nodes: readonly HostNode[]): readonly HostNode[] {
+    return findAll(nodes, (node) => node.props['role'] === 'dialog');
+  }
+
+  function only(nodes: readonly HostNode[], label: string): HostNode {
+    const found = buttonsLabelled(nodes, label);
+    expect(found, `「${label}」のボタン`).toHaveLength(1);
+    return found[0] as HostNode;
+  }
+
+  function toastText(nodes: readonly HostNode[]): string {
+    return findAll(nodes, (node) => node.props['aria-live'] === 'polite')
+      .map((node) => node.text)
+      .join('');
+  }
+
+  function reloaded(nodes: readonly HostNode[]): boolean {
+    return findAll(nodes, (node) => node.type === 'leaf:RefreshOnMount').length > 0;
+  }
+
+  /** 選ばれている行の数（「このページの投稿をすべて選択」のチェックは数えない）。 */
+  function checkedRows(nodes: readonly HostNode[]): number {
+    return findAll(
+      nodes,
+      (node) =>
+        node.type === 'input' &&
+        node.props['type'] === 'checkbox' &&
+        node.props['aria-label'] !== SELECT_PAGE_LABEL &&
+        node.props['checked'] === true,
+    ).length;
+  }
+
+  /** 帯の「選んだ手動投稿を順に投稿…」でダイアログを開く。 */
+  function start(): void {
+    click(only(draw(), `${SEQUENCE_LABEL}…`));
+    expect(dialogOf(draw()), '順に投稿のダイアログ').toHaveLength(1);
+  }
+
+  /** 今の件をダイアログの「投稿した」で保存する（409 なら「飛ばして次へ」まで押す）。 */
+  async function post(): Promise<void> {
+    click(only(dialogOf(draw()), DONE_LABEL));
+    await flush();
+  }
+
+  async function skip(): Promise<void> {
+    await post();
+    click(only(dialogOf(draw()), SKIP_LABEL));
+  }
+
+  function closeFinished(): readonly HostNode[] {
+    const dialog = dialogOf(draw());
+    expect(textOfNodes(dialog)).toContain('すべての手動投稿を記録しました');
+    click(only(dialog, CLOSE_LABEL));
+    return draw();
+  }
+
+  it('軽微-B：「飛ばした」だけで閉じたら Toast を出さない', async () => {
+    capture.apiRequest.mockResolvedValue(STALE);
+    start();
+    await skip();
+    await skip();
+    const after = closeFinished();
+
+    expect(dialogOf(after)).toHaveLength(0);
+    expect(toastText(after)).toBe('');
+  });
+
+  it('軽微-B：「飛ばした」だけで閉じたら読み込み直さない', async () => {
+    capture.apiRequest.mockResolvedValue(STALE);
+    start();
+    await skip();
+    await skip();
+
+    expect(reloaded(closeFinished())).toBe(false);
+  });
+
+  it('軽微-B：「飛ばした」だけで閉じたら選択はそのまま', async () => {
+    capture.apiRequest.mockResolvedValue(STALE);
+    start();
+    await skip();
+    await skip();
+    const after = closeFinished();
+
+    expect(checkedRows(after)).toBe(TARGETS.length);
+    expect(textOfNodes(after)).toContain(`${TARGETS.length} 件を選択中`);
+  });
+
+  it('軽微-B：途中で「飛ばした」後に「やめる」で閉じても何もしない', async () => {
+    capture.apiRequest.mockResolvedValue(STALE);
+    start();
+    await skip();
+    click(only(dialogOf(draw()), 'やめる'));
+    const after = draw();
+
+    expect(dialogOf(after)).toHaveLength(0);
+    expect(toastText(after)).toBe('');
+    expect(reloaded(after)).toBe(false);
+    expect(checkedRows(after)).toBe(TARGETS.length);
+  });
+
+  it('軽微-B 対照：「投稿した」を 1 件含めて閉じたら Toast・読み込み直し・選択を空にする', async () => {
+    capture.apiRequest.mockResolvedValueOnce({ ok: true, data: {} }).mockResolvedValue(STALE);
+    start();
+    await post();
+    await skip();
+    const after = closeFinished();
+
+    expect(toastText(after)).toBe('1 件を記録しました（投稿した 1・投稿しなかった 0）。');
+    expect(reloaded(after)).toBe(true);
+    expect(checkedRows(after)).toBe(0);
+  });
+
+  it('軽微-B 対照：閉じる前（ダイアログを開いた直後）は読み込み直していない', () => {
+    start();
+
+    expect(reloaded(draw())).toBe(false);
+  });
+});
