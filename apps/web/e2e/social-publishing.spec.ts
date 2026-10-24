@@ -414,13 +414,12 @@ async function fetchPost(
   ).data;
 }
 
-/** 手動投稿待ちの区画（`#manual-pending`）。投稿一覧にも同じ本文が出るので、区画で絞る。 */
-function manualPendingSection(page: Page): Locator {
-  return page.locator('#manual-pending');
-}
-
+/**
+ * 送信待ちタブ（`/social`）の表の、本文を含む行（055 設計 §9.3）。055 で手動投稿待ちの区画
+ * （`#manual-pending`）が無くなり、手動投稿待ちは送信待ちの表に「手動投稿待ち」の行として並ぶ。
+ */
 function manualPendingRow(page: Page, body: string): Locator {
-  return manualPendingSection(page).getByRole('row').filter({ hasText: body });
+  return page.getByRole('table').locator('tbody tr').filter({ hasText: body });
 }
 
 /**
@@ -503,7 +502,7 @@ test.afterAll(async ({ playwright }) => {
  */
 test.describe('#76 アカウント追加の資格情報の欄', () => {
   test('#76 「サンプルSNS」を選ぶと publisher が宣言した 2 つの欄が出る', async ({ page }) => {
-    await page.goto('/social');
+    await page.goto('/social?tab=accounts');
     await page.getByRole('button', { name: '+ アカウントを追加' }).click();
 
     const dialog = page.getByRole('dialog', { name: 'SNSアカウントを追加' });
@@ -520,7 +519,7 @@ test.describe('#76 アカウント追加の資格情報の欄', () => {
 
   test('#76 開いて入力し、閉じて開き直すと入力値が残っていない', async ({ page }) => {
     // 捨てないと、次に別のアカウントを作るときに前の資格情報が混ざる（設計 §7.5）。
-    await page.goto('/social');
+    await page.goto('/social?tab=accounts');
     await page.getByRole('button', { name: '+ アカウントを追加' }).click();
 
     const dialog = page.getByRole('dialog', { name: 'SNSアカウントを追加' });
@@ -545,7 +544,7 @@ test.describe('#76 アカウント追加の資格情報の欄', () => {
     const secret = `e2e-app-password-${unique()}`;
     const displayName = `E2E 画面から ${unique()}`;
 
-    await page.goto('/social');
+    await page.goto('/social?tab=accounts');
     await page.getByRole('button', { name: '+ アカウントを追加' }).click();
 
     const dialog = page.getByRole('dialog', { name: 'SNSアカウントを追加' });
@@ -666,7 +665,7 @@ test.describe('#70 投稿フォームの配信方法', () => {
     await page.getByLabel('配信方法').selectOption({ label: '手動' });
     await page.getByRole('button', { name: '保存' }).click();
 
-    await page.waitForURL('**/social');
+    await page.waitForURL('**/social?tab=posts');
 
     const list = await request.get(`/api/v1/social/posts?accountId=${account.id}`);
     const posts = ((await list.json()) as { data: { id: string; body: string }[] }).data;
@@ -677,7 +676,7 @@ test.describe('#70 投稿フォームの配信方法', () => {
 });
 
 /**
- * #73。手動投稿待ちの区画 → 子ウィンドウ → 「投稿した」。
+ * #73。送信待ちタブの手動投稿待ちの行 → 子ウィンドウ → 「投稿した」（055 で区画が送信待ちの表に替わった）。
  *
  * **子ウィンドウは `context.waitForEvent('page')` で拾う**（実装プラン §7 の 11）。
  * `noopener` を付けると `window.open` は `null` を返し、`popup` イベントは
@@ -699,14 +698,12 @@ test.describe('#73 手動投稿待ちと子ウィンドウ', () => {
 
     await page.goto('/social');
 
-    const section = manualPendingSection(page);
-    await expect(section.getByRole('heading', { name: /手動投稿待ち/ })).toBeVisible();
-    await expect(section).toContainText(body);
-    // Plugin が添えた注意書き（`manual()` の `note`）。
-    await expect(section).toContainText('サンプルです。実際にはどこにも投稿されません。');
-
     const row = manualPendingRow(page, body);
-    // 「経過」列（設計 §7.1 の補足）。Server Component が文字列にして渡している。
+    // 状態の列の区分の表示名（055 設計 §9.3.1）。
+    await expect(row).toContainText('手動投稿待ち');
+    // Plugin が添えた注意書き（`manual()` の `note`）。本文の抜粋の下（055 実装プラン §8 の 11）。
+    await expect(row).toContainText('サンプルです。実際にはどこにも投稿されません。');
+    // 経過（設計 §7.1 の補足。055 で状態の列の「（n 分経過）」に畳んだ）。Server Component が文字列にして渡している。
     await expect(row).toContainText(/\d+ (分|時間|日)/);
 
     const opened = page.context().waitForEvent('page');
@@ -774,7 +771,7 @@ test.describe('#77 ダッシュボードの導線', () => {
 
     await page.getByRole('link', { name: 'SNS 画面へ →' }).click();
     await page.waitForURL('**/social**');
-    await expect(manualPendingSection(page)).toContainText(body);
+    await expect(manualPendingRow(page, body)).toContainText('手動投稿待ち');
 
     // 0 件なら何も描かない。
     const cancelled = await patchJson(request, `/api/v1/social/posts/${post.id}`, {
@@ -809,7 +806,7 @@ test.describe('#75 自動配信', () => {
     // publisher が返した `externalUrl` が記録されている。
     expect(published.externalUrl).toContain('/plugins/example-plugin/posts/');
 
-    await page.goto('/social/history');
+    await page.goto('/social?tab=history');
     const row = page.getByRole('row').filter({ hasText: body });
     await expect(row).toContainText('配信済み');
     await expect(row.getByRole('link', { name: /投稿を見る/ })).toHaveAttribute(
@@ -944,7 +941,7 @@ test.describe('#106 配信の支度ができていない予約の警告', () => 
       scheduledAt: minutesAgo(1),
     });
 
-    await page.goto('/social');
+    await page.goto('/social?tab=posts');
 
     await expect(postListRow(page, body)).toContainText('配信 Plugin なし');
     await expect(page.getByText(/配信の支度ができていない予約投稿が \d+ 件あります/)).toBeVisible();
@@ -971,7 +968,7 @@ test.describe('#106 配信の支度ができていない予約の警告', () => 
       scheduledAt: minutesAgo(1),
     });
 
-    await page.goto('/social');
+    await page.goto('/social?tab=posts');
 
     await expect(page.getByText(/約24時間/)).toBeVisible();
   });
@@ -1028,7 +1025,7 @@ test.describe('#120 飛ばされた予約の残り回数', () => {
     expect(data.skipCount).toBe(1);
     expect(data.skipReason).toBe('no_publisher');
 
-    await page.goto('/social');
+    await page.goto('/social?tab=posts');
 
     // 上限は 3 回なので、1 回飛ばされた時点で残りは 2 回（設計 §7.3）。
     await expect(postListRow(page, body)).toContainText('あと 2 回で取りやめ');
@@ -1053,7 +1050,7 @@ test.describe('#107 投稿一覧の「手動投稿待ち」の補足', () => {
       scheduledAt: minutesAgo(3),
     });
 
-    await page.goto('/social');
+    await page.goto('/social?tab=posts');
 
     await expect(postListRow(page, body)).toContainText('手動投稿待ち');
   });
@@ -1069,7 +1066,7 @@ test.describe('#107 投稿一覧の「手動投稿待ち」の補足', () => {
       scheduledAt: new Date(Date.now() + 60 * 60_000).toISOString(),
     });
 
-    await page.goto('/social');
+    await page.goto('/social?tab=posts');
 
     const row = postListRow(page, body);
     await expect(row).toBeVisible();

@@ -7,8 +7,10 @@
  */
 
 import type { BulkEffect, BulkFailureReason } from '@/domain/social/bulk';
+import type { PendingKind, PendingSort } from '@/domain/social/pending';
 import { PUBLISH_MAX_SKIPS } from '@/domain/social/publishing';
 import type { AccountStatus, DeliveryMode, PostStatus } from '@/domain/social/social';
+import type { SocialTabKey } from './social-tabs';
 
 export const POST_STATUS_LABEL: Record<PostStatus, string> = {
   draft: '下書き',
@@ -36,9 +38,6 @@ export const DELIVERY_MODE_LABEL: Record<DeliveryMode, string> = {
 
 export const MANUAL_PENDING_LABEL = '手動投稿待ち';
 
-/** ダッシュボードから飛んで来る先（設計 §7.6）。 */
-export const MANUAL_PENDING_ANCHOR = 'manual-pending';
-
 export const MANUAL_PENDING_OPEN_LABEL = '投稿画面を開く';
 export const MANUAL_PENDING_FALLBACK_LABEL = '別のタブで開く';
 export const MANUAL_PENDING_DONE_LABEL = '投稿した';
@@ -56,6 +55,10 @@ export const MANUAL_HANDOFF_REASON_LABEL = {
   unsupported: 'この SNS の Plugin が無効です',
   invalid_url: 'Plugin が返した URL を開けません',
   plugin_error: 'Plugin でエラーが起きました',
+  // 予約でない手動投稿（承認待ちなど）には投稿画面の URL を作らない（055-social-pending-tab 設計 §8.3）。
+  not_scheduled: '承認すると投稿画面を開けます',
+  // 描画の途中で行が自動へ変わった・消された（055-social-pending-tab 設計 §8.3。`settleManualHandoff` が読み替える）。
+  changed: '投稿が変わりました。読み込み直してください',
 } as const satisfies Record<string, string>;
 
 // ---------------------------------------------------------------------------
@@ -63,9 +66,6 @@ export const MANUAL_HANDOFF_REASON_LABEL = {
 // ---------------------------------------------------------------------------
 
 export const APPROVAL_PENDING_LABEL = '承認待ち';
-
-/** ダッシュボードと投稿一覧から飛んで来る先（設計 §7.1・§7.3・§7.5）。 */
-export const APPROVAL_PENDING_ANCHOR = 'approval-pending';
 
 export const APPROVAL_PENDING_GUIDE =
   '外部アプリなどから確認を求められている投稿です。内容を確かめて「承認する」を押すと配信に回ります。「差し戻す」と下書きに戻ります。';
@@ -101,8 +101,11 @@ export const APPROVAL_DESIRED_PAST_NOTE = '（過ぎています）';
 export const APPROVAL_LINK_LABEL = 'リンク';
 export const APPROVAL_MEDIA_LABEL = '画像';
 
-/** 投稿一覧の状態列の補足（設計 §7.3）。 */
-export const APPROVAL_PENDING_ROW_NOTE = '（区画で承認）';
+/**
+ * 投稿一覧の状態列の補足（設計 §7.3）。承認は送信待ちタブで行う
+ * （055-social-pending-tab 設計 §9.8。リンク先は `PENDING_APPROVAL_HREF`）。
+ */
+export const APPROVAL_PENDING_ROW_NOTE = '（送信待ちで承認）';
 export const APPROVED_ROW_NOTE = '（承認済み）';
 
 /** 投稿フォームの案内（設計 §7.4）。 */
@@ -134,6 +137,14 @@ export const NO_CREDENTIAL_BADGE = '資格情報 未設定';
 export function remainingSkipsLabel(skipCount: number): string {
   const remaining = Math.max(0, PUBLISH_MAX_SKIPS - skipCount);
   return `（支度待ち・あと ${remaining} 回で取りやめ）`;
+}
+
+/**
+ * 再試行待ちの補足（設計 §5.8）。**再試行待ちは状態ではない。** `scheduled` のまま失敗理由が残っている行がそれで、
+ * 次は `attemptCount + 1` 回目になる。投稿タブと送信待ちタブの状態の列で使う。
+ */
+export function retryingNoteLabel(attemptCount: number): string {
+  return `（再試行待ち・${attemptCount + 1} 回目）`;
 }
 
 /**
@@ -292,9 +303,6 @@ export const POST_FILTER_ALL = 'すべて';
 export const POST_FILTER_CLEAR = '条件をクリア';
 export const POST_FILTER_EMPTY = '条件に合う投稿がありません。';
 
-/** 見出し「投稿」のアンカー（読み込み直した後に一覧へ戻る。設計 §9.2）。 */
-export const POSTS_ANCHOR = 'posts';
-
 // ---------------------------------------------------------------------------
 // 投稿の選択と一括操作（054-bulk-post-actions 設計 §9.3〜§9.7・§9.9・§9.10）
 // ---------------------------------------------------------------------------
@@ -400,6 +408,9 @@ export function BULK_RESULT_FAILED(count: number): string {
   return `${count} 件は処理されませんでした。`;
 }
 
+/** 行の「削除」が通ったときの Toast（投稿タブ・送信待ちタブ。055-social-pending-tab 設計 §9.3.4）。 */
+export const SINGLE_DELETED_TOAST = '削除しました。';
+
 /** 一括取り消しが全件成功したときの Toast。 */
 export function BULK_DELETED_TOAST(count: number): string {
   return `${count} 件を削除しました。`;
@@ -436,3 +447,138 @@ export const BULK_REASON_LABEL: Record<BulkFailureReason, string> = {
 /** 設定 → API の発行フォームの「名前」の説明に足す（設計 §9.9）。 */
 export const API_TOKEN_NAME_SOURCE_NOTE =
   'この名前は、SNS 画面の投稿一覧に『登録元』として表示されます（SNS の閲覧権限を持つ人に見えます）。外部アプリが分かる名前にしてください。';
+
+// ---------------------------------------------------------------------------
+// タブと送信待ち（055-social-pending-tab 設計 §9.1〜§9.5・§9.8・§9.9）
+// ---------------------------------------------------------------------------
+
+/** タブの並びの `aria-label`（設計 §9.1）。 */
+export const SOCIAL_TABS_LABEL = 'SNSのタブ';
+
+/** タブの表示名（設計 §5.1）。 */
+export const SOCIAL_TAB_LABEL: Record<SocialTabKey, string> = {
+  pending: '送信待ち',
+  posts: '投稿',
+  accounts: 'アカウント',
+  history: '配信履歴',
+};
+
+/** 送信待ちタブの見出し（設計 §9.3.3）。 */
+export const PENDING_HEADING = '送信待ち';
+
+/** 送信待ちの区分の表示名（設計 §5.2）。キーは `PENDING_KINDS` とちょうど一致させる。 */
+export const PENDING_KIND_LABEL: Record<PendingKind, string> = {
+  manual_pending: MANUAL_PENDING_LABEL,
+  awaiting_approval: APPROVAL_PENDING_LABEL,
+  scheduled: POST_STATUS_LABEL.scheduled,
+};
+
+/** 条件なしの 0 件（設計 §9.3.2）。条件ありの 0 件は投稿タブと同じ `POST_FILTER_EMPTY`。 */
+export const PENDING_EMPTY = '送信待ちの投稿はありません。';
+export const PENDING_EMPTY_POSTS_LINK = '投稿の一覧を見る';
+
+/** 状態の選択肢に件数を添える（設計 §9.2）。 */
+export function PENDING_COUNT_OPTION(label: string, count: number): string {
+  return `${label}（${count}）`;
+}
+
+/** 並び順の `Select`（ユーザー裁定 7。設計 §9.2）。キーは `PENDING_SORTS` とちょうど一致させる。 */
+export const PENDING_SORT_LABEL = '並び順';
+export const PENDING_SORT_OPTION_LABEL: Record<PendingSort, string> = {
+  action: '手が要るもの順',
+  time: '予定の時刻順',
+};
+
+/** 手動投稿待ちの経過（設計 §9.3.1）。`elapsed` は Server Component が作る「12 分」の形。 */
+export function PENDING_ELAPSED_NOTE(elapsed: string): string {
+  return `（${elapsed}経過）`;
+}
+
+/** 承認待ちの日時の列で、希望日時であることを添える（設計 §9.3.1）。 */
+export const PENDING_DESIRED_NOTE = '希望';
+
+/** 承認待ちの手動投稿の補足（設計 §5.5）。`resolveManualHandoff` の `not_scheduled` と同じ文言。 */
+export const PENDING_AWAITING_MANUAL_NOTE = MANUAL_HANDOFF_REASON_LABEL.not_scheduled;
+
+/** ダッシュボード・投稿一覧から送信待ちタブの絞り込みへ飛ぶ先（設計 §9.8）。 */
+export const PENDING_MANUAL_HREF = '/social?pendingStatus=manual_pending';
+export const PENDING_APPROVAL_HREF = '/social?pendingStatus=awaiting_approval';
+
+/** 自動配信の予約で配信に着手している（設計 §9.3.1）。 */
+export const PENDING_PUBLISHING_NOTE = '（配信中）';
+
+/** 承認待ちで手動投稿しかできない SNS（承認は常に即投稿。048 裁定 5。設計 §9.3.1）。 */
+export const PENDING_MANUAL_ONLY_NOTE = '承認は常に即投稿になります';
+
+/** 行の「投稿した」のダイアログ（035-social-publishing 設計 §7.1 の区画のまま。055 設計 §9.3.4）。 */
+export const MANUAL_DONE_DIALOG_TITLE = '投稿を記録しますか？';
+export const MANUAL_DONE_DIALOG_MESSAGE =
+  'SNS 側で投稿し終えたことを記録します。投稿の URL が分かれば、履歴から辿れます。';
+export const MANUAL_DONE_URL_LABEL = '投稿の URL（任意）';
+export const MANUAL_DONE_CONFIRM_LABEL = '記録する';
+export const MANUAL_DONE_TOAST = '投稿したことを記録しました。';
+
+/** 行の「取りやめ」の確認（035 設計 §7.1 の区画のまま）。 */
+export const MANUAL_CANCEL_CONFIRM_TITLE = '予約を取りやめますか？';
+export const MANUAL_CANCEL_CONFIRM_MESSAGE = '下書きに戻します。予約は解除されます。';
+export const MANUAL_CANCEL_CONFIRM_LABEL = '取りやめる';
+export const MANUAL_CANCELLED_TOAST = '予約を取りやめ、下書きに戻しました。';
+
+/** 行の「投稿した」の 409 の Toast（設計 §9.3.4）。他の失敗はサーバの文言。 */
+export const MANUAL_OUTCOME_STALE_MESSAGE =
+  '内容が変わっています。読み込み直してから操作してください。';
+
+/** 選んだ手動投稿を順に投稿（ユーザー裁定 6。設計 §9.5）。帯のボタンは末尾に「…」を足す。 */
+export const MANUAL_SEQUENCE_LABEL = '選んだ手動投稿を順に投稿';
+
+/** ダイアログの見出し。`index` は 1 から数える。 */
+export function MANUAL_SEQUENCE_TITLE(index: number, total: number): string {
+  return `手動投稿（${index} / ${total} 件目）`;
+}
+
+export const MANUAL_SEQUENCE_POSTED = MANUAL_PENDING_DONE_LABEL;
+export const MANUAL_SEQUENCE_NOT_POSTED = '投稿しなかった';
+export const MANUAL_SEQUENCE_QUIT = 'やめる';
+export const MANUAL_SEQUENCE_SKIP = '飛ばして次へ';
+
+/** 「投稿しなかった」の確認（設計 §9.5.2）。`excerpt` は本文の抜粋。 */
+export function MANUAL_SEQUENCE_CONFIRM_TITLE(excerpt: string): string {
+  return `「${excerpt}」を失敗として確定しますか？`;
+}
+
+export const MANUAL_SEQUENCE_CONFIRM_MESSAGE =
+  '配信履歴に「失敗」として残ります。やり直すには新しい投稿を作ります。この操作は取り消せません。';
+export const MANUAL_SEQUENCE_CONFIRM_LABEL = '失敗にする';
+export const MANUAL_SEQUENCE_BACK = '戻る';
+
+/** 記録した件数（設計 §9.5.2）。`breakdown` は結果ごとの内訳（無ければ空）。 */
+export function MANUAL_SEQUENCE_PROGRESS(count: number, breakdown: string): string {
+  return breakdown === '' ? `記録済み ${count} 件` : `記録済み ${count} 件（${breakdown}）`;
+}
+
+/** 最後の件を記録した後の表示（設計 §9.5.2）。 */
+export function MANUAL_SEQUENCE_DONE(posted: number, notPosted: number, skipped: number): string {
+  return `すべての手動投稿を記録しました（${MANUAL_SEQUENCE_POSTED} ${posted}・${MANUAL_SEQUENCE_NOT_POSTED} ${notPosted}・${MANUAL_SEQUENCE_SKIPPED} ${skipped}）。`;
+}
+
+/** 閉じたときの Toast（設計 §9.5.2）。1 件でも記録していれば出す。 */
+export function MANUAL_SEQUENCE_TOAST(total: number, posted: number, notPosted: number): string {
+  return `${total} 件を記録しました（${MANUAL_SEQUENCE_POSTED} ${posted}・${MANUAL_SEQUENCE_NOT_POSTED} ${notPosted}）。`;
+}
+
+/** ダイアログの今の件の予約日時に添える（設計 §9.5.2）。 */
+export const MANUAL_SEQUENCE_SCHEDULED_LABEL = '予約';
+
+/** 記録の内訳の「飛ばした」（設計 §9.5.2）。 */
+export const MANUAL_SEQUENCE_SKIPPED = '飛ばした';
+
+/** 順に投稿の対象外の理由ごとの表示名（設計 §9.5.1）。 */
+export const MANUAL_SEQUENCE_EXCLUDED_LABEL = {
+  awaiting_approval: APPROVAL_PENDING_LABEL,
+  handoff_unavailable: '投稿画面を開けない',
+  auto: '自動配信',
+} as const satisfies Record<string, string>;
+
+/** 順に投稿の 409 の `Alert`（設計 §9.5.2）。他の失敗はサーバの文言。 */
+export const MANUAL_SEQUENCE_STALE_MESSAGE =
+  '内容が変わっています。この投稿は飛ばして次へ進めます。';

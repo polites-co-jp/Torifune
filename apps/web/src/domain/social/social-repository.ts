@@ -1,5 +1,6 @@
 import type { Connection } from '../../database/provider';
 import type { AccessScope, PostOrigin } from './access-scope';
+import type { ManualOutcome, PendingKind, PendingSort } from './pending';
 import type { PostSourceFilter, SocialPostSources } from './post-source';
 import type { PublishVerdict, SkipVerdict } from './publishing';
 import type {
@@ -133,6 +134,25 @@ export interface SocialPostListQuery {
 export interface SocialPostPage {
   readonly items: readonly SocialPost[];
   readonly total: number;
+}
+
+/**
+ * 送信待ちの一覧の条件（055-social-pending-tab 設計 §8.1・§8.6）。
+ *
+ * 件数（`countPendingByKind`）は `kind`・`sort`・`page`・`perPage` を見ない（アカウント・登録元だけを掛ける）。
+ */
+export interface SocialPendingListQuery {
+  readonly page: number;
+  readonly perPage: number;
+  /** 区分で絞る。null はすべて。 */
+  readonly kind: PendingKind | null;
+  /** UUID の形のときだけ絞る（形でなければ絞らない。`listPosts` と同じ）。 */
+  readonly socialAccountId: string | null;
+  /** 登録元で絞る。null は絞らない。 */
+  readonly source: PostSourceFilter | null;
+  readonly sort: PendingSort;
+  /** 区分の判定と並びに使う「いま」。**SQL の `now()` は使わない**（画面の行の判定と同じ値で並べる）。 */
+  readonly now: Date;
 }
 
 /**
@@ -352,6 +372,52 @@ export interface SocialRepository {
     limit: number,
     scope: AccessScope,
   ): Promise<SocialPostPage>;
+
+  // -------------------------------------------------------------------------
+  // 送信待ち（055-social-pending-tab 設計 §8.1）
+  // -------------------------------------------------------------------------
+
+  /**
+   * 送信待ち（承認待ち・予約済み）の投稿を引く。並びは `sort`（`action`＝手が要るもの順、`time`＝予定の時刻順）。
+   * `total` は `kind` を掛けた後、ページで切る前の全件数。
+   */
+  listPendingPosts(
+    connection: Connection,
+    query: SocialPendingListQuery,
+    scope: AccessScope,
+  ): Promise<SocialPostPage>;
+
+  /**
+   * 送信待ちの区分ごとの件数（1 本の `GROUP BY`）。アカウント・登録元だけを掛け、区分は掛けない。無い区分は 0。
+   */
+  countPendingByKind(
+    connection: Connection,
+    query: SocialPendingListQuery,
+    scope: AccessScope,
+  ): Promise<Readonly<Record<PendingKind, number>>>;
+
+  /**
+   * 手動投稿の結果を記録する（055-social-pending-tab 設計 §5.6・§8.2）。
+   *
+   * **判定と更新を 1 文で行う**：手動の予約（`status = 'scheduled' AND delivery_mode = 'manual'`）で、`updated_at` を
+   * ミリ秒に切り詰めた値が `expectedUpdatedAt` と一致する行だけを書く。`posted` は `published` と `published_at`
+   * （`externalUrl` が null でなければ `external_url` も）、`not_posted` は `failed` と `failed_at`・固定の
+   * `failure_reason`。どちらも `next_attempt_at` を NULL、`updated_at` を `now` にする。`scheduled_at`・`approved_at` は
+   * 書かない。
+   *
+   * 当てはまる行が無ければ（状態・配信方法・内容が変わった・無い・id の形が不正）null で、何も変えない。
+   * 区画の条件は持たない（区画は読み出しの時点で判定済み。053 設計 §8.3.3）。
+   */
+  recordManualOutcome(
+    connection: Connection,
+    input: {
+      readonly id: string;
+      readonly outcome: ManualOutcome;
+      readonly externalUrl: string | null;
+      readonly now: Date;
+      readonly expectedUpdatedAt: Date;
+    },
+  ): Promise<SocialPost | null>;
 
   // -------------------------------------------------------------------------
   // 配信ジョブ（035-social-publishing 設計 §6.5.3 / §6.5.4 / §6.5.6）

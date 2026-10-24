@@ -63,7 +63,8 @@ const REST_ADDITIONAL: Readonly<Record<string, readonly number[]>> = {
 };
 
 /**
- * 042 §6.4 の表（SNS の 8 操作）と 048 の承認（048-social-post-approval 設計 §6.11）：操作 ID → 追加の status。
+ * 042 §6.4 の表（SNS の 8 操作）と 048 の承認（048-social-post-approval 設計 §6.11）と
+ * 055 の手動投稿の結果（055-social-pending-tab 設計 §8.4）：操作 ID → 追加の status。
  * 043 では変えない。
  */
 const SOCIAL_ADDITIONAL: Readonly<Record<string, readonly number[]>> = {
@@ -78,6 +79,9 @@ const SOCIAL_ADDITIONAL: Readonly<Record<string, readonly number[]>> = {
   publishSocialPosts: [409],
   // 048 で足した（存在しない投稿と、見た後に内容が変わっていた承認）。
   approveSocialPost: [404, 409],
+  // 055 で足した（存在しない・区画の外の投稿と、見た後に内容が変わっていた・条件付き更新が当たらなかった記録。
+  // 055-social-pending-tab 設計 §8.2・§8.4。055 実装プラン §8 の 1）。
+  recordSocialPostManualOutcome: [404, 409],
 };
 
 const ADDITIONAL: Readonly<Record<string, readonly number[]>> = {
@@ -152,10 +156,10 @@ describe('#38 設計 §6.4 の表の 404 / 409 / 401 はエラーの形', () => 
 /* -------------------------------------------------------------------------- */
 
 describe('#39 全公開操作の追加の応答が表とちょうど一致する', () => {
-  it('#39 表は設計 §6.4 の 27 操作と 053 の 1 操作、042・048 の 9 操作の計 37 行', () => {
+  it('#39 表は設計 §6.4 の 27 操作と 053 の 1 操作、042・048 の 9 操作、055 の 1 操作の計 38 行', () => {
     expect(Object.keys(REST_ADDITIONAL)).toHaveLength(28);
-    expect(Object.keys(SOCIAL_ADDITIONAL)).toHaveLength(9);
-    expect(Object.keys(ADDITIONAL)).toHaveLength(37);
+    expect(Object.keys(SOCIAL_ADDITIONAL)).toHaveLength(10);
+    expect(Object.keys(ADDITIONAL)).toHaveLength(38);
   });
 
   it('#39 表の操作はすべて文書に載っている公開操作', () => {
@@ -169,13 +173,15 @@ describe('#39 全公開操作の追加の応答が表とちょうど一致する
   // 054 で一括の操作を足した（054-bulk-post-actions 設計 §8.9）。生成器が出す応答（200・401・403・422・429・500）
   // だけで追加の応答が無いので、表は変えず、公開操作と何も足さない操作が 1 つずつ増える（054 実装プラン §8 の 1）。
   // G4：bulkApproveSocialPosts。G5：bulkPublishSocialPostsNow。G6：bulkDeleteSocialPosts。
-  it('#39 公開操作は 70 で、表の 37 と何も足さない 33 に分かれる', () => {
+  // 055 で手動投稿の結果（recordSocialPostManualOutcome）を足した。404・409 を宣言するので表に 1 行足し、
+  // 公開操作と表の行が 1 つずつ増え、何も足さない操作は 33 のまま（055-social-pending-tab 設計 §8.4・§14）。
+  it('#39 公開操作は 71 で、表の 38 と何も足さない 33 に分かれる', () => {
     const endpoints = listDocumentedEndpoints();
     const withoutAdditional = endpoints.filter(
       (endpoint) => ADDITIONAL[endpoint.operationId] === undefined,
     );
 
-    expect(endpoints).toHaveLength(70);
+    expect(endpoints).toHaveLength(71);
     expect(withoutAdditional).toHaveLength(33);
   });
 

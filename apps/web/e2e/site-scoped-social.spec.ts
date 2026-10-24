@@ -306,7 +306,7 @@ test('#73 「サイト：A」を選んで登録すると、一覧の「サイト
 }) => {
   const displayName = `E2E 画面から ${unique()}`;
 
-  await page.goto('/social');
+  await page.goto('/social?tab=accounts');
   await page.getByRole('button', { name: '+ アカウントを追加' }).click();
 
   const dialog = page.getByRole('dialog', { name: 'SNSアカウントを追加' });
@@ -430,7 +430,7 @@ test('#76 「サイト」から「共通」に変えて保存すると、列が�
 }) => {
   const account = await createAccount(request, siteA.id);
 
-  await page.goto('/social');
+  await page.goto('/social?tab=accounts');
   await expect(accountRow(page, account.displayName)).toContainText(siteA.name);
 
   await changeAccountSite(page, account.displayName, SOCIAL_COMMON_OPTION);
@@ -451,7 +451,7 @@ test('#76 紐づけ直して「サイトで絞り込む」で A を選ぶと A �
   const target = await createAccount(request, null);
   const common = await createAccount(request, null);
 
-  await page.goto('/social');
+  await page.goto('/social?tab=accounts');
   await changeAccountSite(page, target.displayName, siteA.name);
   await expect(accountRow(page, target.displayName)).toContainText(siteA.name);
 
@@ -515,7 +515,7 @@ test('#78 閲覧者には「サイト」列が見え、「サイト」ボタン�
   const context = await viewerBrowserContext(request, browser);
   try {
     const page = await context.newPage();
-    await page.goto('/social');
+    await page.goto('/social?tab=accounts');
 
     await expect(page.getByRole('columnheader', { name: SITE_LABEL, exact: true })).toBeVisible();
     // 閲覧者は site.read を持つので、名前が引ける。
@@ -541,7 +541,7 @@ test.describe('#79 幅 375px', () => {
   }) => {
     const account = await createAccount(request, siteA.id);
 
-    await page.goto('/social');
+    await page.goto('/social?tab=accounts');
     await expect(accountRow(page, account.displayName)).toContainText(siteA.name);
     expect(await hasHorizontalOverflow(page)).toBe(false);
   });
@@ -549,7 +549,7 @@ test.describe('#79 幅 375px', () => {
   test('#79 「サイトの紐づけを変える」の Modal が画面幅に収まる', async ({ page, request }) => {
     const account = await createAccount(request, siteA.id);
 
-    await page.goto('/social');
+    await page.goto('/social?tab=accounts');
     await accountRow(page, account.displayName)
       .getByRole('button', { name: SITE_LABEL, exact: true })
       .click();

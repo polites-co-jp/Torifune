@@ -210,7 +210,7 @@ test.describe('管理者', () => {
     expect(fetched.status(), await fetched.text()).toBe(200);
     const fetchedId = ((await fetched.json()) as { data: { id: string } }).data.id;
 
-    await page.goto('/social');
+    await page.goto('/social?tab=accounts');
     const element = idElement(accountRow(page, account.displayName));
     await expect(element).toHaveCount(1);
 
@@ -228,7 +228,7 @@ test.describe('管理者', () => {
     const account = await createAccount(request);
     await context.grantPermissions(CLIPBOARD_PERMISSIONS, { origin });
 
-    await page.goto('/social');
+    await page.goto('/social?tab=accounts');
     await requireSecureContext(page);
 
     await copyButton(accountRow(page, account.displayName), account.displayName).click();
@@ -248,7 +248,7 @@ test.describe('管理者', () => {
     const account = await createAccount(request);
     await context.grantPermissions(CLIPBOARD_PERMISSIONS, { origin });
 
-    await page.goto('/social');
+    await page.goto('/social?tab=accounts');
     await requireSecureContext(page);
 
     await copyButton(accountRow(page, account.displayName), account.displayName).click();
@@ -274,7 +274,7 @@ test.describe('管理者', () => {
     const b = await createAccount(request);
     await context.grantPermissions(CLIPBOARD_PERMISSIONS, { origin });
 
-    await page.goto('/social');
+    await page.goto('/social?tab=accounts');
     await requireSecureContext(page);
 
     await copyButton(accountRow(page, b.displayName), b.displayName).click();
@@ -290,7 +290,7 @@ test.describe('管理者', () => {
   }) => {
     const displayName = `E2E アカウントID 画面から ${unique()}`;
 
-    await page.goto('/social');
+    await page.goto('/social?tab=accounts');
     // 読み込み直すと消える印。追加の後に残っていれば、ページは読み込み直されていない。
     await page.evaluate(() => {
       (window as unknown as { __e2eNoReload?: boolean }).__e2eNoReload = true;
@@ -328,7 +328,7 @@ test.describe('管理者', () => {
     const account = await createAccount(request);
     await context.grantPermissions(CLIPBOARD_PERMISSIONS, { origin });
 
-    await page.goto('/social');
+    await page.goto('/social?tab=accounts');
     const button = copyButton(accountRow(page, account.displayName), account.displayName);
     await expect(button).toBeVisible();
 
@@ -360,7 +360,7 @@ test.describe('閲覧者', () => {
     try {
       await context.grantPermissions(CLIPBOARD_PERMISSIONS, { origin });
       const page = await context.newPage();
-      await page.goto('/social');
+      await page.goto('/social?tab=accounts');
 
       const row = accountRow(page, account.displayName);
       await expect(idElement(row)).toHaveCount(1);
@@ -396,7 +396,7 @@ test.describe('狭い画面', () => {
     const account = await createAccount(request);
     await context.grantPermissions(CLIPBOARD_PERMISSIONS, { origin });
 
-    await page.goto('/social');
+    await page.goto('/social?tab=accounts');
     const row = accountRow(page, account.displayName);
     await expect(idElement(row)).toHaveCount(1);
 
@@ -430,7 +430,7 @@ test.describe('クリップボードが使えないとき', () => {
       });
     });
 
-    await page.goto('/social');
+    await page.goto('/social?tab=accounts');
     expect(await page.evaluate(() => navigator.clipboard === undefined)).toBe(true);
 
     const row = accountRow(page, account.displayName);
@@ -458,7 +458,7 @@ test.describe('見えない利用者', () => {
     const context = await userBrowserContext(request, browser, []);
     try {
       const page = await context.newPage();
-      await page.goto('/social');
+      await page.goto('/social?tab=accounts');
 
       await expect(page.getByText(FORBIDDEN)).toBeVisible();
       await expect(page.locator('[data-account-id]')).toHaveCount(0);
@@ -478,7 +478,7 @@ test.describe('見えない利用者', () => {
     // 未認証になっていることを先に確かめる。ここが空でないとリダイレクトの検査が意味を失う。
     expect(await page.context().cookies()).toEqual([]);
 
-    await page.goto('/social');
+    await page.goto('/social?tab=accounts');
 
     await expect(page).toHaveURL(/\/login/);
     await expect(page.getByLabel('ログインID')).toBeVisible();

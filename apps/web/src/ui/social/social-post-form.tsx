@@ -20,6 +20,7 @@ import {
   POST_FORM_SCHEDULE_NOTE,
   POST_STATUS_LABEL,
 } from '@/ui/social/labels';
+import { socialTabHref } from '@/ui/social/social-tabs';
 
 /**
  * SNS投稿の作成・編集フォーム。
@@ -80,9 +81,22 @@ export interface SocialPostFormProps {
    * （`site-form.tsx` と同じ形）。
    */
   readonly sidebar?: ReactNode;
+  /**
+   * 保存・キャンセルの戻り先（055-social-pending-tab 設計 §5.7）。開いたタブへ戻す。
+   * **任意。** 既定は投稿タブ（`/social?tab=posts`）。Server Component が `postFormReturnTo` で
+   * 2 つの値のどちらかに決めて渡す（任意の URL を受け取らない）。
+   */
+  readonly returnTo?: string;
 }
 
-export function SocialPostForm({ title, initial, accounts, postId, sidebar }: SocialPostFormProps) {
+export function SocialPostForm({
+  title,
+  initial,
+  accounts,
+  postId,
+  sidebar,
+  returnTo = socialTabHref('posts'),
+}: SocialPostFormProps) {
   const [message, setMessage] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, readonly string[]>>({});
   const [busy, setBusy] = useState(false);
@@ -149,7 +163,7 @@ export function SocialPostForm({ title, initial, accounts, postId, sidebar }: So
         : await apiRequest(`/api/v1/social/posts/${postId}`, { method: 'PATCH', body: common });
 
     if (result.ok) {
-      window.location.assign('/social');
+      window.location.assign(returnTo);
       return;
     }
 
@@ -290,7 +304,7 @@ export function SocialPostForm({ title, initial, accounts, postId, sidebar }: So
             <Button type="submit" variant="primary" disabled={busy}>
               保存
             </Button>
-            <Button variant="secondary" onClick={() => window.location.assign('/social')}>
+            <Button variant="secondary" onClick={() => window.location.assign(returnTo)}>
               キャンセル
             </Button>
           </div>

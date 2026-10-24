@@ -17,9 +17,12 @@ import {
  * 承認待ちの投稿は、外部アプリの形（Scope `social.read` + `social.write` の API トークン）で
  * `publishTiming: 'after_approval'` を送って作る。`beforeAll` / `afterAll` は `social-publishing.spec.ts` を写す。
  *
+ * 055 で承認待ちの区画は送信待ちタブ（`/social`）の表の行に、投稿一覧は投稿タブ（`/social?tab=posts`）に
+ * 移った（055 設計 §9.3・§14、実装プラン §8 の 34）。期待する状態の移り変わりは変えない。
+ *
  * **このファイルは `social-credentials.spec.ts`・`social-publishing.spec.ts`・`social.spec.ts` より先に走る**
  * （ファイル名の順に直列）。Plugin と承認待ちの投稿を残すと、後の spec の前提（Plugin の無い状態、
- * 承認待ち 0 件で区画が描かれない）を壊すので、**投稿は件ごとに、Plugin・アカウント・トークン・利用者は
+ * 送信待ちの 1 ページ目）を壊すので、**投稿は件ごとに、Plugin・アカウント・トークン・利用者は
  * `afterAll` で必ず片付ける**（実装プラン §7 の 12）。
  */
 
@@ -88,9 +91,14 @@ interface Post {
   readonly body: string;
 }
 
-/** 外部アプリとして承認待ちの投稿を登録する（`publishTiming: 'after_approval'`）。 */
+/**
+ * 外部アプリとして承認待ちの投稿を登録する（`publishTiming: 'after_approval'`）。
+ *
+ * **本文に「承認待ち」の字を入れない。** 行の状態を `toContainText('承認待ち')` で見るので、
+ * 本文が含むと状態の表示に関係なく当たる（承認した後も送信待ちに残る行が落ちる。実装プラン §8 の 77）。
+ */
 async function requestApproval(overrides: Record<string, unknown> = {}): Promise<Post> {
-  const body = String(overrides['body'] ?? `E2E承認待ち${unique()}`);
+  const body = String(overrides['body'] ?? `E2E承認の投稿${unique()}`);
   const response = await app().post('/api/v1/social/posts', {
     data: {
       socialAccountId: accountId,
@@ -112,23 +120,34 @@ async function fetchStatus(request: APIRequestContext, id: string): Promise<stri
   return ((await response.json()) as { data: { status: string } }).data.status;
 }
 
-/** 「承認待ち」区画（`#approval-pending`）。投稿一覧にも同じ本文が出るので、区画で絞る。 */
-function approvalSection(page: Page): Locator {
-  return page.locator('#approval-pending');
+/**
+ * 送信待ちタブ（`/social`）の表の、本文を含む行（055 設計 §9.3）。055 で承認待ちの区画
+ * （`#approval-pending`）が無くなり、承認待ちは送信待ちの表に「承認待ち」の行として並ぶ。
+ */
+function pendingRow(page: Page, body: string): Locator {
+  return page.getByRole('table').locator('tbody tr').filter({ hasText: body });
 }
 
-/** 投稿一覧の行（操作列の「編集」を持つ行。区画にも同じ本文が出るので絞る）。 */
+/** 投稿タブ（`/social?tab=posts`）の投稿一覧の行（操作列の「編集」を持つ行）。 */
 function postListRow(page: Page, body: string): Locator {
   return page.getByRole('row').filter({ hasText: body }).filter({ hasText: '編集' });
+}
+
+/** 送信待ちの状態の絞り込み（ラベル「状態」）の、件数を添えた選択肢（055 設計 §9.2「承認待ち（n）」）。 */
+function statusOption(page: Page, label: string, count: number): Locator {
+  return page
+    .getByLabel('状態', { exact: true })
+    .locator('option')
+    .filter({ hasText: new RegExp(`^${label}（\\s*${count}\\s*）$`) });
 }
 
 function approveDialog(page: Page): Locator {
   return page.getByRole('dialog', { name: '投稿を承認する' });
 }
 
-/** 区画の「承認する…」を押してダイアログを開く。 */
-async function openApproveDialog(page: Page): Promise<Locator> {
-  await approvalSection(page)
+/** 送信待ちの行の「承認する…」を押してダイアログを開く。 */
+async function openApproveDialog(page: Page, body: string): Promise<Locator> {
+  await pendingRow(page, body)
     .getByRole('button', { name: /^承認する/ })
     .click();
   const dialog = approveDialog(page);
@@ -256,26 +275,29 @@ test.afterAll(async ({ playwright }) => {
   }
 });
 
-/** #72。承認待ちの区画 → 即投稿で承認 → 予約済み → 配信で配信済み。 */
+/** #72。送信待ちの承認待ちの行 → 即投稿で承認 → 予約済み → 配信で配信済み。 */
 test.describe('#72 承認して配信に回す', () => {
-  test('#72 区画に出て、即投稿で承認すると区画から消え「予約済み」、配信の後に「配信済み」', async ({
+  test('#72 送信待ちに「承認待ち」で出て、即投稿で承認すると承認待ちでなくなり、投稿タブで「予約済み」、配信の後に「配信済み」', async ({
     page,
     request,
   }) => {
     const post = await requestApproval();
 
     await page.goto('/social');
-    const section = approvalSection(page);
-    await expect(section.getByRole('heading', { name: /承認待ち（\s*1\s*件）/ })).toBeVisible();
-    await expect(section).toContainText(post.body);
+    await expect(statusOption(page, '承認待ち', 1)).toHaveCount(1);
+    await expect(pendingRow(page, post.body)).toContainText('承認待ち');
 
-    const dialog = await openApproveDialog(page);
+    const dialog = await openApproveDialog(page, post.body);
     await dialog.getByLabel(/即投稿/).check();
     await dialog.getByRole('button', { name: '承認する', exact: true }).click();
 
-    await expect(approvalSection(page)).toHaveCount(0);
-    await expect(postListRow(page, post.body)).toContainText('予約済み');
+    // 承認した行は送信待ちに残り、状態が「予約済み（承認済み）」になる（055 設計 §9.3.4・#65）。
+    await expect(pendingRow(page, post.body)).not.toContainText('承認待ち');
+    await expect(pendingRow(page, post.body)).toContainText('予約済み');
+    await expect(pendingRow(page, post.body)).toContainText('（承認済み）');
     expect(await fetchStatus(request, post.id)).toBe('scheduled');
+    await page.goto('/social?tab=posts');
+    await expect(postListRow(page, post.body)).toContainText('予約済み');
 
     const published = await postJson(request, '/api/v1/social/publish');
     expect(published.status(), await published.text()).toBe(200);
@@ -287,27 +309,28 @@ test.describe('#72 承認して配信に回す', () => {
 
 /** #73。差し戻すと下書きに戻る。 */
 test.describe('#73 差し戻す', () => {
-  test('#73 「差し戻す」→ 確認 → 区画から消え、投稿一覧の状態が「下書き」', async ({
+  test('#73 「差し戻す」→ 確認 → 送信待ちから消え、投稿タブの状態が「下書き」', async ({
     page,
     request,
   }) => {
     const post = await requestApproval();
 
     await page.goto('/social');
-    await approvalSection(page).getByRole('button', { name: '差し戻す' }).click();
+    await pendingRow(page, post.body).getByRole('button', { name: '差し戻す' }).click();
     const confirm = page.getByRole('dialog').filter({ hasText: '下書きに戻します。' });
     await expect(confirm).toContainText('承認の依頼は取り下げられます。');
     await confirm.getByRole('button', { name: '差し戻す' }).click();
 
-    await expect(approvalSection(page)).toHaveCount(0);
-    await expect(postListRow(page, post.body)).toContainText('下書き');
+    await expect(pendingRow(page, post.body)).toHaveCount(0);
     expect(await fetchStatus(request, post.id)).toBe('draft');
+    await page.goto('/social?tab=posts');
+    await expect(postListRow(page, post.body)).toContainText('下書き');
   });
 });
 
-/** #74。閲覧者は区画を見られるが、承認・差し戻しはできない（表示制御。認可は UseCase）。 */
+/** #74。閲覧者は承認待ちの行を見られるが、承認・差し戻しはできない（表示制御。認可は UseCase）。 */
 test.describe('#74 閲覧者', () => {
-  test('#74 閲覧者には区画が見えるが「承認する」「差し戻す」が無い', async ({
+  test('#74 閲覧者には送信待ちの承認待ちの行が見えるが「承認する」「差し戻す」が無い', async ({
     request,
     browser,
   }) => {
@@ -317,10 +340,10 @@ test.describe('#74 閲覧者', () => {
       const page = await context.newPage();
       await page.goto('/social');
 
-      const section = approvalSection(page);
-      await expect(section).toContainText(post.body);
-      await expect(section.getByRole('button', { name: /^承認する/ })).toHaveCount(0);
-      await expect(section.getByRole('button', { name: '差し戻す' })).toHaveCount(0);
+      const row = pendingRow(page, post.body);
+      await expect(row).toContainText('承認待ち');
+      await expect(row.getByRole('button', { name: /^承認する/ })).toHaveCount(0);
+      await expect(row.getByRole('button', { name: '差し戻す' })).toHaveCount(0);
     } finally {
       await context.close();
     }
@@ -336,7 +359,7 @@ test.describe('#75 見た後に書き換えられた投稿の承認', () => {
     const rewritten = `E2E書き換え後${unique()}`;
 
     await page.goto('/social');
-    await expect(approvalSection(page)).toContainText(post.body);
+    await expect(pendingRow(page, post.body)).toContainText('承認待ち');
 
     // 画面を開いた後に、外部アプリが本文を書き換える。
     const patched = await app().patch(`/api/v1/social/posts/${post.id}`, {
@@ -344,14 +367,14 @@ test.describe('#75 見た後に書き換えられた投稿の承認', () => {
     });
     expect(patched.status(), await patched.text()).toBe(200);
 
-    const dialog = await openApproveDialog(page);
+    const dialog = await openApproveDialog(page, post.body);
     await dialog.getByLabel(/即投稿/).check();
     await dialog.getByRole('button', { name: '承認する', exact: true }).click();
 
     await expect(dialog).toContainText('投稿の内容が変わっています');
     await dialog.getByRole('button', { name: '閉じて読み込み直す' }).click();
 
-    await expect(approvalSection(page)).toContainText(rewritten);
+    await expect(pendingRow(page, rewritten)).toContainText('承認待ち');
     expect(await fetchStatus(app(), post.id)).toBe('awaiting_approval');
   });
 });
@@ -363,7 +386,7 @@ test.describe('#76 狭い画面', () => {
   test('#76 承認待ちがある /social がページ全体で横スクロールせず、承認のダイアログが画面幅に収まる', async ({
     page,
   }) => {
-    await requestApproval({
+    const post = await requestApproval({
       // 本文は example-plugin の上限（100 文字）に収める。長い URL はリンクと画像で作る。
       body: `E2E狭い画面${unique()}${'x'.repeat(60)}`,
       link: `https://example.com/${'b'.repeat(200)}`,
@@ -371,10 +394,11 @@ test.describe('#76 狭い画面', () => {
     });
 
     await page.goto('/social');
-    await expect(approvalSection(page)).toBeVisible();
+    // 本文の列は 60 字の抜粋なので、先頭の部分で行を引く。
+    await expect(pendingRow(page, post.body.slice(0, 20))).toBeVisible();
     expect(await hasHorizontalOverflow(page)).toBe(false);
 
-    const dialog = await openApproveDialog(page);
+    const dialog = await openApproveDialog(page, post.body.slice(0, 20));
     const box = await dialog.boundingBox();
     expect(box).not.toBeNull();
     if (box !== null) {
@@ -386,7 +410,7 @@ test.describe('#76 狭い画面', () => {
 
 /** #77。ダッシュボードの案内。 */
 test.describe('#77 ダッシュボードの案内', () => {
-  test('#77 「承認待ちの投稿が 1 件あります」とリンクが出て、押すと /social#approval-pending へ移る', async ({
+  test('#77 「承認待ちの投稿が 1 件あります」とリンクが出て、押すと /social?pendingStatus=awaiting_approval へ移る', async ({
     page,
   }) => {
     const post = await requestApproval();
@@ -394,8 +418,8 @@ test.describe('#77 ダッシュボードの案内', () => {
     await page.goto('/dashboard');
     await expect(page.getByText(/承認待ちの投稿が\s*1\s*件あります/)).toBeVisible();
 
-    await page.locator('a[href="/social#approval-pending"]').first().click();
-    await page.waitForURL('**/social#approval-pending');
-    await expect(approvalSection(page)).toContainText(post.body);
+    await page.locator('a[href="/social?pendingStatus=awaiting_approval"]').first().click();
+    await page.waitForURL('**/social?pendingStatus=awaiting_approval');
+    await expect(pendingRow(page, post.body)).toContainText('承認待ち');
   });
 });

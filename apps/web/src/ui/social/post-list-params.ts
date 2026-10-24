@@ -13,7 +13,6 @@ import {
   POST_SOURCE_ISSUED_SUFFIX,
   POST_SOURCE_REVOKED_SUFFIX,
   POST_SOURCE_SCREEN_LABEL,
-  POSTS_ANCHOR,
 } from './labels';
 
 /**
@@ -82,10 +81,12 @@ function encodeValue(value: string): string {
 }
 
 /**
- * 一覧の条件の URL（設計 §9.2）。既定値（すべて・20 件・1 ページ目）は書かず、末尾に `#posts` を付ける。
+ * 一覧の条件の URL（設計 §9.2）。既定値（すべて・20 件・1 ページ目）は書かない。
+ * 投稿一覧は投稿タブにあるので、先頭に `tab=posts` を書き、アンカーは付けない
+ * （055-social-pending-tab 設計 §9.8。条件の無い投稿タブは `/social?tab=posts`）。
  */
 export function postListHref(filters: PostListFilters): string {
-  const entries: [string, string][] = [];
+  const entries: [string, string][] = [['tab', 'posts']];
   if (filters.status !== null) entries.push(['postStatus', filters.status]);
   if (filters.accountId !== null) entries.push(['postAccount', filters.accountId]);
   if (filters.source !== null) entries.push(['postSource', postSourceParamOf(filters.source)]);
@@ -94,7 +95,7 @@ export function postListHref(filters: PostListFilters): string {
   }
   if (filters.page > 1) entries.push(['postPage', String(filters.page)]);
   const query = entries.map(([key, value]) => `${key}=${encodeValue(value)}`).join('&');
-  return `/social${query === '' ? '' : `?${query}`}#${POSTS_ANCHOR}`;
+  return `/social?${query}`;
 }
 
 /** 絞り込みを保ったまま、指定のページを開く（ページ全体を読み込み直す。設計 §9.2）。 */

@@ -138,6 +138,13 @@ function postListRow(page: Page, body: string): Locator {
   return page.getByRole('row').filter({ hasText: body }).filter({ hasText: '編集' });
 }
 
+/** SNS 画面のタブのリンク（055 設計 §9.1。`Tabs` の label「SNSのタブ」）。 */
+function socialTabLink(page: Page, label: string): Locator {
+  return page
+    .getByRole('navigation', { name: 'SNSのタブ' })
+    .getByRole('link', { name: label, exact: true });
+}
+
 /** 導入済みか。**同じ版を導入し直すと 422 になる**ので、叩く前に見る。 */
 async function isInstalled(request: APIRequestContext): Promise<boolean> {
   const response = await request.get('/api/v1/plugins');
@@ -202,7 +209,7 @@ test.describe('#35 行の「資格情報を設定」で入れ直す', () => {
     const handle = `e2e_handle_${unique()}`;
     const appPassword = `e2e-app-password-${unique()}`;
 
-    await page.goto('/social');
+    await page.goto('/social?tab=accounts');
     const dialog = await openCredentialDialog(page, account.displayName);
 
     await expect(dialog).toContainText('現在の状態：未設定');
@@ -234,7 +241,7 @@ test.describe('#35 行の「資格情報を設定」で入れ直す', () => {
     const handle = `e2e_handle_${unique()}`;
     const appPassword = `e2e-app-password-${unique()}`;
 
-    await page.goto('/social');
+    await page.goto('/social?tab=accounts');
     const dialog = await openCredentialDialog(page, account.displayName);
     await dialog.getByLabel(HANDLE_FIELD_LABEL).fill(handle);
     await dialog.getByLabel(APP_PASSWORD_FIELD_LABEL).fill(appPassword);
@@ -257,6 +264,9 @@ test.describe('#35 行の「資格情報を設定」で入れ直す', () => {
 /* -------------------------------------------------------------------------- */
 
 test.describe('#36 保存の後、投稿一覧の「資格情報 未設定」が再読み込みなしで消える', () => {
+  // 055 でアカウントと投稿一覧が別のタブに分かれたので、同じ画面で両方を見られない
+  // （055 実装プラン §8 の 32）。投稿タブで Badge を見る → タブのリンクでアカウントタブへ移って保存
+  // → タブのリンクで投稿タブへ戻り Badge が無い、の形にする。**page.reload() は呼ばない。**
   test('#36 未来の auto の予約の行の Badge が、保存の後に消える', async ({ page, request }) => {
     const account = await createAccount(request, 'example');
     const body = `E2E 資格情報待ちの予約 ${unique()}`;
@@ -269,20 +279,23 @@ test.describe('#36 保存の後、投稿一覧の「資格情報 未設定」が
     });
     expect(created.status(), await created.text()).toBe(201);
 
-    await page.goto('/social');
+    await page.goto('/social?tab=posts');
     const postRow = postListRow(page, body);
     await expect(postRow).toBeVisible();
     await expect(postRow.getByText('資格情報 未設定')).toBeVisible();
 
+    await socialTabLink(page, 'アカウント').click();
+    await expect(page).toHaveURL(/[?&]tab=accounts(&|$)/);
     const dialog = await openCredentialDialog(page, account.displayName);
     await dialog.getByLabel(HANDLE_FIELD_LABEL).fill(`e2e_handle_${unique()}`);
     await dialog.getByLabel(APP_PASSWORD_FIELD_LABEL).fill(`e2e-app-password-${unique()}`);
     await dialog.getByRole('button', { name: '保存', exact: true }).click();
     await expect(dialog).toHaveCount(0);
 
-    // **page.reload() を呼ばない。** router.refresh() で Server Component が描き直す（設計 §7.3.4）。
-    await expect(postRow.getByText('資格情報 未設定')).toHaveCount(0);
+    await socialTabLink(page, '投稿').click();
+    await expect(page).toHaveURL(/[?&]tab=posts(&|$)/);
     await expect(postRow).toBeVisible();
+    await expect(postRow.getByText('資格情報 未設定')).toHaveCount(0);
   });
 });
 
@@ -300,7 +313,7 @@ test.describe('#37 「資格情報を消す」で消す', () => {
       appPassword: `e2e-app-password-${unique()}`,
     });
 
-    await page.goto('/social');
+    await page.goto('/social?tab=accounts');
     const row = accountRow(page, account.displayName);
     await expect(row).toContainText('••••••••');
 
@@ -325,7 +338,7 @@ test.describe('#37 「資格情報を消す」で消す', () => {
   test('#37 未設定のアカウントの Modal には「資格情報を消す」が無い', async ({ page, request }) => {
     const account = await createAccount(request, 'example');
 
-    await page.goto('/social');
+    await page.goto('/social?tab=accounts');
     const dialog = await openCredentialDialog(page, account.displayName);
 
     await expect(dialog.getByRole('button', { name: CLEAR_CREDENTIAL })).toHaveCount(0);
@@ -349,7 +362,7 @@ test.describe('#38 項目が欠けていれば保存しない', () => {
       }
     });
 
-    await page.goto('/social');
+    await page.goto('/social?tab=accounts');
     const dialog = await openCredentialDialog(page, account.displayName);
     await dialog.getByLabel(HANDLE_FIELD_LABEL).fill(`e2e_handle_${unique()}`);
     await dialog.getByRole('button', { name: '保存', exact: true }).click();
@@ -374,7 +387,7 @@ test.describe('#39 閉じて開き直すと欄が空', () => {
     const handle = `e2e_discarded_handle_${unique()}`;
     const appPassword = `e2e-discarded-password-${unique()}`;
 
-    await page.goto('/social');
+    await page.goto('/social?tab=accounts');
     const dialog = await openCredentialDialog(page, account.displayName);
     await dialog.getByLabel(HANDLE_FIELD_LABEL).fill(handle);
     await dialog.getByLabel(APP_PASSWORD_FIELD_LABEL).fill(appPassword);
@@ -399,7 +412,7 @@ test.describe('#39 閉じて開き直すと欄が空', () => {
     const handle = `e2e_escaped_handle_${unique()}`;
     const appPassword = `e2e-escaped-password-${unique()}`;
 
-    await page.goto('/social');
+    await page.goto('/social?tab=accounts');
     const dialog = await openCredentialDialog(page, account.displayName);
     await dialog.getByLabel(HANDLE_FIELD_LABEL).fill(handle);
     await dialog.getByLabel(APP_PASSWORD_FIELD_LABEL).fill(appPassword);
@@ -428,7 +441,7 @@ test.describe('#40 publisher の無い provider（x）の Modal は汎用の欄'
     // E2E では X の配信 Plugin を導入しないので、x には publisher が無い（free）。
     const account = await createAccount(request, 'x');
 
-    await page.goto('/social');
+    await page.goto('/social?tab=accounts');
     const dialog = await openCredentialDialog(page, account.displayName);
 
     await expect(dialog.getByLabel(GENERIC_FIELD_LABEL)).toHaveCount(1);
@@ -444,7 +457,7 @@ test.describe('#40 publisher の無い provider（x）の Modal は汎用の欄'
 
 test.describe('#54 publisher が宣言した項目の説明が欄の説明になる', () => {
   test('#54 アカウント追加の Modal で、2 つの欄が説明を持つ', async ({ page }) => {
-    await page.goto('/social');
+    await page.goto('/social?tab=accounts');
     await page.getByRole('button', { name: '+ アカウントを追加' }).click();
 
     const dialog = page.getByRole('dialog', { name: 'SNSアカウントを追加' });
@@ -461,7 +474,7 @@ test.describe('#54 publisher が宣言した項目の説明が欄の説明にな
   test('#54 入れ直しの Modal で、2 つの欄が説明を持つ', async ({ page, request }) => {
     const account = await createAccount(request, 'example');
 
-    await page.goto('/social');
+    await page.goto('/social?tab=accounts');
     const dialog = await openCredentialDialog(page, account.displayName);
 
     await expect(dialog.getByLabel(HANDLE_FIELD_LABEL)).toHaveAccessibleDescription(

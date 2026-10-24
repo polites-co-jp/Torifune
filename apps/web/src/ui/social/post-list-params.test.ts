@@ -5,7 +5,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
  * 受け入れ条件 #75、#74 の発行日の添え字、#76 の `openPostListPage`）。
  *
  * * #75：`parsePostListParams` が設計 §9.2 の表のとおりに読み、誤った値は無視して既定にする。`postListHref` は既定値を
- *   書かず `#posts` で終わり、1 ページ目なら `postPage` を書かない
+ *   書かず、1 ページ目なら `postPage` を書かない
+ * * 055 #42（055-social-pending-tab 設計 §9.8）：`postListHref` は投稿タブの URL。既定値で `/social?tab=posts`、
+ *   条件つきで `tab=posts` を含み、`#` を含まない（054 の `#posts` をやめる）。054 #75・#76 の `postListHref`・
+ *   `openPostListPage` の期待もこれに合わせた（055 設計 §14）
  * * #74：`postSourceOptionsOf` が、名前の重なるトークンにだけ「（発行 YYYY-MM-DD）」を添え、失効は「（失効）」。
  *   「削除されたトークン」は `hasDeletedTokenPosts` のときだけ
  * * #76：`openPostListPage(filters, page)` が絞り込みを保った `postListHref` を `window.location.assign` で開く
@@ -239,20 +242,18 @@ describe('#75 parsePostListParams（設計 §9.2 の表）', () => {
 // ---------------------------------------------------------------------------
 
 describe('#75 postListHref', () => {
-  it('#75 既定値だけなら /social#posts（クエリを書かない）', async () => {
+  it('#75 既定値だけなら /social?tab=posts（条件のクエリを書かない。055 #42）', async () => {
     const { postListHref } = await load();
 
-    expect(postListHref(DEFAULTS)).toBe('/social#posts');
+    expect(postListHref(DEFAULTS)).toBe('/social?tab=posts');
   });
 
-  it('#75 #posts で終わる（条件があっても）', async () => {
+  it('#75 条件があっても tab=posts で始まり、# を含まない（055 #42）', async () => {
     const { postListHref } = await load();
+    const href = postListHref(filters({ status: 'awaiting_approval', perPage: 50, page: 2 }));
 
-    expect(
-      postListHref(filters({ status: 'awaiting_approval', perPage: 50, page: 2 })).endsWith(
-        '#posts',
-      ),
-    ).toBe(true);
+    expect(href.startsWith('/social?tab=posts')).toBe(true);
+    expect(href).not.toContain('#');
   });
 
   it('#75 条件を持つ項目だけをクエリに書く（既定値は書かない）', async () => {
@@ -271,8 +272,9 @@ describe('#75 postListHref', () => {
 
     expect(href).toEqual({
       pathname: '/social',
-      hash: '#posts',
+      hash: '',
       query: {
+        tab: 'posts',
         postStatus: 'awaiting_approval',
         postAccount: ACCOUNT,
         postSource: `token:${TOKEN}`,
@@ -285,6 +287,7 @@ describe('#75 postListHref', () => {
     const { postListHref } = await load();
 
     expect(parseHref(postListHref(filters({ status: 'draft' }))).query).toEqual({
+      tab: 'posts',
       postStatus: 'draft',
     });
   });
@@ -293,20 +296,24 @@ describe('#75 postListHref', () => {
     const { postListHref } = await load();
 
     expect(parseHref(postListHref(filters({ source: { kind: 'screen' }, page: 1 }))).query).toEqual(
-      { postSource: 'screen' },
+      { tab: 'posts', postSource: 'screen' },
     );
   });
 
   it('#75 2 ページ目以降は postPage を書く', async () => {
     const { postListHref } = await load();
 
-    expect(parseHref(postListHref(filters({ page: 3 }))).query).toEqual({ postPage: '3' });
+    expect(parseHref(postListHref(filters({ page: 3 }))).query).toEqual({
+      tab: 'posts',
+      postPage: '3',
+    });
   });
 
   it('#75 登録元「削除されたトークン」は postSource=deleted', async () => {
     const { postListHref } = await load();
 
     expect(parseHref(postListHref(filters({ source: { kind: 'deleted_token' } }))).query).toEqual({
+      tab: 'posts',
       postSource: 'deleted',
     });
   });
@@ -322,6 +329,65 @@ describe('#75 postListHref', () => {
     });
 
     expect(parsePostListParams(parseHref(postListHref(original)).query)).toEqual(original);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 055 #42 postListHref は投稿タブの URL（055-social-pending-tab 設計 §9.8）
+// ---------------------------------------------------------------------------
+
+describe('055 #42 postListHref は投稿タブ（tab=posts）の URL で、アンカーを付けない', () => {
+  it('055 #42 既定値で /social?tab=posts', async () => {
+    const { postListHref } = await load();
+
+    expect(postListHref(DEFAULTS)).toBe('/social?tab=posts');
+  });
+
+  it('055 #42 条件つきでも tab=posts を含む', async () => {
+    const { postListHref } = await load();
+
+    for (const current of [
+      filters({ status: 'draft' }),
+      filters({ accountId: ACCOUNT }),
+      filters({ source: { kind: 'token', tokenId: TOKEN } }),
+      filters({ perPage: 100 }),
+      filters({ page: 2 }),
+    ]) {
+      expect(parseHref(postListHref(current)).query['tab'], JSON.stringify(current)).toBe('posts');
+    }
+  });
+
+  it('055 #42 条件つきでも # を含まない', async () => {
+    const { postListHref } = await load();
+
+    for (const current of [
+      DEFAULTS,
+      filters({ status: 'draft' }),
+      filters({ source: { kind: 'deleted_token' }, perPage: 50, page: 3 }),
+    ]) {
+      expect(postListHref(current), JSON.stringify(current)).not.toContain('#');
+    }
+  });
+
+  it('055 #42 送信待ちタブ・配信履歴タブのクエリの名前を使わない', async () => {
+    const { postListHref } = await load();
+    const keys = Object.keys(
+      parseHref(
+        postListHref(
+          filters({
+            status: 'scheduled',
+            accountId: ACCOUNT,
+            source: { kind: 'screen' },
+            perPage: 50,
+            page: 2,
+          }),
+        ),
+      ).query,
+    );
+
+    expect(keys.sort()).toEqual(
+      ['postAccount', 'postPage', 'postPerPage', 'postSource', 'postStatus', 'tab'].sort(),
+    );
   });
 });
 
@@ -354,10 +420,15 @@ describe('#76 openPostListPage', () => {
 
     openPostListPage(filters({ status: 'draft', perPage: 100 }), 3);
 
-    expect(parseHref(String(assign.mock.calls[0]?.[0])).query).toEqual({
-      postStatus: 'draft',
-      postPerPage: '100',
-      postPage: '3',
+    expect(parseHref(String(assign.mock.calls[0]?.[0]))).toEqual({
+      pathname: '/social',
+      hash: '',
+      query: {
+        tab: 'posts',
+        postStatus: 'draft',
+        postPerPage: '100',
+        postPage: '3',
+      },
     });
   });
 
@@ -368,7 +439,10 @@ describe('#76 openPostListPage', () => {
 
     openPostListPage(filters({ status: 'draft', page: 2 }), 1);
 
-    expect(parseHref(String(assign.mock.calls[0]?.[0])).query).toEqual({ postStatus: 'draft' });
+    expect(parseHref(String(assign.mock.calls[0]?.[0])).query).toEqual({
+      tab: 'posts',
+      postStatus: 'draft',
+    });
   });
 });
 

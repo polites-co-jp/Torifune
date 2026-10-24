@@ -23,6 +23,12 @@ import type { AccessScope, PostOrigin } from '../domain/social/access-scope';
 import type { PostSourceFilter, SocialPostSources } from '../domain/social/post-source';
 import type { PublishVerdict, SkipReason, SkipVerdict } from '../domain/social/publishing';
 import { isSkipReason } from '../domain/social/publishing';
+import {
+  MANUAL_NOT_POSTED_REASON,
+  PENDING_KINDS,
+  type ManualOutcome,
+  type PendingKind,
+} from '../domain/social/pending';
 import type {
   DueCursor,
   InterruptedPost,
@@ -31,6 +37,7 @@ import type {
   SocialAccountListQuery,
   SocialAccountPage,
   SocialAccountUpdate,
+  SocialPendingListQuery,
   SocialPostListQuery,
   SocialPostPage,
   SocialPostUpdate,
@@ -193,6 +200,51 @@ function sourceCondition(
       return UUID_PATTERN.test(source.tokenId)
         ? eb('created_by_token_id', '=', source.tokenId)
         : sql<SqlBool>`false`;
+  }
+}
+
+/**
+ * 送信待ちの「手動投稿待ち」の条件（055-social-pending-tab 設計 §8.1）。Domain の `pendingKindOf` と同じ表。
+ *
+ * 「いま」は入力の値（SQL の `now()` ではない。画面の行の判定と同じ値で区分を分ける）。
+ */
+function manualPendingAt(now: Date): RawBuilder<SqlBool> {
+  return sql<SqlBool>`(social_posts.status = 'scheduled' AND social_posts.delivery_mode = 'manual' AND social_posts.scheduled_at IS NOT NULL AND social_posts.scheduled_at <= ${now})`;
+}
+
+/** 送信待ちの区分の値（`manual_pending` / `awaiting_approval` / `scheduled`）。送信待ちの行だけに使う。 */
+function pendingKindExpression(now: Date): RawBuilder<string> {
+  return sql<string>`CASE WHEN ${manualPendingAt(now)} THEN 'manual_pending' WHEN social_posts.status = 'awaiting_approval' THEN 'awaiting_approval' ELSE 'scheduled' END`;
+}
+
+/**
+ * 送信待ちの一覧・件数に共通の条件：送信待ちの状態と、アカウント・登録元の絞り込み（区画は `scopedPosts` が掛ける）。
+ */
+function pendingBaseConditions(
+  eb: ExpressionBuilder<Schema, 'social_posts'>,
+  query: SocialPendingListQuery,
+): Expression<SqlBool>[] {
+  const list: Expression<SqlBool>[] = [eb('status', 'in', ['awaiting_approval', 'scheduled'])];
+  if (query.socialAccountId !== null && UUID_PATTERN.test(query.socialAccountId)) {
+    list.push(eb('social_account_id', '=', query.socialAccountId));
+  }
+  if (query.source !== null) {
+    list.push(sourceCondition(eb, query.source));
+  }
+  return list;
+}
+
+/** 区分の絞り込み（設計 §8.1）。null は絞らない。 */
+function pendingKindCondition(kind: PendingKind | null, now: Date): RawBuilder<SqlBool> | null {
+  switch (kind) {
+    case null:
+      return null;
+    case 'manual_pending':
+      return manualPendingAt(now);
+    case 'awaiting_approval':
+      return sql<SqlBool>`social_posts.status = 'awaiting_approval'`;
+    case 'scheduled':
+      return sql<SqlBool>`(social_posts.status = 'scheduled' AND NOT ${manualPendingAt(now)})`;
   }
 }
 
@@ -1004,6 +1056,122 @@ export const socialRepository: SocialRepository = {
       .executeTakeFirstOrThrow();
 
     return { items: rows.map((row) => toPost(row as PostRow)), total: Number(counted.count) };
+  },
+
+  async listPendingPosts(
+    connection: Connection,
+    query: SocialPendingListQuery,
+    scope: AccessScope,
+  ): Promise<SocialPostPage> {
+    const kindCondition = pendingKindCondition(query.kind, query.now);
+    const conditions = (eb: ExpressionBuilder<Schema, 'social_posts'>): Expression<SqlBool>[] => {
+      const list = pendingBaseConditions(eb, query);
+      if (kindCondition !== null) list.push(kindCondition);
+      return list;
+    };
+
+    let rowsQuery = scopedPosts(connection.db.selectFrom('social_posts'), scope)
+      .select(POST_COLUMNS)
+      .where((eb) => eb.and(conditions(eb)));
+
+    rowsQuery =
+      query.sort === 'action'
+        ? // 手が要るもの順：手動投稿待ち（予約時刻の古い順）→ 承認待ち（依頼の古い順）→ 予約済み（予約日時の近い順。
+          // 予約日時の無いものは最後）。
+          rowsQuery
+            .orderBy(
+              sql`CASE WHEN ${manualPendingAt(query.now)} THEN 0 WHEN social_posts.status = 'awaiting_approval' THEN 1 ELSE 2 END`,
+              'asc',
+            )
+            .orderBy(
+              sql`CASE WHEN social_posts.status = 'awaiting_approval' THEN social_posts.created_at ELSE social_posts.scheduled_at END`,
+              (ob) => ob.asc().nullsLast(),
+            )
+        : // 予定の時刻順：区分を混ぜて予約日時（承認待ちは希望日時）の早い順。無いものは最後。
+          rowsQuery
+            .orderBy('scheduled_at', (ob) => ob.asc().nullsLast())
+            .orderBy('created_at', 'asc');
+
+    const rows = await rowsQuery
+      // 並び順が同値のとき順序が揺れないよう、最後に id を足す。
+      .orderBy('id', 'asc')
+      .limit(query.perPage)
+      .offset((query.page - 1) * query.perPage)
+      .execute();
+
+    const counted = await scopedPosts(connection.db.selectFrom('social_posts'), scope)
+      .select((eb) => eb.fn.countAll<string>().as('count'))
+      .where((eb) => eb.and(conditions(eb)))
+      .executeTakeFirstOrThrow();
+
+    return { items: rows.map((row) => toPost(row as PostRow)), total: Number(counted.count) };
+  },
+
+  async countPendingByKind(
+    connection: Connection,
+    query: SocialPendingListQuery,
+    scope: AccessScope,
+  ): Promise<Readonly<Record<PendingKind, number>>> {
+    const kind = pendingKindExpression(query.now);
+    const rows = await scopedPosts(connection.db.selectFrom('social_posts'), scope)
+      .select((eb) => [kind.as('pending_kind'), eb.fn.countAll<string>().as('count')])
+      .where((eb) => eb.and(pendingBaseConditions(eb, query)))
+      // 出力の別名で束ねる（式を 2 度書くと「いま」の値が別のパラメータになり、同じ式と見なされない）。
+      .groupBy(sql`pending_kind`)
+      .execute();
+
+    const counts: Record<PendingKind, number> = {
+      manual_pending: 0,
+      awaiting_approval: 0,
+      scheduled: 0,
+    };
+    for (const row of rows) {
+      const value = (row as { pending_kind: string }).pending_kind;
+      if ((PENDING_KINDS as readonly string[]).includes(value)) {
+        counts[value as PendingKind] = Number(row.count);
+      }
+    }
+    return counts;
+  },
+
+  async recordManualOutcome(
+    connection: Connection,
+    input: {
+      readonly id: string;
+      readonly outcome: ManualOutcome;
+      readonly externalUrl: string | null;
+      readonly now: Date;
+      readonly expectedUpdatedAt: Date;
+    },
+  ): Promise<SocialPost | null> {
+    if (!UUID_PATTERN.test(input.id)) return null;
+
+    // 判定と更新を 1 文で（055-social-pending-tab 設計 §8.2 の 6）。読んでから書くまでに配信方法を自動へ変えられた・
+    // 取りやめられた・他の人が記録した行には当たらない（`status`・`delivery_mode`・`updated_at` のどれかが変わる）。
+    // 予約日時と承認の記録は書き換えない（事実の時刻は `published_at` / `failed_at`。設計 §5.6）。
+    const values =
+      input.outcome === 'posted'
+        ? {
+            status: 'published' as const,
+            published_at: input.now,
+            ...(input.externalUrl === null ? {} : { external_url: input.externalUrl }),
+          }
+        : {
+            status: 'failed' as const,
+            failed_at: input.now,
+            failure_reason: MANUAL_NOT_POSTED_REASON,
+          };
+    const row = await connection.db
+      .updateTable('social_posts')
+      .set({ ...values, next_attempt_at: null, updated_at: input.now })
+      .where('id', '=', input.id)
+      .where('status', '=', 'scheduled')
+      .where('delivery_mode', '=', 'manual')
+      .where(sql<Date>`date_trunc('milliseconds', updated_at)`, '=', input.expectedUpdatedAt)
+      .returning(POST_COLUMNS)
+      .executeTakeFirst();
+
+    return row === undefined ? null : toPost(row as PostRow);
   },
 
   async failInterrupted(

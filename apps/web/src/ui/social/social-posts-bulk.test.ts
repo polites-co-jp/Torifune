@@ -1027,14 +1027,16 @@ describe('#74 絞り込みの帯', () => {
     );
   });
 
-  it('#74 「条件をクリア」は条件があるとき /social#posts へのリンクとして出る', () => {
+  // 055-social-pending-tab 設計 §9.8：投稿一覧の URL は `/social?tab=posts…`（アンカーなし）になった。
+  // 「条件をクリア」は条件の無い投稿タブ（`postListHref` の既定値）へ向ける（055 設計 §14・実装プラン §8 の 4）。
+  it('#74 「条件をクリア」は条件があるとき /social?tab=posts へのリンクとして出る', () => {
     const html = render({ filters: { ...DEFAULT_FILTERS, status: 'draft' } });
     const link = [...html.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/g)].find((match) =>
       textOf(match[2] as string).includes(FILTER_CLEAR),
     );
 
     expect(link, '「条件をクリア」のリンク').toBeDefined();
-    expect(link?.[1]).toContain('href="/social#posts"');
+    expect(link?.[1]).toContain('href="/social?tab=posts"');
   });
 
   it('#74 条件が無ければ「条件をクリア」を出さない', () => {

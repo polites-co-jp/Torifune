@@ -85,13 +85,17 @@ describe('#69 投稿一覧の承認待ちの行', () => {
     expect(rows(renderList([post({ status: 'awaiting_approval' })]))[1]).toContain('承認待ち');
   });
 
-  it('#69 状態列に「（区画で承認）」の補足を出す', () => {
-    expect(rows(renderList([post({ status: 'awaiting_approval' })]))[1]).toContain('区画で承認');
+  // 055-social-pending-tab 設計 §9.8：承認待ちの区画は送信待ちタブの表に吸収された。
+  // 補足は「（送信待ちで承認）」で送信待ちタブの承認待ちの絞り込みへ向ける（055 設計 §14）。
+  it('#69 状態列に「（送信待ちで承認）」の補足を出す', () => {
+    expect(rows(renderList([post({ status: 'awaiting_approval' })]))[1]).toContain(
+      '送信待ちで承認',
+    );
   });
 
-  it('#69 #approval-pending へのリンクがある', () => {
+  it('#69 /social?pendingStatus=awaiting_approval へのリンクがある', () => {
     expect(renderList([post({ status: 'awaiting_approval' })])).toContain(
-      'href="#approval-pending"',
+      'href="/social?pendingStatus=awaiting_approval"',
     );
   });
 
@@ -116,8 +120,11 @@ describe('#69 投稿一覧の承認待ちの行', () => {
     );
   });
 
-  it('#69 承認待ちでない行に #approval-pending のリンクを出さない', () => {
-    expect(renderList([post({ status: 'draft' })])).not.toContain('#approval-pending');
+  it('#69 承認待ちでない行に送信待ちの承認待ちへのリンクを出さない', () => {
+    // 古い語（`#approval-pending`）のままだと常に通り、検査が弱まる（055 設計 §14）。
+    expect(renderList([post({ status: 'draft' })])).not.toContain(
+      '/social?pendingStatus=awaiting_approval',
+    );
   });
 });
 

@@ -12,6 +12,10 @@ import * as labels from './labels';
  *   ちょうど一致する。設計 §9.10 の文言が `social-posts.tsx` に直書きされていない（`labels.ts` にある）
  * * #76：`social-posts.tsx` のページ送りが `'/social?postPage='` を書かず、`openPostListPage` を呼ぶ。
  *   絞り込みの帯は `postListHref` で URL を作る（設計 §9.2）
+ * * 055-social-pending-tab 設計 §9.4・§14：一括の部品（`bulk-post-actions.tsx`）と絞り込みの帯（`post-filter-bar.tsx`）を
+ *   `social-posts.tsx` から切り出すので、検査の対象を 3 つのファイルにする。「直書きしない」・`'/social?postPage='` を
+ *   書かないは**3 つのそれぞれ**、`openPostListPage` / `postListHref` を呼ぶ・`post-list-params` と `bulk-plan` から値を
+ *   import するは**3 つのどれか**で見る。語の集合と述語は変えない（055 実装プラン §8 の 5）
  * * 設定 → API：`api-settings.tsx` が `API_TOKEN_NAME_SOURCE_NOTE` を使い、§9.9 の文を直書きしない
  * * 一括の純関数のモジュール `bulk-plan.ts` は Client Component のモジュールにしない（実装プラン T25）。
  *   取り消しの対象は Domain の `BULK_DELETABLE_STATUSES` で決める（設計 §9.6）
@@ -24,9 +28,21 @@ import * as labels from './labels';
 const UI_DIR = join(import.meta.dirname, '..');
 
 const POSTS_COMPONENT = join(UI_DIR, 'social', 'social-posts.tsx');
+const BULK_ACTIONS_COMPONENT = join(UI_DIR, 'social', 'bulk-post-actions.tsx');
+const FILTER_BAR_COMPONENT = join(UI_DIR, 'social', 'post-filter-bar.tsx');
 const SOCIAL_LABELS = join(UI_DIR, 'social', 'labels.ts');
 const BULK_PLAN = join(UI_DIR, 'social', 'bulk-plan.ts');
 const SETTINGS_COMPONENT = join(UI_DIR, 'settings', 'api-settings.tsx');
+
+/**
+ * 投稿一覧を組む 3 つの部品（055 設計 §9.4 で `social-posts.tsx` から 2 つを切り出す）。
+ * 名前は `it.each` の題に出す。
+ */
+const POSTS_COMPONENTS = [
+  ['ui/social/social-posts.tsx', POSTS_COMPONENT],
+  ['ui/social/bulk-post-actions.tsx', BULK_ACTIONS_COMPONENT],
+  ['ui/social/post-filter-bar.tsx', FILTER_BAR_COMPONENT],
+] as const;
 
 /** 無いファイルは空として読む（「ある」の検査が赤になり、「直書きしない」の検査は素通りしない）。 */
 function read(path: string): string {
@@ -67,6 +83,18 @@ function importsFrom(text: string, specifier: string): boolean {
 /** 名前が識別子として現れるか（コメントの外）。 */
 function mentions(text: string, name: string): boolean {
   return new RegExp(`(?<![\\w$])${escapeRegExp(name)}(?![\\w$])`).test(stripComments(text));
+}
+
+/** 3 つの部品のどれかで述語が真になるか（呼び出し・import は切り出した先にあってよい）。 */
+function anyPostsComponent(predicate: (text: string) => boolean): boolean {
+  return POSTS_COMPONENTS.some(([, path]) => predicate(read(path)));
+}
+
+/** 部品ごとに語を並べた `it.each` の行（`[部品の名前, パス, 語]`）。 */
+function perComponent(words: readonly string[]): [string, string, string][] {
+  return POSTS_COMPONENTS.flatMap(([name, path]) =>
+    words.map((word): [string, string, string] => [name, path, word]),
+  );
 }
 
 /** 名前の関数を呼んでいるか（コメントの外）。 */
@@ -151,8 +179,8 @@ const API_TOKEN_NAME_DESCRIPTION = 'どこで使うトークンかが分かる�
 /* -------------------------------------------------------------------------- */
 
 describe('#60 前提：検査する部品がある（空振りしない）', () => {
-  it.each([
-    ['ui/social/social-posts.tsx', POSTS_COMPONENT],
+  it.each<readonly [string, string]>([
+    ...POSTS_COMPONENTS,
     ['ui/social/labels.ts', SOCIAL_LABELS],
     ['ui/settings/api-settings.tsx', SETTINGS_COMPONENT],
   ])('#60 %s がある', (_name, path) => {
@@ -220,14 +248,17 @@ describe('#60 理由と効果の表示名のキーが Domain の定数とちょ�
 /* #60 social-posts.tsx に文言を直書きしない                                      */
 /* -------------------------------------------------------------------------- */
 
-describe('#60 social-posts.tsx に §9.10 の文言を直書きしない', () => {
-  it.each(POSTS_WORDS)('#60 「%s」を直書きしない', (word) => {
-    expect(isHardCoded(read(POSTS_COMPONENT), word)).toBe(false);
+describe('#60 投稿一覧の 3 つの部品のそれぞれに §9.10 の文言を直書きしない', () => {
+  it.each(perComponent(POSTS_WORDS))('#60 %s に「%s」を直書きしない', (_name, path, word) => {
+    expect(isHardCoded(read(path), word)).toBe(false);
   });
 
-  it.each(POSTS_SHORT_WORDS)('#60 「%s」を引用符や JSX のテキストで直書きしない', (word) => {
-    expect(isHardCodedShort(read(POSTS_COMPONENT), word)).toBe(false);
-  });
+  it.each(perComponent(POSTS_SHORT_WORDS))(
+    '#60 %s に「%s」を引用符や JSX のテキストで直書きしない',
+    (_name, path, word) => {
+      expect(isHardCodedShort(read(path), word)).toBe(false);
+    },
+  );
 });
 
 describe('#60 §9.10 の文言は ui/social/labels.ts にある', () => {
@@ -248,25 +279,30 @@ describe('#60 §9.10 の文言は ui/social/labels.ts にある', () => {
 /* #76 ページ送りと絞り込みの URL（部品側）                                        */
 /* -------------------------------------------------------------------------- */
 
-describe('#76 social-posts.tsx のページ送りは絞り込みを保つ', () => {
-  it("#76 '/social?postPage=' を書かない（絞り込みを落とす URL を作らない）", () => {
-    expect(isHardCoded(read(POSTS_COMPONENT), '/social?postPage=')).toBe(false);
+describe('#76 投稿一覧のページ送りは絞り込みを保つ', () => {
+  it.each(POSTS_COMPONENTS)(
+    "#76 %s に '/social?postPage=' を書かない（絞り込みを落とす URL を作らない）",
+    (_name, path) => {
+      expect(isHardCoded(read(path), '/social?postPage=')).toBe(false);
+    },
+  );
+
+  it('#76 3 つの部品のどれかが openPostListPage を呼んでいる', () => {
+    expect(anyPostsComponent((text) => calls(text, 'openPostListPage'))).toBe(true);
   });
 
-  it('#76 openPostListPage を呼んでいる', () => {
-    expect(calls(read(POSTS_COMPONENT), 'openPostListPage')).toBe(true);
-  });
-
-  it('#76 post-list-params から値を import している', () => {
-    const text = read(POSTS_COMPONENT);
-
+  it('#76 3 つの部品のどれかが post-list-params から値を import している', () => {
     expect(
-      importsFrom(text, '@/ui/social/post-list-params') || importsFrom(text, './post-list-params'),
+      anyPostsComponent(
+        (text) =>
+          importsFrom(text, '@/ui/social/post-list-params') ||
+          importsFrom(text, './post-list-params'),
+      ),
     ).toBe(true);
   });
 
-  it('#76 絞り込みの帯は postListHref で URL を作る（設計 §9.2）', () => {
-    expect(calls(read(POSTS_COMPONENT), 'postListHref')).toBe(true);
+  it('#76 絞り込みの帯は postListHref で URL を作る（3 つの部品のどれか。設計 §9.2）', () => {
+    expect(anyPostsComponent((text) => calls(text, 'postListHref'))).toBe(true);
   });
 });
 
@@ -290,12 +326,12 @@ describe('ui/social/bulk-plan.ts（実装プラン T25・設計 §9.6）', () =>
     expect(mentions(text, 'BULK_DELETABLE_STATUSES')).toBe(true);
   });
 
-  it('social-posts.tsx が bulk-plan から値を import している', () => {
-    const text = read(POSTS_COMPONENT);
-
-    expect(importsFrom(text, '@/ui/social/bulk-plan') || importsFrom(text, './bulk-plan')).toBe(
-      true,
-    );
+  it('投稿一覧の 3 つの部品のどれかが bulk-plan から値を import している', () => {
+    expect(
+      anyPostsComponent(
+        (text) => importsFrom(text, '@/ui/social/bulk-plan') || importsFrom(text, './bulk-plan'),
+      ),
+    ).toBe(true);
   });
 });
 

@@ -658,15 +658,18 @@ export function SocialAccounts(props: SocialAccountsProps) {
 
   return (
     <>
+      {/*
+        h1「SNS」はページ（タブの上）に 1 つ。アカウントタブの中身は追加のボタンだけを右に置く
+        （055-social-pending-tab 設計 §9.1）。
+      */}
       <header
         style={{
           display: 'flex',
-          justifyContent: 'space-between',
+          justifyContent: 'flex-end',
           alignItems: 'center',
           marginBottom: 'var(--tf-space-4)',
         }}
       >
-        <h1 style={{ fontSize: '1.25rem', margin: 0 }}>SNS</h1>
         {canWrite && (
           <Button variant="primary" onClick={() => setCreating(true)}>
             + アカウントを追加

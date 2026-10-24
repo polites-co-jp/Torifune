@@ -6,6 +6,7 @@ import {
   DISPLAY_NAME_MAX_LENGTH,
   EXTERNAL_ID_MAX_LENGTH,
   EXTERNAL_REF_MAX_LENGTH,
+  EXTERNAL_URL_MAX_LENGTH,
   FAILURE_REASON_MAX_LENGTH,
   isValidExternalUrl,
   isValidLink,
@@ -22,6 +23,7 @@ import {
   type SocialPost,
 } from '@/domain/social/social';
 import { SKIP_REASONS, type SkipReason } from '@/domain/social/publishing';
+import { MANUAL_OUTCOMES } from '@/domain/social/pending';
 import { pageQuerySchema, perPageQuerySchema } from '@/api/query';
 import { dataEnvelope, pageEnvelope } from './envelope';
 
@@ -302,6 +304,36 @@ export const approvePostSchema = z.object({
     ),
   csrfToken: z.string().optional(),
 });
+
+/**
+ * 手動投稿の結果の要求（055-social-pending-tab 設計 §8.2）。
+ *
+ * **未知のキーは 422**（`strict`。設計 §8.2・#34）。形（`enum`・ISO 8601・長さ）はここで、意味（`not_posted` の URL・
+ * https・手動の予約でない）は UseCase で見る。`expectedUpdatedAt` は承認の要求と同じ検査。
+ */
+export const manualOutcomeRequestSchema = z
+  .object({
+    outcome: z
+      .enum(MANUAL_OUTCOMES)
+      .describe('SNS へ投稿した（posted）か、投稿しなかった（not_posted。失敗で確定）か。'),
+    expectedUpdatedAt: z
+      .string()
+      .refine(
+        (value) => ISO_DATE_TIME_PATTERN.test(value) && !Number.isNaN(Date.parse(value)),
+        'ISO 8601 の日時で指定してください。',
+      )
+      .describe(
+        '画面で読んだ投稿の updatedAt。投稿の updatedAt と合わなければ 409（見た後に内容が変わった）。',
+      ),
+    externalUrl: z
+      .string()
+      .max(EXTERNAL_URL_MAX_LENGTH)
+      .nullable()
+      .optional()
+      .describe('SNS 側の投稿の URL（https）。posted のときだけ送れる。'),
+    csrfToken: z.string().optional(),
+  })
+  .strict();
 
 /**
  * API が返すアカウントの形。
