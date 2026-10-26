@@ -51,6 +51,13 @@ const FIRST_TIER_CELL: React.CSSProperties = { ...CELL, borderBottom: 'none' };
 /** `detail` の段。上の余白を詰め、下線は今のセルと同じ。 */
 const DETAIL_CELL: React.CSSProperties = { ...CELL, paddingTop: 0 };
 
+/**
+ * `detail` の中身を包む。全幅の段の中身（長い本文など）の幅が 1 段目の列の幅の配分に効くと、
+ * 表の自動の列幅で 1 段目の列が最小の幅まで縮む（操作のボタンが縦に積まれる）。
+ * 中身の幅を配分に数えさせず（`width: 0`）、描くときはセルの幅いっぱいに広げる（`min-width: 100%`）。
+ */
+const DETAIL_CONTENT: React.CSSProperties = { width: 0, minWidth: '100%' };
+
 function alignStyle<T>(column: Column<T>): React.CSSProperties {
   return column.align === 'right' ? NUMERIC_CELL : {};
 }
@@ -112,7 +119,7 @@ export function Table<T>({ columns, rows, rowKey, caption, detail }: TableProps<
               </tr>
               <tr>
                 <td colSpan={columns.length} style={DETAIL_CELL}>
-                  {detail(row)}
+                  <div style={DETAIL_CONTENT}>{detail(row)}</div>
                 </td>
               </tr>
             </tbody>
