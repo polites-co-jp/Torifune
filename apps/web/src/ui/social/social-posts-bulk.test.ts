@@ -554,8 +554,9 @@ describe('#64 閲覧者（social.read だけ）', () => {
     expect(headers(viewer())).toContain(SOURCE_HEADER);
   });
 
-  it('#64 見出しの先頭は「アカウント」（選択の列が無い）', () => {
-    expect(headers(viewer())[0]).toBe('アカウント');
+  // 056 裁定 3（設計 §5.4・#17）で投稿タブの 1 段目は「状態」が先頭になった。選択の列が無いので先頭は「状態」。
+  it('#64 見出しの先頭は「状態」（選択の列が無い）', () => {
+    expect(headers(viewer())[0]).toBe('状態');
   });
 
   it('#64 絞り込みの 4 つの Select はある（設計 §10.1「登録元の列・絞り込み」は social.read）', () => {
