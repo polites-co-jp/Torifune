@@ -24,6 +24,12 @@ export interface TableProps<T> {
   readonly rows: readonly T[];
   readonly rowKey: (row: T) => string;
   readonly caption?: string;
+  /**
+   * 行の下の全幅の段（任意）。渡すと 1 行を `<tbody>` 1 つ（`<tr>` 2 つ）で描き、
+   * 1 段目に列のセル、2 段目に `detail(row)` を表の幅いっぱいで置く。
+   * 渡さないときの出力は変わらない。
+   */
+  readonly detail?: (row: T) => ReactNode;
 }
 
 const CELL: React.CSSProperties = {
@@ -39,11 +45,24 @@ const NUMERIC_CELL: React.CSSProperties = {
   fontVariantNumeric: 'tabular-nums',
 };
 
+/** `detail` ありの 1 段目のセル。下線を引かず、2 段目と 1 つの行に見せる。 */
+const FIRST_TIER_CELL: React.CSSProperties = { ...CELL, borderBottom: 'none' };
+
+/** `detail` の段。上の余白を詰め、下線は今のセルと同じ。 */
+const DETAIL_CELL: React.CSSProperties = { ...CELL, paddingTop: 0 };
+
+/**
+ * `detail` の中身を包む。全幅の段の中身（長い本文など）の幅が 1 段目の列の幅の配分に効くと、
+ * 表の自動の列幅で 1 段目の列が最小の幅まで縮む（操作のボタンが縦に積まれる）。
+ * 中身の幅を配分に数えさせず（`width: 0`）、描くときはセルの幅いっぱいに広げる（`min-width: 100%`）。
+ */
+const DETAIL_CONTENT: React.CSSProperties = { width: 0, minWidth: '100%' };
+
 function alignStyle<T>(column: Column<T>): React.CSSProperties {
   return column.align === 'right' ? NUMERIC_CELL : {};
 }
 
-export function Table<T>({ columns, rows, rowKey, caption }: TableProps<T>) {
+export function Table<T>({ columns, rows, rowKey, caption, detail }: TableProps<T>) {
   return (
     // 幅の広い表が画面全体を横スクロールさせないよう、表だけをスクロールさせる。
     // クラスは globals.css（.tf-table-scroll）。**画面ごとに書くと新しい表で忘れる。**
@@ -75,17 +94,37 @@ export function Table<T>({ columns, rows, rowKey, caption }: TableProps<T>) {
             ))}
           </tr>
         </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={rowKey(row)}>
-              {columns.map((column) => (
-                <td key={column.key} style={{ ...CELL, ...alignStyle(column) }}>
-                  {column.render(row)}
+        {detail === undefined ? (
+          <tbody>
+            {rows.map((row) => (
+              <tr key={rowKey(row)}>
+                {columns.map((column) => (
+                  <td key={column.key} style={{ ...CELL, ...alignStyle(column) }}>
+                    {column.render(row)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        ) : (
+          // 1 行を行グループ（<tbody>）1 つにまとめ、2 段が同じ行のものだと DOM で分かるようにする。
+          rows.map((row) => (
+            <tbody key={rowKey(row)}>
+              <tr>
+                {columns.map((column) => (
+                  <td key={column.key} style={{ ...FIRST_TIER_CELL, ...alignStyle(column) }}>
+                    {column.render(row)}
+                  </td>
+                ))}
+              </tr>
+              <tr>
+                <td colSpan={columns.length} style={DETAIL_CELL}>
+                  <div style={DETAIL_CONTENT}>{detail(row)}</div>
                 </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
+              </tr>
+            </tbody>
+          ))
+        )}
       </table>
     </div>
   );

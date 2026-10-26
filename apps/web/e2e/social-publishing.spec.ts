@@ -419,7 +419,8 @@ async function fetchPost(
  * （`#manual-pending`）が無くなり、手動投稿待ちは送信待ちの表に「手動投稿待ち」の行として並ぶ。
  */
 function manualPendingRow(page: Page, body: string): Locator {
-  return page.getByRole('table').locator('tbody tr').filter({ hasText: body });
+  // 056 で 1 投稿が `<tbody>` 1 つ（1 段目に状態・操作、2 段目に本文）になった（056 設計 §12.2）。
+  return page.getByRole('table').locator('tbody').filter({ hasText: body });
 }
 
 /**
@@ -429,7 +430,12 @@ function manualPendingRow(page: Page, body: string): Locator {
  * （操作列があるのは投稿一覧だけ）。
  */
 function postListRow(page: Page, body: string): Locator {
-  return page.getByRole('row').filter({ hasText: body }).filter({ hasText: '編集' });
+  // 056 で 1 投稿が `<tbody>` 1 つになったので、行グループで引く（056 設計 §12.2）。
+  return page
+    .getByRole('table')
+    .locator('tbody')
+    .filter({ hasText: body })
+    .filter({ hasText: '編集' });
 }
 
 /** 導入済みか。**同じ版を導入し直すと 422 になる**ので、叩く前に見る。 */

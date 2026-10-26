@@ -405,15 +405,13 @@ function headers(html: string): string[] {
   return headerCells(html).map((cell) => textOf(cell).trim());
 }
 
+/**
+ * 本体の投稿の行グループ（`<tbody>`）。056 で 1 投稿が `<tbody>` 1 つ（1 段目に列のセル、2 段目に本文）に
+ * なったので、`<tr>` ではなく行グループで切る（056 設計 §5.1・§12.1）。`cellOf` は 1 段目の `<td>` が先に並ぶので
+ * 見出しの位置でそのまま引ける。
+ */
 function bodyRows(html: string): string[] {
-  return html
-    .split('<tr')
-    .slice(1)
-    .map((piece) => {
-      const end = piece.indexOf('</tr>');
-      return `<tr${end === -1 ? piece : piece.slice(0, end + '</tr>'.length)}`;
-    })
-    .filter((tr) => !tr.includes('<th'));
+  return [...html.matchAll(/<tbody\b[^>]*>[\s\S]*?<\/tbody>/g)].map((match) => match[0]);
 }
 
 function rowOf(html: string, body: string): string {
@@ -696,11 +694,10 @@ describe('#45 列見出しと状態の列', () => {
     expect(checkboxes(first).map(ariaLabelOf)).toEqual([SELECT_PAGE_LABEL]);
   });
 
-  it('#45 選択の列の後に「状態」「アカウント」「本文」「登録元」「日時」「配信方法」「操作」の順', async () => {
+  it('#45 選択の列の後に「状態」「アカウント」「登録元」「日時」「配信方法」「操作」の順（「本文」は 056 で 2 段目へ）', async () => {
     expect(headers(await render()).slice(1)).toEqual([
       '状態',
       'アカウント',
-      '本文',
       '登録元',
       '日時',
       '配信方法',
@@ -1061,7 +1058,7 @@ describe('#49 「投稿画面を開く」と別のタブで開く', () => {
     expect(link?.openTag).toContain('rel="noopener noreferrer"');
   });
 
-  it('#49 note（Plugin の補足）があれば本文の列の抜粋の下に出す（実装プラン §8 の 11）', async () => {
+  it('#49 note（Plugin の補足）があれば 2 段目の本文の下に出す（実装プラン §8 の 11。056 設計 §5.2・§12.1）', async () => {
     const target = row({
       body: '注意書きのある手動投稿',
       deliveryMode: 'manual',
@@ -1072,7 +1069,10 @@ describe('#49 「投稿画面を開く」と別のタブで開く', () => {
         note: '画像は投稿画面で添付してください',
       },
     });
-    const cell = textOf(cellOf(await render({ rows: [target], total: 1 }), target.body, '本文'));
+    // 056 で本文の列は無くなり、本文と note は行グループの 2 段目（最後の `<td>`）に入る（056 実装プラン §8 の 9）。
+    const cell = textOf(
+      cellHtmlsOf(rowOf(await render({ rows: [target], total: 1 }), target.body)).at(-1) ?? '',
+    );
 
     expect(cell).toContain(target.body);
     expect(cell).toContain('画像は投稿画面で添付してください');

@@ -121,16 +121,22 @@ async function fetchStatus(request: APIRequestContext, id: string): Promise<stri
 }
 
 /**
- * 送信待ちタブ（`/social`）の表の、本文を含む行（055 設計 §9.3）。055 で承認待ちの区画
+ * 送信待ちタブ（`/social`）の表の、本文を含む投稿の行グループ（055 設計 §9.3）。055 で承認待ちの区画
  * （`#approval-pending`）が無くなり、承認待ちは送信待ちの表に「承認待ち」の行として並ぶ。
+ * 056 で 1 投稿が `<tbody>` 1 つ（1 段目に状態・操作、2 段目に本文）になったので、行グループで引く
+ * （056 設計 §5.1・§12.2）。
  */
 function pendingRow(page: Page, body: string): Locator {
-  return page.getByRole('table').locator('tbody tr').filter({ hasText: body });
+  return page.getByRole('table').locator('tbody').filter({ hasText: body });
 }
 
-/** 投稿タブ（`/social?tab=posts`）の投稿一覧の行（操作列の「編集」を持つ行）。 */
+/** 投稿タブ（`/social?tab=posts`）の投稿一覧の行グループ（操作列の「編集」を持つもの。056 設計 §12.2）。 */
 function postListRow(page: Page, body: string): Locator {
-  return page.getByRole('row').filter({ hasText: body }).filter({ hasText: '編集' });
+  return page
+    .getByRole('table')
+    .locator('tbody')
+    .filter({ hasText: body })
+    .filter({ hasText: '編集' });
 }
 
 /** 送信待ちの状態の絞り込み（ラベル「状態」）の、件数を添えた選択肢（055 設計 §9.2「承認待ち（n）」）。 */

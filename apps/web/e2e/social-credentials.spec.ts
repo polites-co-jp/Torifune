@@ -135,7 +135,12 @@ async function openCredentialDialog(page: Page, displayName: string): Promise<Lo
 
 /** 投稿一覧（`SocialPosts`）の行。手動投稿待ちの区画と区別するため「編集」を持つ行で絞る。 */
 function postListRow(page: Page, body: string): Locator {
-  return page.getByRole('row').filter({ hasText: body }).filter({ hasText: '編集' });
+  // 056 で 1 投稿が `<tbody>` 1 つ（1 段目に操作、2 段目に本文）になったので、行グループで引く（056 設計 §12.2）。
+  return page
+    .getByRole('table')
+    .locator('tbody')
+    .filter({ hasText: body })
+    .filter({ hasText: '編集' });
 }
 
 /** SNS 画面のタブのリンク（055 設計 §9.1。`Tabs` の label「SNSのタブ」）。 */
