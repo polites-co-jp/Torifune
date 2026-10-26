@@ -207,9 +207,9 @@ function postsTable(page: Page): Locator {
     .filter({ has: page.getByRole('columnheader', { name: SOURCE_COLUMN, exact: true }) });
 }
 
-/** 投稿一覧の本文の行。 */
+/** 投稿一覧の投稿の行グループ（056 で 1 投稿が `<tbody>` 1 つ。件数は投稿の数。056 設計 §12.2）。 */
 function postsRows(page: Page): Locator {
-  return postsTable(page).locator('tbody tr');
+  return postsTable(page).locator('tbody');
 }
 
 function postRow(page: Page, body: string): Locator {
@@ -245,7 +245,8 @@ async function chooseFilter(
  * （`#approval-pending`）が無くなり、承認待ちは送信待ちタブの表に並ぶ。
  */
 function pendingRow(page: Page, body: string): Locator {
-  return page.getByRole('table').locator('tbody tr').filter({ hasText: body });
+  // 056 で 1 投稿が `<tbody>` 1 つ（1 段目に状態・操作、2 段目に本文）になった（056 設計 §12.2）。
+  return page.getByRole('table').locator('tbody').filter({ hasText: body });
 }
 
 function sendDialog(page: Page): Locator {

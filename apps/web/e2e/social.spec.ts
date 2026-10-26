@@ -250,7 +250,8 @@ test('SNS画面に投稿一覧が出る', async ({ page, request }) => {
   await expect(page.getByText(post.body)).toBeVisible();
   // アカウントIDではなく人が読める名前で出す。投稿タブにアカウント一覧は無い（055 設計 §5.1）ので、
   // 絞り込みの帯の `<option>` に当たらないよう、投稿一覧の表の、その投稿の行の中で引く。
-  const row = page.getByRole('table').getByRole('row').filter({ hasText: post.body });
+  // 056 で 1 投稿が `<tbody>` 1 つ（1 段目にアカウント、2 段目に本文）になったので、行グループで引く。
+  const row = page.getByRole('table').locator('tbody').filter({ hasText: post.body });
   await expect(row).toHaveCount(1);
   await expect(row).toContainText(account.displayName);
   await expect(row).not.toContainText(account.id);
@@ -302,7 +303,8 @@ test('画面から投稿を削除できる', async ({ page, request }) => {
   await page.goto('/social?tab=posts');
   await expect(page.getByText(post.body)).toBeVisible();
 
-  const row = page.getByRole('row').filter({ hasText: post.body });
+  // 056 で 1 投稿が `<tbody>` 1 つ（1 段目に操作、2 段目に本文）になった（056 設計 §12.2）。
+  const row = page.getByRole('table').locator('tbody').filter({ hasText: post.body });
   await row.getByRole('button', { name: '削除' }).click();
   await page.getByRole('button', { name: '削除する' }).click();
 

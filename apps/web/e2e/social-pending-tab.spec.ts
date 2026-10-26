@@ -277,12 +277,15 @@ async function expectCurrentTab(page: Page, name: string): Promise<void> {
   }
 }
 
-/** 表の本文の行（送信待ちタブ・投稿タブはそれぞれ表が 1 つ）。 */
+/**
+ * 表の投稿の行グループ（送信待ちタブ・投稿タブはそれぞれ表が 1 つ）。056 で 1 投稿が `<tbody>` 1 つ
+ * （1 段目に状態・操作、2 段目に本文）になったので、件数は行グループ＝投稿の数（056 設計 §12.2）。
+ */
 function tableRows(page: Page): Locator {
-  return page.getByRole('table').locator('tbody tr');
+  return page.getByRole('table').locator('tbody');
 }
 
-/** 本文を含む行。本文の列は 60 字の抜粋なので、長い本文は先頭で引く。 */
+/** 本文を含む行グループ。本文は 2 段目に全文で出る（056 設計 §5.3）。先頭 40 字で引く形はそのまま。 */
 function rowOf(page: Page, body: string): Locator {
   return tableRows(page).filter({ hasText: body.slice(0, 40) });
 }

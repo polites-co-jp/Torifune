@@ -237,16 +237,12 @@ function headers(html: string): string[] {
   return headerCells(html).map((cell) => textOf(cell).trim());
 }
 
-/** 本体の行（見出しの行を除く）の HTML。 */
+/**
+ * 本体の投稿の行グループ（`<tbody>`）の HTML。056 で 1 投稿が `<tbody>` 1 つ（1 段目に列のセル、2 段目に本文）に
+ * なったので、`<tr>` ではなく行グループで切る（056 設計 §5.1・§12.1）。
+ */
 function bodyRows(html: string): string[] {
-  return html
-    .split('<tr')
-    .slice(1)
-    .map((piece) => {
-      const end = piece.indexOf('</tr>');
-      return `<tr${end === -1 ? piece : piece.slice(0, end + '</tr>'.length)}`;
-    })
-    .filter((row) => !row.includes('<th'));
+  return [...html.matchAll(/<tbody\b[^>]*>[\s\S]*?<\/tbody>/g)].map((match) => match[0]);
 }
 
 /** 本文で選んだ行の HTML。ちょうど 1 行あることも確かめる。 */
@@ -443,22 +439,21 @@ describe('#62 選択の列と「登録元」の見出し', () => {
     }
   });
 
-  it('#62 「登録元」の列見出しが「本文」と「予約日時」の間にある', () => {
+  it('#62 「登録元」の列見出しが「予約日時」の直前にある（「本文」は 056 で 2 段目へ。056 設計 §12.1）', () => {
     const list = headers(render());
     const index = list.indexOf(SOURCE_HEADER);
 
-    expect(index).toBeGreaterThan(list.indexOf('本文'));
+    expect(index).toBeGreaterThanOrEqual(0);
     expect(index).toBe(list.indexOf('予約日時') - 1);
   });
 
-  it('#62 選択の列の後に既存の列が並ぶ（アカウント・本文・登録元・予約日時・配信方法・状態・操作）', () => {
+  it('#62 選択の列の後に既存の列が並ぶ（状態・アカウント・登録元・予約日時・配信方法・操作。056 設計 §5.4）', () => {
     expect(headers(render()).slice(1)).toEqual([
+      '状態',
       'アカウント',
-      '本文',
       SOURCE_HEADER,
       '予約日時',
       '配信方法',
-      '状態',
       '操作',
     ]);
   });

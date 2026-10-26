@@ -83,11 +83,12 @@ function textOf(html: string): string {
     .replace(/&amp;/g, '&');
 }
 
-/** 本体の行（見出しの行を除く）の HTML。 */
+/**
+ * 本体の投稿の行グループ（`<tbody>`）の HTML。056 で 1 投稿が `<tbody>` 1 つ（1 段目に状態の補足、2 段目に本文）に
+ * なったので、行グループで引く（056 設計 §5.1・§12.1）。
+ */
 function bodyRows(html: string): string[] {
-  return [...html.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/g)]
-    .map((match) => match[0])
-    .filter((row) => !row.includes('<th'));
+  return [...html.matchAll(/<tbody\b[^>]*>[\s\S]*?<\/tbody>/g)].map((match) => match[0]);
 }
 
 function rowOf(html: string, body: string): string {
