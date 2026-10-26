@@ -185,9 +185,12 @@ function rowGroup(page: Page, key: string): Locator {
   return page.getByRole('table').locator('tbody').filter({ hasText: key });
 }
 
-/** 行の「編集」（`Link` で包んだボタン）。 */
+/**
+ * 行の「編集」。`<Link><Button>編集</Button></Link>` の入れ子で link と button の両方に当たるので、
+ * 外側の link だけを引く（両方を `or` で引くと strict mode で 2 要素になる）。
+ */
 function editControl(scope: Locator): Locator {
-  return scope.getByRole('link', { name: '編集' }).or(scope.getByRole('button', { name: '編集' }));
+  return scope.getByRole('link', { name: '編集' });
 }
 
 function deleteControl(scope: Locator): Locator {
