@@ -408,6 +408,13 @@ function cellHtmlsOf(tr: string): string[] {
   return [...tr.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/g)].map((match) => match[1] as string);
 }
 
+/** セルの中の `white-space: nowrap` を持つ要素の見える文字（056 設計 §5.5 の日時の値）。 */
+function nowrapTextsOf(cell: string): string[] {
+  return [
+    ...cell.matchAll(/<(\w+)\b[^>]*style="[^"]*white-space:\s*nowrap[^"]*"[^>]*>([^<]*)<\/\1>/g),
+  ].map((match) => textOf(match[2] as string).trim());
+}
+
 /** 1 段目の、見出しで選んだセルの HTML。 */
 function firstTierCell(html: string, body: string, header: string): string {
   const index = headers(html).indexOf(header);
@@ -657,6 +664,22 @@ describe('#15 送信待ちの列の幅', () => {
     }
   });
 
+  it.each(PENDING_ROWS.map((row) => [row.body]))(
+    '#15 「%s」の日時の値が white-space: nowrap の要素に入る（設計 §5.5）',
+    (body) => {
+      const cell = firstTierCell(renderPending(), body, '日時');
+      const texts = nowrapTextsOf(cell);
+
+      expect(texts, '日時のセルの nowrap の要素').toHaveLength(1);
+      expect(texts[0]).toMatch(/\d/);
+      expect(
+        textOf(cell)
+          .trim()
+          .startsWith(texts[0] as string),
+      ).toBe(true);
+    },
+  );
+
   it('#15 判別力：min-width・max-width は width と数えない', () => {
     expect(hasWidth('<th style="min-width:2rem;max-width:4rem">')).toBe(false);
     expect(hasWidth('<th style="white-space:nowrap;width:12rem">')).toBe(true);
@@ -826,6 +849,18 @@ describe('#21 投稿タブの列の幅とチェックボックス', () => {
       expect(hasWidth(cell.openTag), textOf(cell.inner)).toBe(false);
     }
   });
+
+  it.each(POST_ROWS.map((row) => [row.body]))(
+    '#21 「%s」の予約日時の値が white-space: nowrap の要素に入る（設計 §5.5）',
+    (body) => {
+      const cell = firstTierCell(renderPosts(), body, '予約日時');
+      const texts = nowrapTextsOf(cell);
+
+      expect(texts, '予約日時のセルの nowrap の要素').toHaveLength(1);
+      expect(texts[0]).toMatch(/\d/);
+      expect(textOf(cell).trim()).toBe(texts[0]);
+    },
+  );
 
   it.each(POST_ROWS.map((row) => [row.body]))(
     '#21 「%s」の 1 段目の先頭のセルに「この投稿を選択：<抜粋>」のチェックボックス',
