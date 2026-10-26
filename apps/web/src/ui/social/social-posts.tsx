@@ -10,7 +10,6 @@ import {
   type PostStatus,
 } from '@/domain/social/social';
 import { Alert, Badge, Button, Card, Pagination, Table, type Column } from '@/ui/components';
-import { excerptOf } from '@/ui/social/bulk-plan';
 import { BulkPostActions, type BulkResultsInput } from '@/ui/social/bulk-post-actions';
 import {
   APPROVAL_PENDING_ROW_NOTE,
@@ -33,6 +32,7 @@ import {
   retryingNoteLabel,
 } from '@/ui/social/labels';
 import { PostFilterBar } from '@/ui/social/post-filter-bar';
+import { PostBodyPreview } from '@/ui/social/post-preview';
 import {
   DEFAULT_POST_PER_PAGE,
   openPostListPage,
@@ -157,6 +157,17 @@ function formatDateTime(value: string | null): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('ja-JP');
 }
+
+/** 日時の値は折り返さない（056 設計 §5.5）。 */
+const DATE_VALUE_STYLE: CSSProperties = { whiteSpace: 'nowrap' };
+
+/** 操作のセル。入りきらないボタンは次の行へ折り返す（056 設計 §5.5）。「削除」は最後。 */
+const OPS_STYLE: CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: 'var(--tf-space-2)',
+  alignItems: 'center',
+};
 
 const CAPTION_STYLE = {
   display: 'block',
@@ -367,67 +378,37 @@ export function SocialPosts(props: SocialPostsProps) {
       {({ rows: posts, selectColumn, band, requestDelete }) => {
         const columns: Column<PostRow>[] = [
           ...(selectColumn === null ? [] : [selectColumn]),
+          // 並びは送信待ちと揃える（状態が先頭。056 設計 §5.4）。列の幅は選択の列だけが持つ（§5.5）。
+          // 本文は 2 段目（detailCell）。
+          { key: 'status', header: '状態', render: statusCell },
           {
             key: 'account',
             header: 'アカウント',
-            width: '12rem',
             render: (post) => props.accountNames[post.socialAccountId] ?? post.socialAccountId,
-          },
-          {
-            key: 'body',
-            header: '本文',
-            render: (post) => (
-              <span>
-                {excerptOf(post.body)}
-                {/* 配信済みの投稿は外部の本物へ辿れるようにする（設計 §7.3）。 */}
-                {post.status === 'published' && post.externalUrl !== null && (
-                  <a
-                    href={post.externalUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{
-                      marginLeft: 'var(--tf-space-2)',
-                      color: 'var(--tf-color-primary)',
-                      fontSize: 'var(--tf-text-caption)',
-                    }}
-                  >
-                    投稿を見る ↗
-                  </a>
-                )}
-              </span>
-            ),
           },
           {
             // どのアプリ（トークン）から来た投稿か（054 設計 §5.6・§9.1）。閲覧者にも出す。
             key: 'source',
             header: POST_SOURCE_COLUMN_HEADER,
-            width: '10rem',
             render: (post) => <PostSourceLabel source={post.source} />,
           },
           {
             key: 'scheduledAt',
             header: '予約日時',
-            width: '12rem',
-            render: (post) => formatDateTime(post.scheduledAt),
+            render: (post) => (
+              <span style={DATE_VALUE_STYLE}>{formatDateTime(post.scheduledAt)}</span>
+            ),
           },
           {
             key: 'deliveryMode',
             header: '配信方法',
-            width: '7rem',
             render: (post) => DELIVERY_MODE_LABEL[post.deliveryMode] ?? post.deliveryMode,
-          },
-          {
-            key: 'status',
-            header: '状態',
-            width: '12rem',
-            render: statusCell,
           },
           {
             key: 'actions',
             header: '操作',
-            width: '12rem',
             render: (post) => (
-              <span style={{ display: 'flex', gap: 'var(--tf-space-2)' }}>
+              <span style={OPS_STYLE}>
                 {canWrite && (
                   <Link href={`/social/posts/${post.id}/edit`}>
                     <Button variant="ghost">編集</Button>
@@ -442,6 +423,31 @@ export function SocialPosts(props: SocialPostsProps) {
             ),
           },
         ];
+
+        /** 2 段目：本文の全文と、配信済みならその下に外部の投稿へのリンク（056 設計 §5.2）。 */
+        function detailCell(post: PostRow) {
+          return (
+            <>
+              <PostBodyPreview body={post.body} />
+              {/* 配信済みの投稿は外部の本物へ辿れるようにする（設計 §7.3）。 */}
+              {post.status === 'published' && post.externalUrl !== null && (
+                <span style={{ display: 'block', marginTop: 'var(--tf-space-1)' }}>
+                  <a
+                    href={post.externalUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      color: 'var(--tf-color-primary)',
+                      fontSize: 'var(--tf-text-caption)',
+                    }}
+                  >
+                    投稿を見る ↗
+                  </a>
+                </span>
+              )}
+            </>
+          );
+        }
 
         const unreadyCount = posts.filter(
           (post) => unreadyOf(post, props.accountProviders, props.publisherProviders) !== null,
@@ -506,7 +512,12 @@ export function SocialPosts(props: SocialPostsProps) {
               }
             >
               <Card>
-                <Table columns={columns} rows={posts} rowKey={(post) => post.id} />
+                <Table
+                  columns={columns}
+                  rows={posts}
+                  rowKey={(post) => post.id}
+                  detail={detailCell}
+                />
                 <Pagination
                   page={props.page}
                   perPage={props.perPage}
