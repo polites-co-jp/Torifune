@@ -25,7 +25,6 @@ import {
   type Column,
 } from '@/ui/components';
 import { ApprovalDialog, RejectDialog } from '@/ui/social/approval-dialog';
-import { excerptOf } from '@/ui/social/bulk-plan';
 import { BulkPostActions, type BulkResultsInput } from '@/ui/social/bulk-post-actions';
 import {
   APPROVAL_DESIRED_PAST_NOTE,
@@ -86,6 +85,7 @@ import {
 import { pendingListHref, type PendingListFilters } from '@/ui/social/pending-list-params';
 import { DEFAULT_POST_PER_PAGE, type PostListOption } from '@/ui/social/post-list-params';
 import { PostFilterBar } from '@/ui/social/post-filter-bar';
+import { PostBodyPreview } from '@/ui/social/post-preview';
 import {
   PostSourceLabel,
   UnreadyAlert,
@@ -202,6 +202,9 @@ function formatDateTime(value: string | null): string {
 function isManualScheduled(row: PendingRow): boolean {
   return row.deliveryMode === 'manual' && row.status === 'scheduled';
 }
+
+/** 日時の値は折り返さない（056 設計 §5.5）。補足は次の行。 */
+const DATE_VALUE_STYLE: CSSProperties = { whiteSpace: 'nowrap' };
 
 const CAPTION_STYLE = {
   display: 'block',
@@ -403,7 +406,7 @@ export function SocialPending(props: SocialPendingProps) {
 
         function dateCell(row: PendingRow) {
           if (row.status !== 'awaiting_approval') {
-            return formatDateTime(row.scheduledAt);
+            return <span style={DATE_VALUE_STYLE}>{formatDateTime(row.scheduledAt)}</span>;
           }
           // 承認待ちは希望日時（設計 §9.3.1）。
           if (row.scheduledAt === null) {
@@ -411,7 +414,7 @@ export function SocialPending(props: SocialPendingProps) {
           }
           return (
             <span>
-              {formatDateTime(row.scheduledAt)}
+              <span style={DATE_VALUE_STYLE}>{formatDateTime(row.scheduledAt)}</span>
               <span style={CAPTION_STYLE}>
                 {PENDING_DESIRED_NOTE}
                 {row.desiredPast === true && APPROVAL_DESIRED_PAST_NOTE}
@@ -511,41 +514,38 @@ export function SocialPending(props: SocialPendingProps) {
 
         const columns: Column<PendingRow>[] = [
           ...(selectColumn === null ? [] : [selectColumn]),
-          { key: 'status', header: '状態', width: '12rem', render: statusCell },
+          // 列の幅は選択の列だけが持つ（056 設計 §5.5）。本文は 2 段目（detailCell）。
+          { key: 'status', header: '状態', render: statusCell },
           {
             key: 'account',
             header: 'アカウント',
-            width: '12rem',
             render: (row) => props.accountNames[row.socialAccountId] ?? row.socialAccountId,
-          },
-          {
-            key: 'body',
-            header: '本文',
-            render: (row) => (
-              <span>
-                {excerptOf(row.body)}
-                {/* Plugin の補足は抜粋の下に出す（今の区画と同じ。実装プラン §8 の 11）。 */}
-                {row.handoff !== undefined && row.handoff.ok && row.handoff.note !== null && (
-                  <span style={CAPTION_STYLE}>{row.handoff.note}</span>
-                )}
-              </span>
-            ),
           },
           {
             key: 'source',
             header: POST_SOURCE_COLUMN_HEADER,
-            width: '10rem',
             render: (row) => <PostSourceLabel source={row.source} />,
           },
-          { key: 'date', header: '日時', width: '12rem', render: dateCell },
+          { key: 'date', header: '日時', render: dateCell },
           {
             key: 'deliveryMode',
             header: '配信方法',
-            width: '7rem',
             render: (row) => DELIVERY_MODE_LABEL[row.deliveryMode] ?? row.deliveryMode,
           },
-          { key: 'actions', header: '操作', width: '16rem', render: opsCell },
+          { key: 'actions', header: '操作', render: opsCell },
         ];
+
+        /** 2 段目：本文の全文と、その下に Plugin の補足（056 設計 §5.2）。 */
+        function detailCell(row: PendingRow) {
+          return (
+            <>
+              <PostBodyPreview body={row.body} />
+              {row.handoff !== undefined && row.handoff.ok && row.handoff.note !== null && (
+                <span style={CAPTION_STYLE}>{row.handoff.note}</span>
+              )}
+            </>
+          );
+        }
 
         const unreadyCount = rows.filter(
           (row) => unreadyOf(row, props.accountProviders, props.publisherProviders) !== null,
@@ -632,7 +632,7 @@ export function SocialPending(props: SocialPendingProps) {
               }
             >
               <Card>
-                <Table columns={columns} rows={rows} rowKey={(row) => row.id} />
+                <Table columns={columns} rows={rows} rowKey={(row) => row.id} detail={detailCell} />
                 <Pagination
                   page={props.page}
                   perPage={props.perPage}
