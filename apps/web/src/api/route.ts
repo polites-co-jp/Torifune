@@ -35,11 +35,19 @@ import { validate } from './validation';
 /**
  * ルートを組み立てる共通ヘルパ。
  *
- * 認証・認可・CSRF・検証・応答・エラー変換を1箇所に集める。
+ * 認証・認可・CSRF・検証・応答・エラー変換・応答の `Cache-Control` を1箇所に集める。
  * **各ルートで手順を並べると、いつか1つ抜ける。**
  */
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * `defineRoute` が返す**すべての応答**に付ける `Cache-Control`（058-api-no-store 設計 §5）。
+ *
+ * 応答は認証した利用者のデータを載せうる。認証の有無・成功と誤り・メソッドで分けず一律に付ける
+ * （分ける規則を足すより漏れない）。ハンドラが付けた値も上書きする。
+ */
+const API_CACHE_CONTROL = 'no-store';
 
 /** 使えない文字の 422 の `details` に入れるキーの上限（046-input-500-nul-and-ranges 設計 §6.2 の規則 3）。 */
 const UNUSABLE_TEXT_DETAIL_KEYS_MAX = 50;
@@ -289,7 +297,17 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
       ? null
       : createRateLimiter(definition.rateLimit ?? DEFAULT_RATE_LIMIT);
 
+  // 出口は 1 か所にまとめる（058 設計 §5.2）。`respond` の `return` の 1 つ 1 つに足すと、次に足したときに漏れる。
   return async function handle(
+    request: Request,
+    args?: { params?: Promise<Record<string, string>> },
+  ): Promise<Response> {
+    const response = await respond(request, args);
+    response.headers.set('Cache-Control', API_CACHE_CONTROL);
+    return response;
+  };
+
+  async function respond(
     request: Request,
     args?: { params?: Promise<Record<string, string>> },
   ): Promise<Response> {
@@ -490,5 +508,5 @@ export function defineRoute<TBodySchema extends z.ZodType, TQuerySchema extends 
       });
       return errorResponse('INTERNAL_ERROR', undefined, cors);
     }
-  };
+  }
 }
