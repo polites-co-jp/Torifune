@@ -528,10 +528,7 @@ export const MANUAL_CANCELLED_TOAST = '予約を取りやめ、下書きに戻�
 export const MANUAL_OUTCOME_STALE_MESSAGE =
   '内容が変わっています。読み込み直してから操作してください。';
 
-/** 選んだ手動投稿を順に投稿（ユーザー裁定 6。設計 §9.5）。帯のボタンは末尾に「…」を足す。 */
-export const MANUAL_SEQUENCE_LABEL = '選んだ手動投稿を順に投稿';
-
-/** ダイアログの見出し。`index` は 1 から数える。 */
+/** 手動投稿の順に投稿のダイアログの見出し（055 設計 §9.5。057 で一括投稿から始める）。`index` は 1 から数える。 */
 export function MANUAL_SEQUENCE_TITLE(index: number, total: number): string {
   return `手動投稿（${index} / ${total} 件目）`;
 }
@@ -556,32 +553,109 @@ export function MANUAL_SEQUENCE_PROGRESS(count: number, breakdown: string): stri
   return breakdown === '' ? `記録済み ${count} 件` : `記録済み ${count} 件（${breakdown}）`;
 }
 
-/** 最後の件を記録した後の表示（設計 §9.5.2）。 */
-export function MANUAL_SEQUENCE_DONE(posted: number, notPosted: number, skipped: number): string {
-  return `すべての手動投稿を記録しました（${MANUAL_SEQUENCE_POSTED} ${posted}・${MANUAL_SEQUENCE_NOT_POSTED} ${notPosted}・${MANUAL_SEQUENCE_SKIPPED} ${skipped}）。`;
-}
-
-/** 閉じたときの Toast（設計 §9.5.2）。1 件でも記録していれば出す。 */
-export function MANUAL_SEQUENCE_TOAST(total: number, posted: number, notPosted: number): string {
-  return `${total} 件を記録しました（${MANUAL_SEQUENCE_POSTED} ${posted}・${MANUAL_SEQUENCE_NOT_POSTED} ${notPosted}）。`;
-}
-
 /** ダイアログの今の件の予約日時に添える（設計 §9.5.2）。 */
 export const MANUAL_SEQUENCE_SCHEDULED_LABEL = '予約';
 
 /** 記録の内訳の「飛ばした」（設計 §9.5.2）。 */
 export const MANUAL_SEQUENCE_SKIPPED = '飛ばした';
 
-/** 順に投稿の対象外の理由ごとの表示名（設計 §9.5.1）。 */
-export const MANUAL_SEQUENCE_EXCLUDED_LABEL = {
-  awaiting_approval: APPROVAL_PENDING_LABEL,
-  handoff_unavailable: '投稿画面を開けない',
-  auto: '自動配信',
-} as const satisfies Record<string, string>;
-
 /** 順に投稿の 409 の `Alert`（設計 §9.5.2）。他の失敗はサーバの文言。 */
 export const MANUAL_SEQUENCE_STALE_MESSAGE =
   '内容が変わっています。この投稿は飛ばして次へ進めます。';
+
+/** 窓を開いた後の案内（057-social-bulk-post 設計 §5.4 の `opened`）。 */
+export const MANUAL_SEQUENCE_OPENED_GUIDE =
+  'SNS の窓で投稿したら、窓を閉じてこの画面に戻ってください。戻ると記録のボタンが出ます。窓が開かないときは『別のタブで開く』を使ってください。';
+
+/** 戻らずに記録のボタンを出す（057 設計 §5.4）。 */
+export const MANUAL_SEQUENCE_RECORD_NOW = '記録へ進む';
+
+/** 記録のボタンに添える。次の件があるときだけ（057 設計 §5.4 の `returned`）。 */
+export const MANUAL_SEQUENCE_NEXT_GUIDE = '選ぶと次の投稿画面が開きます。';
+
+/** 記録に失敗したが、次の件の窓はもう開いている（057 設計 §7.5）。 */
+export const MANUAL_SEQUENCE_NEXT_OPENED = '次の投稿画面は開いています。';
+
+// ---------------------------------------------------------------------------
+// 送信待ちタブの一括投稿（057-social-bulk-post 設計 §7.2〜§7.6）
+// ---------------------------------------------------------------------------
+
+/** 帯のボタン（末尾に「…」を足す）。「一括送信（承認）」と「選んだ手動投稿を順に投稿」を統合した（ユーザー裁定 3）。 */
+export const BULK_POST_LABEL = '一括投稿';
+
+/** 確認のダイアログの題と「投稿する」。 */
+export const BULK_POST_TITLE = '一括投稿';
+export const BULK_POST_CONFIRM = '投稿する';
+
+/** 確認の書き出し。`targets` は今すぐ送る＋承認する＋予約済みの手動。 */
+export function BULK_POST_LEAD(selected: number, targets: number): string {
+  return `選んだ ${selected} 件のうち、次の ${targets} 件を投稿します。`;
+}
+
+export function BULK_POST_PUBLISH_NOW_LINE(count: number): string {
+  return `自動配信の予約 ${count} 件を今すぐ送ります`;
+}
+
+/** 承認待ちの行。内訳は 0 件の側を書かない。 */
+export function BULK_POST_APPROVE_LINE(count: number, auto: number, manual: number): string {
+  const breakdown = [
+    ...(auto > 0 ? [`自動 ${auto}`] : []),
+    ...(manual > 0 ? [`手動 ${manual}`] : []),
+  ].join('・');
+  return `承認待ち ${count} 件を承認して投稿します（${breakdown}）`;
+}
+
+/** 手動投稿の行。`count` は予約済みの手動＋承認する手動。 */
+export function BULK_POST_MANUAL_LINE(count: number): string {
+  return `手動投稿 ${count} 件を順に投稿画面で開きます`;
+}
+
+/** 手動投稿があるときだけの案内（057 設計 §7.3）。 */
+export const BULK_POST_MANUAL_GUIDE =
+  '手動投稿の投稿画面は 1 件ずつ開きます。SNS で投稿したら窓を閉じてこの画面に戻り、「投稿した」か「投稿しなかった」を選ぶと次が開きます。';
+
+/** 対象外の理由ごとの表示名（057 設計 §5.2。キーは `BULK_POST_EXCLUDED_REASONS` とちょうど一致させる）。 */
+export const BULK_POST_EXCLUDED_LABEL = {
+  no_approve_permission: '承認の権限なし',
+  no_write_permission: '投稿の権限なし',
+  due_or_publishing: BULK_EXCLUDED_LABEL.due_or_publishing,
+  handoff_unavailable: '投稿画面を開けない',
+} as const satisfies Record<string, string>;
+
+/** 「投稿する」の後、承認・今すぐ送る・URL の取得を待つ間（057 設計 §7.4）。 */
+export const BULK_POST_RUNNING = '投稿しています…';
+export const BULK_POST_FIRST_OPENED = '1 件目の投稿画面を開きました。';
+
+/** 承認できたが投稿画面の URL を取れなかった手動投稿（057 設計 §5.3）。 */
+export const BULK_POST_HANDOFF_FAILED_LABEL =
+  '承認しましたが投稿画面を開けませんでした（手動投稿待ちに残ります）';
+
+/** 終わりの表示の題（順に投稿の後も、順に投稿の無い一括投稿の結果も。057 実装プラン §8 の 21）。 */
+export const BULK_POST_RESULT_TITLE = '一括投稿の結果';
+
+/** 手動投稿の記録の内訳（例「手動投稿：投稿した 2・飛ばした 1」）。0 件の結果は書かない。 */
+export function BULK_POST_MANUAL_RESULT(
+  posted: number,
+  notPosted: number,
+  skipped: number,
+): string {
+  const breakdown = (
+    [
+      [MANUAL_SEQUENCE_POSTED, posted],
+      [MANUAL_SEQUENCE_NOT_POSTED, notPosted],
+      [MANUAL_SEQUENCE_SKIPPED, skipped],
+    ] as const
+  )
+    .filter(([, count]) => count > 0)
+    .map(([label, count]) => `${label} ${count}`)
+    .join('・');
+  return `手動投稿：${breakdown}`;
+}
+
+/** 途中でやめたとき（057 設計 §7.5）。まだ記録していない件は何も変えていない。 */
+export function BULK_POST_UNRECORDED(count: number): string {
+  return `記録していない手動投稿 ${count} 件は送信待ちに残ります。`;
+}
 
 // ---------------------------------------------------------------------------
 // 一覧の 2 段目の本文（056-social-row-layout 設計 §5.3）

@@ -16,10 +16,14 @@ import {
  * * #61 h1「SNS」とタブ 4 つ・`aria-current`・`?tab=xxx`・閲覧者
  * * #62 送信待ちの表の並び（手が要るもの順）・下書きは投稿タブ・投稿タブに区画が無い
  * * #63 予約時刻前の手動の予約を開いて「投稿した」→ 配信履歴に配信済み
- * * #64 幅 375px で送信待ちタブ・順に投稿・承認のダイアログが横スクロールしない
+ * * #64 幅 375px で送信待ちタブ・一括投稿の確認と順に投稿・承認のダイアログが横スクロールしない
  * * #65 承認待ちの手動投稿に「投稿画面を開く」が無く、承認すると手動投稿待ちになる
- * * #66・#67 選んだ手動投稿を順に投稿（開くのは人のクリックだけ・記録・409 で飛ばす）
- * * #68 送信待ちタブで 054 の一括送信・一括取り消し
+ * * #68 送信待ちタブの一括投稿（承認待ちの自動）・一括取り消し
+ *
+ * **057-social-bulk-post で追従した**（057 設計 §14.3）：送信待ちの帯の「一括送信（承認）…」「選んだ手動投稿を順に投稿…」は
+ * 「一括投稿…」に統合された（ユーザー裁定 3）。#64 は「一括投稿…」と一括投稿の確認・順に投稿のダイアログで見る。
+ * #66・#67（順に投稿）は消し、`social-bulk-post.spec.ts` の #52〜#55 が置き換える（#66 の「記録の後に次の窓は開かない」は
+ * 要望で反対の期待になった）。#68 の 1 件目は一括投稿で承認待ちの自動 2 件を送る形（057 #56 と同じ意味）に替えた。
  * * #69 投稿タブの絞り込みの URL（`tab=posts`・`#` なし）と一括取り消し
  * * #70・#71 `/social/history` の転送と配信履歴タブの絞り込み
  * * #72 ダッシュボードの 2 つの導線
@@ -42,8 +46,7 @@ import {
  * 後の spec（送信待ちタブの 1 ページ目、ダッシュボードの件数）に効くので、**投稿は件ごとに消し、
  * Plugin・アカウント・トークン・利用者は `afterAll` で片付ける**。
  *
- * 子ウィンドウは `page.context().waitForEvent('page')` で拾い、「次の窓は開かない」は context の
- * `page` イベントの数が増えないことで見る（`noopener` では `popup` が出ないことがある。§8 の 15）。
+ * 子ウィンドウは `page.context().waitForEvent('page')` で拾う（`noopener` では `popup` が出ないことがある。§8 の 15）。
  * E2E のサーバは配信の定期実行が有効で、即投稿で承認した自動の予約は 1 分以内に配信されうる（§8 の 30）。
  */
 
@@ -67,24 +70,20 @@ const SORT_ACTION = '手が要るもの順';
 const SORT_TIME = '予定の時刻順';
 const OPEN_LABEL = '投稿画面を開く';
 const DONE_LABEL = '投稿した';
-const NOT_POSTED_LABEL = '投稿しなかった';
 const QUIT_LABEL = 'やめる';
-const SKIP_LABEL = '飛ばして次へ';
-const CONFIRM_FAIL_LABEL = '失敗にする';
 const DONE_DIALOG_TITLE = '投稿を記録しますか？';
 const DONE_CONFIRM_LABEL = '記録する';
 const AWAITING_MANUAL_NOTE = '承認すると投稿画面を開けます';
 const APPROVE_DIALOG_TITLE = '投稿を承認する';
-const SEQUENCE_BUTTON = /^選んだ手動投稿を順に投稿/;
 const SEQUENCE_DIALOG = /^手動投稿（/;
-const STALE_IN_SEQUENCE = '内容が変わっています';
+/** 057 の帯の「一括投稿…」とその確認（057-social-bulk-post 設計 §7.2・§7.3）。 */
+const BULK_POST = '一括投稿…';
+const BULK_POST_TITLE = '一括投稿';
+const BULK_POST_CONFIRM = '投稿する';
 const SELECT_ROW_PREFIX = 'この投稿を選択：';
-const BULK_SEND = '一括送信（承認）';
-const BULK_SEND_NOW = /即投稿/;
 const BULK_DELETE = '一括取り消し';
 const BULK_DELETE_TITLE = '投稿を一括で取り消しますか？';
 const DELETE_TITLE = '投稿を削除しますか？';
-const MANUAL_NOT_POSTED_REASON = '手動投稿で『投稿しなかった』が選ばれました。';
 /** 前の版の区画の見出し（`approval-pending.tsx`・`manual-pending.tsx`）。055 で無くなる。 */
 const OLD_SECTION_HEADING = /(承認待ち|手動投稿待ち)（\s*\d+\s*件）/;
 
@@ -620,13 +619,12 @@ test.describe('#64 狭い画面', () => {
     await page.goto(pendingPath());
     await expect(rowOf(page, manual.body)).toBeVisible();
     await rowCheckbox(page, manual.body).check();
-    await expect(page.getByRole('button', { name: BULK_SEND })).toBeVisible();
-    await expect(page.getByRole('button', { name: SEQUENCE_BUTTON })).toBeVisible();
+    await expect(page.getByRole('button', { name: BULK_POST, exact: true })).toBeVisible();
     await expect(rowOf(page, manual.body).getByRole('button', { name: OPEN_LABEL })).toHaveCount(1);
     expect(await hasHorizontalOverflow(page)).toBe(false);
   });
 
-  test('#64 順に投稿のダイアログがページ全体で横スクロールせず、画面幅に収まる', async ({
+  test('#64 一括投稿の確認と順に投稿のダイアログがページ全体で横スクロールせず、画面幅に収まる', async ({
     page,
     request,
   }) => {
@@ -634,11 +632,21 @@ test.describe('#64 狭い画面', () => {
 
     await page.goto(pendingPath());
     await rowCheckbox(page, manual.body).check();
-    await page.getByRole('button', { name: SEQUENCE_BUTTON }).click();
+    await page.getByRole('button', { name: BULK_POST, exact: true }).click();
+    const confirm = page.getByRole('dialog', { name: BULK_POST_TITLE, exact: true });
+    await expect(confirm).toBeVisible();
+    await expectWithinViewport(confirm);
+    expect(await hasHorizontalOverflow(page)).toBe(false);
+
+    // 「投稿する」で先頭の予約済みの手動投稿の窓が開く（057 設計 §5.4）。窓は閉じて順に投稿のダイアログを見る。
+    const opened = page.context().waitForEvent('page');
+    await confirm.getByRole('button', { name: BULK_POST_CONFIRM, exact: true }).click();
+    await (await opened).close();
     const dialog = sequenceDialog(page);
     await expect(dialog).toBeVisible();
     await expectWithinViewport(dialog);
     expect(await hasHorizontalOverflow(page)).toBe(false);
+    await dialog.getByRole('button', { name: QUIT_LABEL }).click();
   });
 
   test('#64 承認のダイアログがページ全体で横スクロールせず、画面幅に収まる', async ({ page }) => {
@@ -687,156 +695,32 @@ test.describe('#65 承認待ちの手動投稿', () => {
   });
 });
 
-/** #66・#67。選んだ手動投稿を順に投稿（設計 §9.5。ユーザー裁定 6）。 */
-test.describe('#66 選んだ手動投稿を順に投稿', () => {
-  test('#66 3 件と承認待ち 1 件を選んで順に投稿：開くのはクリックだけ、記録の後に次の窓は開かず、やめると Toast と残り', async ({
-    page,
-    request,
-  }) => {
-    test.setTimeout(120_000);
-    const first = await createManualScheduled(request, '順1', 30);
-    const second = await createManualScheduled(request, '順2', 40);
-    const third = await createManualScheduled(request, '順3', 50);
-    const awaiting = await requestApproval('順承認', { deliveryMode: 'manual' });
-
-    let pageEvents = 0;
-    page.context().on('page', () => {
-      pageEvents += 1;
-    });
-
-    await page.goto(pendingPath());
-    for (const post of [first, second, third, awaiting]) {
-      await rowCheckbox(page, post.body).check();
-    }
-    await page.getByRole('button', { name: SEQUENCE_BUTTON }).click();
-
-    const dialog = sequenceDialog(page);
-    await expect(dialog).toBeVisible();
-    await expect(dialog).toHaveAccessibleName(/手動投稿（\s*1\s*\/\s*3\s*件目）/);
-    await expect(dialog).toContainText(first.body);
-    await expect(dialog).toContainText(/対象外\s*1\s*件（承認待ち\s*1）/);
-    // ダイアログを開いただけでは子ウィンドウが開かない。
-    await page.waitForTimeout(1_000);
-    expect(pageEvents).toBe(0);
-
-    const opened = page.context().waitForEvent('page');
-    await dialog.getByRole('button', { name: OPEN_LABEL }).click();
-    const child = await opened;
-    await child.waitForLoadState('domcontentloaded');
-    expect(new URL(child.url()).searchParams.get('text')).toBe(first.body);
-    await child.close();
-    expect(pageEvents).toBe(1);
-
-    await dialog.getByRole('button', { name: DONE_LABEL, exact: true }).click();
-    await expect(dialog).toHaveAccessibleName(/手動投稿（\s*2\s*\/\s*3\s*件目）/);
-    await expect(dialog).toContainText(second.body);
-    // 記録の後に次の窓は開かない（次の「投稿画面を開く」を押すまで）。
-    await page.waitForTimeout(1_000);
-    expect(pageEvents).toBe(1);
-
-    await dialog.getByRole('button', { name: NOT_POSTED_LABEL }).click();
-    await expect(dialog).toContainText('配信履歴に「失敗」として残ります');
-    await dialog.getByRole('button', { name: CONFIRM_FAIL_LABEL }).click();
-    await expect(dialog).toHaveAccessibleName(/手動投稿（\s*3\s*\/\s*3\s*件目）/);
-    await expect(dialog).toContainText(third.body);
-
-    await dialog.getByRole('button', { name: QUIT_LABEL }).click();
-    await expect(sequenceDialog(page)).toHaveCount(0);
-    await expect(
-      statusToast(page, /2\s*件を記録しました（投稿した\s*1・投稿しなかった\s*1）。/),
-    ).toBeVisible();
-    expect(pageEvents).toBe(1);
-
-    // 送信待ちに 3 件目と承認待ちが残り、選択はすべて外れる。
-    await expect(rowOf(page, first.body)).toHaveCount(0);
-    await expect(rowOf(page, second.body)).toHaveCount(0);
-    await expect(rowOf(page, third.body)).toHaveCount(1);
-    await expect(rowOf(page, awaiting.body)).toHaveCount(1);
-    await expect(rowCheckbox(page, third.body)).not.toBeChecked();
-    await expect(rowCheckbox(page, awaiting.body)).not.toBeChecked();
-
-    expect((await fetchPost(request, first.id)).status).toBe('published');
-    const failed = await fetchPost(request, second.id);
-    expect(failed.status).toBe('failed');
-    expect(failed.failureReason).toBe(MANUAL_NOT_POSTED_REASON);
-    expect((await fetchPost(request, third.id)).status).toBe('scheduled');
-
-    await page.goto('/social?tab=history');
-    await expect(page.getByRole('row').filter({ hasText: first.body })).toContainText('配信済み');
-    const failedRow = page.getByRole('row').filter({ hasText: second.body });
-    await expect(failedRow).toContainText('失敗');
-    await expect(failedRow).toContainText(MANUAL_NOT_POSTED_REASON);
-  });
-
-  test('#67 途中で 2 件目の本文を API で PATCH すると、2 件目の「投稿した」で「内容が変わっています」が出て「飛ばして次へ」で 3 件目へ進み、2 件目は送信待ちのまま', async ({
-    page,
-    request,
-  }) => {
-    const first = await createManualScheduled(request, '競合1', 30);
-    const second = await createManualScheduled(request, '競合2', 40);
-    const third = await createManualScheduled(request, '競合3', 50);
-    const rewritten = bodyOf('競合2書き換え');
-
-    await page.goto(pendingPath());
-    for (const post of [first, second, third]) {
-      await rowCheckbox(page, post.body).check();
-    }
-    await page.getByRole('button', { name: SEQUENCE_BUTTON }).click();
-    const dialog = sequenceDialog(page);
-    await expect(dialog).toHaveAccessibleName(/手動投稿（\s*1\s*\/\s*3\s*件目）/);
-
-    await dialog.getByRole('button', { name: DONE_LABEL, exact: true }).click();
-    await expect(dialog).toHaveAccessibleName(/手動投稿（\s*2\s*\/\s*3\s*件目）/);
-
-    // 2 件目を表示した後に、別の要求（外部アプリ）が本文を書き換える。
-    const patched = await app().patch(`/api/v1/social/posts/${second.id}`, {
-      data: { body: rewritten },
-    });
-    expect(patched.status(), await patched.text()).toBe(200);
-
-    await dialog.getByRole('button', { name: DONE_LABEL, exact: true }).click();
-    await expect(dialog).toContainText(STALE_IN_SEQUENCE);
-    await dialog.getByRole('button', { name: SKIP_LABEL }).click();
-    await expect(dialog).toHaveAccessibleName(/手動投稿（\s*3\s*\/\s*3\s*件目）/);
-    await expect(dialog).toContainText(third.body);
-
-    await dialog.getByRole('button', { name: QUIT_LABEL }).click();
-    await expect(sequenceDialog(page)).toHaveCount(0);
-
-    expect((await fetchPost(request, first.id)).status).toBe('published');
-    expect((await fetchPost(request, second.id)).status).toBe('scheduled');
-    expect((await fetchPost(request, third.id)).status).toBe('scheduled');
-    await expect(rowOf(page, rewritten)).toHaveCount(1);
-  });
-});
-
-/** #68。送信待ちタブで 054 の一括操作（設計 §5.4。ユーザー裁定 2・5）。 */
+/** #68。送信待ちタブの一括操作（設計 §5.4。ユーザー裁定 2・5。057 で一括送信は一括投稿に替わった）。 */
 test.describe('#68 送信待ちタブの一括操作', () => {
-  test('#68 承認待ち 2 件を「一括送信（承認）」→「即投稿」→「送る」→ Toast、自動は予約済み（または配信済み）・手動は手動投稿待ち', async ({
+  test('#68 承認待ちの自動 2 件を「一括投稿…」→「投稿する」→ Toast、2 件とも予約済み（または配信済み）（057 #56 と同じ意味）', async ({
     page,
     request,
   }) => {
-    const auto = await requestApproval('一括自動');
-    const manual = await requestApproval('一括手動', { deliveryMode: 'manual' });
+    const first = await requestApproval('一括自動1');
+    const second = await requestApproval('一括自動2');
 
     await page.goto(pendingPath());
-    await rowCheckbox(page, auto.body).check();
-    await rowCheckbox(page, manual.body).check();
-    await page.getByRole('button', { name: BULK_SEND }).click();
-    const dialog = page.getByRole('dialog', { name: /一括送信/ });
+    await rowCheckbox(page, first.body).check();
+    await rowCheckbox(page, second.body).check();
+    await page.getByRole('button', { name: BULK_POST, exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: BULK_POST_TITLE, exact: true });
     await expect(dialog).toContainText(/承認待ち\s*2\s*件/);
-    await dialog.getByLabel(BULK_SEND_NOW).check();
-    await dialog.getByRole('button', { name: '送る', exact: true }).click();
+    await dialog.getByRole('button', { name: BULK_POST_CONFIRM, exact: true }).click();
 
     await expect(statusToast(page, /2\s*件を処理しました/)).toBeVisible();
-    await expect(rowOf(page, manual.body)).toContainText(KIND_MANUAL_PENDING);
-    // 自動は「予約済み」。定期実行が先に配信していれば表から消え、API で配信済み（実装プラン §8 の 30）。
-    await expect(rowOf(page, auto.body)).not.toContainText(KIND_AWAITING);
-    expect(['scheduled', 'published']).toContain((await fetchPost(request, auto.id)).status);
-    if ((await rowOf(page, auto.body).count()) > 0) {
-      await expect(rowOf(page, auto.body)).toContainText(KIND_SCHEDULED);
+    // 「予約済み」。定期実行が先に配信していれば表から消え、API で配信済み（実装プラン §8 の 30）。
+    for (const post of [first, second]) {
+      await expect(rowOf(page, post.body)).not.toContainText(KIND_AWAITING);
+      expect(['scheduled', 'published']).toContain((await fetchPost(request, post.id)).status);
+      if ((await rowOf(page, post.body).count()) > 0) {
+        await expect(rowOf(page, post.body)).toContainText(KIND_SCHEDULED);
+      }
     }
-    expect((await fetchPost(request, manual.id)).status).toBe('scheduled');
   });
 
   test('#68 予約済み 1 件を「一括取り消し」→「削除する」→ 行が消える', async ({

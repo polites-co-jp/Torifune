@@ -18,6 +18,11 @@ import * as labels from './labels';
  * 述語（`stripComments`・`isHardCoded`・`isHardCodedShort`・`importsFrom`・`calls`）は
  * `bulk-labels-static-checks.test.ts` を**写す**（テストファイルを import しない）。判別力の件も同じ形で置く。
  * `labels.ts` の新しい定数はまだ無いので、名前で引く（`import * as`）。
+ *
+ * 057-social-bulk-post で追従した（057 設計 §14.1・実装プラン §2）：送信待ちの帯の「選んだ手動投稿を順に投稿」と
+ * 順に投稿の終わりの「すべての手動投稿を記録しました」・Toast が無くなるので、その語と `MANUAL_SEQUENCE_LABEL`・
+ * `MANUAL_SEQUENCE_DONE`・`MANUAL_SEQUENCE_TOAST`・`MANUAL_SEQUENCE_EXCLUDED_LABEL` の件を外した（消えたことと
+ * 057 の新しい語・定数は `bulk-post-static-checks.test.ts` #40 が見る）。#39 の対象に `bulk-post-dialog.tsx` を足した。
  */
 
 const UI_DIR = join(import.meta.dirname, '..');
@@ -27,6 +32,8 @@ const SOCIAL_LABELS = join(SOCIAL_DIR, 'labels.ts');
 const MANUAL_HANDOFF = join(SOCIAL_DIR, 'manual-handoff.ts');
 const PENDING_COMPONENT = join(SOCIAL_DIR, 'social-pending.tsx');
 const SEQUENCE_COMPONENT = join(SOCIAL_DIR, 'manual-sequence.tsx');
+/** 057 の一括投稿のダイアログ（057-social-bulk-post 設計 §7.4。最初の窓を「投稿する」のクリックで開く）。 */
+const BULK_POST_DIALOG = join(SOCIAL_DIR, 'bulk-post-dialog.tsx');
 
 /** 文言を直書きしない 5 つの部品（設計 #36）。 */
 const COMPONENTS = [
@@ -143,12 +150,10 @@ const PENDING_WORDS = [
   '手が要るもの順',
   '予定の時刻順',
   '承認すると投稿画面を開けます',
-  '選んだ手動投稿を順に投稿',
   '件目）',
   '経過）',
   '飛ばして次へ',
   '失敗にする',
-  'すべての手動投稿を記録しました',
   '内容が変わっています。読み込み直してから操作してください。',
   '内容が変わっています。この投稿は飛ばして次へ進めます。',
   '投稿画面を開く',
@@ -177,7 +182,6 @@ const LABEL_WORDS = [
   '手が要るもの順',
   '予定の時刻順',
   '承認すると投稿画面を開けます',
-  '選んだ手動投稿を順に投稿',
   '飛ばして次へ',
   '失敗にする',
   '内容が変わっています。読み込み直してから操作してください。',
@@ -276,12 +280,6 @@ describe('#36 #76 labels.ts の定数（設計 §9.9）', () => {
     });
   });
 
-  it('#36 MANUAL_SEQUENCE_EXCLUDED_LABEL のキーが awaiting_approval・handoff_unavailable・auto', () => {
-    expect(keysOf(labelValue('MANUAL_SEQUENCE_EXCLUDED_LABEL'))).toEqual(
-      ['auto', 'awaiting_approval', 'handoff_unavailable'].sort(),
-    );
-  });
-
   it('#36 SOCIAL_TAB_LABEL が 4 つのタブの表示名', () => {
     expect(labelValue('SOCIAL_TAB_LABEL')).toEqual({
       pending: '送信待ち',
@@ -299,7 +297,6 @@ describe('#36 #76 labels.ts の定数（設計 §9.9）', () => {
     ['PENDING_SORT_LABEL', '並び順'],
     ['PENDING_DESIRED_NOTE', '希望'],
     ['PENDING_AWAITING_MANUAL_NOTE', '承認すると投稿画面を開けます'],
-    ['MANUAL_SEQUENCE_LABEL', '選んだ手動投稿を順に投稿'],
     ['MANUAL_SEQUENCE_POSTED', '投稿した'],
     ['MANUAL_SEQUENCE_NOT_POSTED', '投稿しなかった'],
     ['MANUAL_SEQUENCE_QUIT', 'やめる'],
@@ -322,8 +319,6 @@ describe('#36 #76 labels.ts の定数（設計 §9.9）', () => {
     'MANUAL_SEQUENCE_CONFIRM_TITLE',
     'MANUAL_SEQUENCE_CONFIRM_MESSAGE',
     'MANUAL_SEQUENCE_PROGRESS',
-    'MANUAL_SEQUENCE_DONE',
-    'MANUAL_SEQUENCE_TOAST',
   ])('#36 %s がある（字面の組み立ては実装が決める）', (name) => {
     expect(['string', 'function']).toContain(typeof labelValue(name));
   });
@@ -374,6 +369,7 @@ describe('#39 子ウィンドウを開くのは manual-handoff.ts の openManual
   it.each([
     ['ui/social/social-pending.tsx', PENDING_COMPONENT],
     ['ui/social/manual-sequence.tsx', SEQUENCE_COMPONENT],
+    ['ui/social/bulk-post-dialog.tsx', BULK_POST_DIALOG],
   ])('#39 %s は openManualWindow を manual-handoff から import して呼ぶ', (_name, path) => {
     const text = read(path);
 
@@ -386,6 +382,7 @@ describe('#39 子ウィンドウを開くのは manual-handoff.ts の openManual
   it.each([
     ['ui/social/social-pending.tsx', PENDING_COMPONENT],
     ['ui/social/manual-sequence.tsx', SEQUENCE_COMPONENT],
+    ['ui/social/bulk-post-dialog.tsx', BULK_POST_DIALOG],
   ])(
     '#39 %s は useEffect の中で openManualWindow を呼ばない（開くのは人のクリックだけ）',
     (_name, path) => {

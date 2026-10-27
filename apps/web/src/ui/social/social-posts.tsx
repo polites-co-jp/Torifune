@@ -375,12 +375,13 @@ export function SocialPosts(props: SocialPostsProps) {
       {...(props.initialDialog === undefined ? {} : { initialDialog: props.initialDialog })}
       {...(props.initialResults === undefined ? {} : { initialResults: props.initialResults })}
     >
-      {({ rows: posts, selectColumn, band, requestDelete }) => {
+      {({ rows: posts, selectColumn, cellToggle, band, requestDelete }) => {
         const columns: Column<PostRow>[] = [
           ...(selectColumn === null ? [] : [selectColumn]),
           // 並びは送信待ちと揃える（状態が先頭。056 設計 §5.4）。列の幅は選択の列だけが持つ（§5.5）。
           // 本文は 2 段目（detailCell）。
-          { key: 'status', header: '状態', render: statusCell },
+          // 状態のセルのクリックでもチェックを切り替える（057 設計 §5.1。補足のリンクは遷移だけする）。
+          { key: 'status', header: '状態', render: statusCell, onCellClick: cellToggle },
           {
             key: 'account',
             header: 'アカウント',

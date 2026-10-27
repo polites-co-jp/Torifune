@@ -336,6 +336,34 @@ export const manualOutcomeRequestSchema = z
   .strict();
 
 /**
+ * 手動投稿の投稿画面の URL の応答（057-social-bulk-post 設計 §6）。`ok` で分かれる 2 つの形。
+ *
+ * `changed` は返さない（描画の途中で行が変わったときの読み替えで、この口は `settleManualHandoff` を使わない）。
+ * **資格情報を返さない**（`note` は `resolveManualHandoff` が秘密を伏せた後のもの）。
+ */
+export const manualHandoffSchema = z.discriminatedUnion('ok', [
+  z
+    .object({
+      ok: z.literal(true),
+      url: z.string().describe('配信 Plugin が作った投稿画面の URL。'),
+      note: z.string().nullable().describe('配信 Plugin の注記（無ければ null）。'),
+    })
+    .strict(),
+  z
+    .object({
+      ok: z.literal(false),
+      reason: z
+        .enum(['unsupported', 'invalid_url', 'plugin_error', 'not_scheduled'])
+        .describe(
+          'URL を作れなかった理由。unsupported は Plugin が無い、invalid_url は URL の検査に落ちた、plugin_error は Plugin の失敗か時間切れ、not_scheduled は予約でない（承認待ちなど）。',
+        ),
+    })
+    .strict(),
+]);
+
+export const manualHandoffResponseSchema = dataEnvelope(manualHandoffSchema);
+
+/**
  * API が返すアカウントの形。
  *
  * **`credential` を返さない。** 設定済みかどうかだけを返す（05_API設計.md §18）。

@@ -83,6 +83,17 @@ Server Component から関数を Client Component へ渡すことはできず、
 * 2 段目の中身は列の幅の配分に数えない（表の自動の列幅に長い中身が効くと 1 段目の列が潰れるため。`Table` の中で包んでいる）
 * 渡さないときの出力は今までと同じ（`<tbody>` 1 つに 1 行 1 `<tr>`）
 
+`Column<T>` の **`onCellClick?: (row: T) => void`**（任意）を渡すと、その列のセル（`<td>`）全体のクリックで呼ばれる（`057-social-bulk-post`）。
+小さなチェックボックスの当たり判定をセルの余白まで広げる、といった用途に使う（SNS の送信待ち・投稿の表は選択の列と状態の列に渡している）。
+
+* 渡した列の `<td>` に `onClick` と `cursor: pointer` が付く。`detail` の 2 段目のセルには付かない
+* **セルの中の操作できる要素からのクリックでは呼ばない**（`CELL_CLICK_IGNORE_SELECTOR`：`a[href]`・`button`・`input`・`select`・`textarea`・`label`・`summary`・
+  `[role="button"]`・`[role="link"]`・`[role="checkbox"]`・`[contenteditable="true"]`。判定は `isCellClickIgnored(target, cell)`）。
+  中のチェックボックスは自分の `change` だけで切り替わり、リンクは遷移だけする（二重に切り替わらない）
+* **キーボード・支援技術の操作は中の部品に持たせる。** セルに `tabindex`・`role` を足さない（同じ操作の止まり先が二重になり、セルがボタンと読まれる）。
+  セルのクリックはポインタで押しやすくするための補助
+* 渡さないときの出力は今までと同じ
+
 ## レスポンシブ
 
 幅375pxで破綻しないところまでを保証している（`06_画面設計.md` §31）。

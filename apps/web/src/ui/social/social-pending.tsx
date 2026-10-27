@@ -26,6 +26,7 @@ import {
 } from '@/ui/components';
 import { ApprovalDialog, RejectDialog } from '@/ui/social/approval-dialog';
 import { BulkPostActions, type BulkResultsInput } from '@/ui/social/bulk-post-actions';
+import { BulkPostDialog } from '@/ui/social/bulk-post-dialog';
 import {
   APPROVAL_DESIRED_PAST_NOTE,
   APPROVAL_PENDING_GUIDE,
@@ -50,8 +51,6 @@ import {
   MANUAL_PENDING_FALLBACK_LABEL,
   MANUAL_PENDING_GUIDE,
   MANUAL_PENDING_OPEN_LABEL,
-  MANUAL_SEQUENCE_LABEL,
-  MANUAL_SEQUENCE_TOAST,
   NO_CREDENTIAL_BADGE,
   NO_PUBLISHER_BADGE,
   PENDING_AWAITING_MANUAL_NOTE,
@@ -76,12 +75,7 @@ import {
   retryingNoteLabel,
 } from '@/ui/social/labels';
 import { openManualWindow, type OpenManualWindow } from '@/ui/social/manual-handoff';
-import { ManualSequence, type ManualSequenceRecord } from '@/ui/social/manual-sequence';
-import {
-  manualOutcomeRequestBody,
-  manualSequencePlanOf,
-  type ManualSequencePlan,
-} from '@/ui/social/manual-sequence-plan';
+import { manualOutcomeRequestBody } from '@/ui/social/manual-sequence-plan';
 import { pendingListHref, type PendingListFilters } from '@/ui/social/pending-list-params';
 import { DEFAULT_POST_PER_PAGE, type PostListOption } from '@/ui/social/post-list-params';
 import { PostFilterBar } from '@/ui/social/post-filter-bar';
@@ -159,7 +153,9 @@ export interface SocialPendingProps {
    * 054 設計 §9.8 の 3 つと、承認のダイアログ・1 件の削除の確認（実装プラン §8 の 61・62）。
    */
   readonly initialSelectedIds?: readonly string[];
-  readonly initialDialog?: 'send' | 'delete' | null;
+  readonly initialDialog?: 'delete' | null;
+  /** 一括投稿の確認を開いた状態（057-social-bulk-post 実装プラン §8 の 14）。 */
+  readonly initialBulkPost?: 'confirm';
   readonly initialResults?: BulkResultsInput;
   readonly initialApprovingId?: string;
   readonly initialDeletingId?: string;
@@ -232,8 +228,6 @@ export function SocialPending(props: SocialPendingProps) {
   const [done, setDone] = useState<PendingRow | null>(null);
   const [externalUrl, setExternalUrl] = useState('');
   const [cancelling, setCancelling] = useState<PendingRow | null>(null);
-  // 選んだ手動投稿を順に投稿（設計 §9.5）。始めたときの対象を持つ（選び直しで変わらない）。
-  const [sequence, setSequence] = useState<ManualSequencePlan<PendingRow> | null>(null);
 
   const permissions = new Set(props.permissions);
   // 表示制御であって認可ではない。サーバー側で必ず検証している（06_画面設計.md §29）。
@@ -261,18 +255,19 @@ export function SocialPending(props: SocialPendingProps) {
       rows={props.rows}
       total={props.total}
       permissions={props.permissions}
-      bandExtra={({ selectedRows, busy }) =>
-        canWrite ? (
-          <Button
-            variant="secondary"
-            disabled={busy || manualSequencePlanOf(selectedRows).targets.length === 0}
-            // 表示中の行の順で対象を決める（設計 §9.5.1）。
-            onClick={() => setSequence(manualSequencePlanOf(selectedRows))}
-          >
-            {`${MANUAL_SEQUENCE_LABEL}…`}
-          </Button>
-        ) : null
-      }
+      // 送信待ちタブの帯は「一括投稿…」「一括取り消し…」（057 設計 §7.2・ユーザー裁定 3）。投稿タブは 054 のまま。
+      renderSend={({ selectedRows, busy, showToast, reload }) => (
+        <BulkPostDialog
+          selectedRows={selectedRows}
+          busy={busy}
+          permissions={{ canApprove, canWrite }}
+          accountNames={props.accountNames}
+          showToast={showToast}
+          reload={reload}
+          {...(props.open === undefined ? {} : { open: props.open })}
+          {...(props.initialBulkPost === undefined ? {} : { initialStage: props.initialBulkPost })}
+        />
+      )}
       {...(props.initialSelectedIds === undefined
         ? {}
         : { initialSelectedIds: props.initialSelectedIds })}
@@ -285,13 +280,13 @@ export function SocialPending(props: SocialPendingProps) {
       {({
         rows,
         selectColumn,
+        cellToggle,
         band,
         requestDelete,
         hideRow,
         unselectRow,
         showToast,
         refresh,
-        reload,
       }) => {
         /** 1 件の操作が通った行を隠し、Toast を出して読み込み直す（設計 §9.3.4）。 */
         function succeeded(id: string, text: string): void {
@@ -338,23 +333,6 @@ export function SocialPending(props: SocialPendingProps) {
           } else {
             showToast({ id: target.id, text: result.error.message, tone: 'danger' });
           }
-        }
-
-        /**
-         * 順に投稿を閉じた（設計 §9.5.2）。1 件でも記録していれば Toast と読み込み直し、選択を空にする。
-         * 0 件なら何もしない。
-         */
-        function closeSequence(records: readonly ManualSequenceRecord[]): void {
-          setSequence(null);
-          const posted = records.filter((item) => item.outcome === 'posted').length;
-          const notPosted = records.filter((item) => item.outcome === 'not_posted').length;
-          if (posted + notPosted === 0) return;
-          showToast({
-            id: 'manual-sequence',
-            text: MANUAL_SEQUENCE_TOAST(posted + notPosted, posted, notPosted),
-            tone: 'success',
-          });
-          reload();
         }
 
         function statusCell(row: PendingRow) {
@@ -515,7 +493,8 @@ export function SocialPending(props: SocialPendingProps) {
         const columns: Column<PendingRow>[] = [
           ...(selectColumn === null ? [] : [selectColumn]),
           // 列の幅は選択の列だけが持つ（056 設計 §5.5）。本文は 2 段目（detailCell）。
-          { key: 'status', header: '状態', render: statusCell },
+          // 状態のセルのクリックでもチェックを切り替える（057 設計 §5.1。閲覧者には付かない）。
+          { key: 'status', header: '状態', render: statusCell, onCellClick: cellToggle },
           {
             key: 'account',
             header: 'アカウント',
@@ -716,15 +695,6 @@ export function SocialPending(props: SocialPendingProps) {
                 />
               </label>
             </Modal>
-
-            {sequence !== null && (
-              <ManualSequence
-                plan={sequence}
-                accountNames={props.accountNames}
-                onClose={closeSequence}
-                {...(props.open === undefined ? {} : { open: props.open })}
-              />
-            )}
 
             <ConfirmDialog
               open={cancelling !== null}
