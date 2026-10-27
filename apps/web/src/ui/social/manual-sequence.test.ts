@@ -496,6 +496,20 @@ describe('#32 returned で「投稿した」', () => {
     expect(has(nodes, POSTED_LABEL)).toBe(false);
   });
 
+  it('#32 記録が成功した後、次の件で「記録へ進む」を押すと URL の欄は空に戻っている', async () => {
+    change(urlInput(draw(returned)), 'https://x.com/i/status/1');
+    expect(urlInput(draw(returned))?.props['value'], '入れた直後の URL の欄').toBe(
+      'https://x.com/i/status/1',
+    );
+    click(only(draw(returned), POSTED_LABEL));
+    await flush();
+    click(only(draw(returned), RECORD_NOW_LABEL));
+    const nodes = draw(returned);
+
+    expect(dialogNames(nodes)).toContain('手動投稿（2 / 3 件目）');
+    expect(urlInput(nodes)?.props['value']).toBe('');
+  });
+
   it('#32 成功の後は記録済みの件数（投稿した 1）を出す', async () => {
     click(only(draw(returned), POSTED_LABEL));
     await flush();

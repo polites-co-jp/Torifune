@@ -245,6 +245,12 @@ const MANUAL_APPROVED = row({
   approvedAt: '2026-10-26T00:00:00.000Z',
   handoff: handoffOk('approved'),
 });
+const MANUAL_NO_DATE = row({
+  body: '予約日時の無い手動の予約',
+  deliveryMode: 'manual',
+  scheduledAt: null,
+  handoff: handoffOk('no-date'),
+});
 const MANUAL_UNAVAILABLE = row({
   body: '開けない手動の予約',
   deliveryMode: 'manual',
@@ -289,6 +295,7 @@ describe('#13 bulkPostPlanOf（管理者：canApprove・canWrite）', () => {
     ['予約時刻前の手動の予約', MANUAL_FUTURE, 'manual'],
     ['予約時刻を過ぎた手動の予約', MANUAL_PAST, 'manual'],
     ['承認済みの手動の予約', MANUAL_APPROVED, 'manual'],
+    ['予約日時の無い手動の予約', MANUAL_NO_DATE, 'manual'],
     ['開けない手動の予約', MANUAL_UNAVAILABLE, 'excluded:handoff_unavailable'],
     ['handoff の無い手動の予約', MANUAL_NO_HANDOFF, 'excluded:handoff_unavailable'],
   ] as const)('#13 %s → %s', async (_label, target, place) => {
