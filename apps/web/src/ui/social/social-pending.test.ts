@@ -46,6 +46,12 @@ import {
  * （1 件の削除の確認を開いた状態。`social-accounts.tsx` の `initialEditingAccountId` と同じ形）と読んだ（実装プラン §8 の 62）。
  * 部品はまだ無いので、指定子を `string` の定数に置いた動的 import で読み、props の型をテストに写して `as` で渡す。
  *
+ * **057-social-bulk-post で追従した**（057 設計 §14.1・実装プラン §2）：送信待ちタブの帯の「一括送信（承認）…」と
+ * 「選んだ手動投稿を順に投稿…」は「一括投稿…」に統合された（ユーザー裁定 3）。#47・#53・#54 の帯の件は「一括投稿…」で見て、
+ * #54 の一括送信のダイアログの件は一括投稿の確認（テストの口 `initialBulkPost: 'confirm'`。057 実装プラン §8 の 14）に、
+ * 「検証 2 回目 軽微-B」は一括投稿（確認 →「投稿する」）から始める形に替えた。順に投稿を閉じても **Toast は出さない**
+ * （終わりの表示で伝える。057 設計 §7.5）ので、その件は終わりの表示の件に替えた。`initialDialog` は `'delete' | null`。
+ *
  * 単体テストの環境には DOM が無い。`@/ui/components` を包んで `Button`・`ConfirmDialog`・`Pagination`・`Select` の
  * props を捕まえ、`onClick` / `onConfirm` / `onChange` を直接呼ぶ（`manual-pending.test.ts` の流儀）。
  * 描画の後の `setState` は何もしないので、見られるのは外への作用（`open`・`apiRequest`・`window.location.assign`）だけ。
@@ -206,7 +212,9 @@ interface PendingProps {
   readonly accountOptions?: readonly Option[];
   readonly open?: (url: string, name: string, features: string) => unknown;
   readonly initialSelectedIds?: readonly string[];
-  readonly initialDialog?: 'send' | 'delete' | null;
+  readonly initialDialog?: 'delete' | null;
+  /** 一括投稿の確認を開いた状態（057 実装プラン §8 の 14）。 */
+  readonly initialBulkPost?: 'confirm';
   readonly initialResults?: {
     readonly results: readonly ResultItem[];
     readonly requestFailures?: readonly {
@@ -242,8 +250,11 @@ const DELETE_LABEL = '削除';
 const APPROVE_OPEN_LABEL = '承認する…';
 const REJECT_LABEL = '差し戻す';
 const AWAITING_MANUAL_NOTE = '承認すると投稿画面を開けます';
-const SEQUENCE_LABEL = '選んだ手動投稿を順に投稿';
-const BULK_SEND_LABEL = '一括送信（承認）';
+/** 057 で無くなった帯のボタン（出ないことを見る）。 */
+const OLD_SEQUENCE_LABEL = '選んだ手動投稿を順に投稿';
+const OLD_BULK_SEND_LABEL = '一括送信（承認）';
+/** 057 の帯のボタン（ユーザー裁定 3）。 */
+const BULK_POST_LABEL = '一括投稿';
 const BULK_DELETE_LABEL = '一括取り消し';
 const SELECT_PAGE_LABEL = 'このページの投稿をすべて選択';
 const PENDING_EMPTY = '送信待ちの投稿はありません。';
@@ -897,9 +908,10 @@ describe('#47 権限による出し分け（表示制御であって認可では
     const html = await viewer();
 
     expect(checkboxes(html)).toEqual([]);
-    expect(buttonStartingWith(html, BULK_SEND_LABEL)).toBeUndefined();
+    expect(buttonStartingWith(html, BULK_POST_LABEL)).toBeUndefined();
     expect(buttonStartingWith(html, BULK_DELETE_LABEL)).toBeUndefined();
-    expect(buttonStartingWith(html, SEQUENCE_LABEL)).toBeUndefined();
+    expect(buttonStartingWith(html, OLD_BULK_SEND_LABEL)).toBeUndefined();
+    expect(buttonStartingWith(html, OLD_SEQUENCE_LABEL)).toBeUndefined();
   });
 
   it('#47 閲覧者でも行そのものは見える', async () => {
@@ -1238,43 +1250,47 @@ describe('#52 絞り込みの帯の状態の選択肢', () => {
 /* #53 一括の帯                                                                 */
 /* -------------------------------------------------------------------------- */
 
-describe('#53 一括の帯の 3 つのボタン', () => {
-  it('#53 「一括送信（承認）…」「一括取り消し…」「選んだ手動投稿を順に投稿…」がある', async () => {
+describe('#53 一括の帯のボタン（057 で「一括投稿…」「一括取り消し…」の 2 つ。057 #22・#23 と同じ意味）', () => {
+  it('#53 「一括投稿…」「一括取り消し…」がこの順にある', async () => {
     const html = await render({ initialSelectedIds: [MANUAL_FUTURE.id] });
+    const labels = buttons(html).map((button) => button.text);
 
-    expect(buttonStartingWith(html, BULK_SEND_LABEL)).toBeDefined();
+    expect(buttonStartingWith(html, BULK_POST_LABEL)?.text).toBe(`${BULK_POST_LABEL}…`);
     expect(buttonStartingWith(html, BULK_DELETE_LABEL)).toBeDefined();
-    expect(buttonStartingWith(html, SEQUENCE_LABEL)?.text).toBe(`${SEQUENCE_LABEL}…`);
-  });
-
-  it('#53 選択に手動の予約（handoff.ok）があれば「選んだ手動投稿を順に投稿…」を押せる', async () => {
-    const html = await render({ initialSelectedIds: [MANUAL_FUTURE.id, AUTO_SCHEDULED.id] });
-
-    expect(isDisabled(buttonStartingWith(html, SEQUENCE_LABEL)?.openTag ?? '')).toBe(false);
-  });
-
-  it('#53 選択に手動の予約が無ければ「選んだ手動投稿を順に投稿…」が disabled', async () => {
-    const html = await render({ initialSelectedIds: [AWAITING_MANUAL.id, AUTO_SCHEDULED.id] });
-    const button = buttonStartingWith(html, SEQUENCE_LABEL);
-
-    expect(button, SEQUENCE_LABEL).toBeDefined();
-    expect(isDisabled(button?.openTag ?? '')).toBe(true);
-  });
-
-  it('#53 選択 0 件なら「選んだ手動投稿を順に投稿…」が disabled', async () => {
-    expect(isDisabled(buttonStartingWith(await render(), SEQUENCE_LABEL)?.openTag ?? '')).toBe(
-      true,
+    expect(labels.indexOf(`${BULK_POST_LABEL}…`)).toBeLessThan(
+      labels.findIndex((label) => label.startsWith(BULK_DELETE_LABEL)),
     );
   });
 
-  it('#53 social.write が無ければ「選んだ手動投稿を順に投稿…」が無い', async () => {
+  it('#53 「一括送信（承認）…」「選んだ手動投稿を順に投稿…」が無い（ユーザー裁定 3）', async () => {
+    const html = await render({ initialSelectedIds: [MANUAL_FUTURE.id] });
+
+    expect(buttonStartingWith(html, OLD_BULK_SEND_LABEL)).toBeUndefined();
+    expect(buttonStartingWith(html, OLD_SEQUENCE_LABEL)).toBeUndefined();
+  });
+
+  it('#53 選択に手動の予約（handoff.ok）があれば「一括投稿…」を押せる', async () => {
+    const html = await render({ initialSelectedIds: [MANUAL_FUTURE.id, AUTO_SCHEDULED.id] });
+    const button = buttonStartingWith(html, BULK_POST_LABEL);
+
+    expect(button, BULK_POST_LABEL).toBeDefined();
+    expect(isDisabled(button?.openTag ?? '')).toBe(false);
+  });
+
+  it('#53 選択 0 件なら「一括投稿…」が disabled', async () => {
+    const button = buttonStartingWith(await render(), BULK_POST_LABEL);
+
+    expect(button, BULK_POST_LABEL).toBeDefined();
+    expect(isDisabled(button?.openTag ?? '')).toBe(true);
+  });
+
+  it('#53 social.write が無くても social.approve があれば「一括投稿…」は出る', async () => {
     const html = await render({
       permissions: ['social.read', 'social.approve', 'social.delete'],
-      initialSelectedIds: [MANUAL_FUTURE.id],
+      initialSelectedIds: [AWAITING_AUTO.id],
     });
 
-    expect(buttonStartingWith(html, SEQUENCE_LABEL)).toBeUndefined();
-    expect(buttonStartingWith(html, BULK_SEND_LABEL)).toBeDefined();
+    expect(buttonStartingWith(html, BULK_POST_LABEL)).toBeDefined();
   });
 
   it('#53 social.delete が無ければ「一括取り消し…」が無い（054 の出し分けのまま）', async () => {
@@ -1289,8 +1305,10 @@ describe('#53 一括の帯の 3 つのボタン', () => {
   it('#53 一括の帯のボタンの名前に「削除」を含まない（行の「削除」と取り違えない）', async () => {
     const html = await render({ initialSelectedIds: [MANUAL_FUTURE.id] });
 
-    for (const prefix of [BULK_SEND_LABEL, BULK_DELETE_LABEL, SEQUENCE_LABEL]) {
-      expect(buttonStartingWith(html, prefix)?.text, prefix).not.toContain('削除');
+    for (const prefix of [BULK_POST_LABEL, BULK_DELETE_LABEL]) {
+      const button = buttonStartingWith(html, prefix);
+      expect(button, prefix).toBeDefined();
+      expect(button?.text, prefix).not.toContain('削除');
     }
   });
 });
@@ -1323,17 +1341,21 @@ describe('#54 054 の一括の主要な条件が SocialPending でも成り立�
     expect(labels[0]).toMatch(new RegExp(`^この投稿を選択：${escapeRegExp(AUTO_SCHEDULED.body)}`));
   });
 
-  it('#54 選択 0 件なら一括送信・一括取り消しが disabled', async () => {
+  it('#54 選択 0 件なら一括投稿・一括取り消しが disabled', async () => {
     const html = await render();
+    const post = buttonStartingWith(html, BULK_POST_LABEL);
 
-    expect(isDisabled(buttonStartingWith(html, BULK_SEND_LABEL)?.openTag ?? '')).toBe(true);
+    expect(post, BULK_POST_LABEL).toBeDefined();
+    expect(isDisabled(post?.openTag ?? '')).toBe(true);
     expect(isDisabled(buttonStartingWith(html, BULK_DELETE_LABEL)?.openTag ?? '')).toBe(true);
   });
 
-  it('#54 承認待ちを選べば一括送信・一括取り消しを押せる', async () => {
+  it('#54 承認待ちを選べば一括投稿・一括取り消しを押せる', async () => {
     const html = await render({ initialSelectedIds: [AWAITING_AUTO.id] });
+    const post = buttonStartingWith(html, BULK_POST_LABEL);
 
-    expect(isDisabled(buttonStartingWith(html, BULK_SEND_LABEL)?.openTag ?? '')).toBe(false);
+    expect(post, BULK_POST_LABEL).toBeDefined();
+    expect(isDisabled(post?.openTag ?? '')).toBe(false);
     expect(isDisabled(buttonStartingWith(html, BULK_DELETE_LABEL)?.openTag ?? '')).toBe(false);
   });
 
@@ -1345,16 +1367,16 @@ describe('#54 054 の一括の主要な条件が SocialPending でも成り立�
     expect(text).toMatch(/2\s*件を選択中/);
   });
 
-  it('#54 initialDialog: send で一括送信のダイアログが開き、承認待ち 2 件・予約済み 1 件の内訳', async () => {
+  it('#54 initialBulkPost: confirm で一括投稿の確認が開き、承認待ち 2 件（自動 1・手動 1）・自動配信の予約 1 件の内訳（057 #24）', async () => {
     const html = await render({
       initialSelectedIds: [AWAITING_MANUAL.id, AWAITING_AUTO.id, AUTO_SCHEDULED.id],
-      initialDialog: 'send',
+      initialBulkPost: 'confirm',
     });
-    const dialog = dialogWhere(html, (label) => label.includes('一括送信')) ?? '';
+    const dialog = dialogWhere(html, (label) => label === BULK_POST_LABEL) ?? '';
 
     expect(dialog).not.toBe('');
-    expect(textOf(dialog)).toMatch(/承認待ち\s*2\s*件/);
-    expect(textOf(dialog)).toMatch(/予約済み\s*1\s*件/);
+    expect(textOf(dialog)).toContain('承認待ち 2 件を承認して投稿します（自動 1・手動 1）');
+    expect(textOf(dialog)).toContain('自動配信の予約 1 件を今すぐ送ります');
   });
 
   it('#54 initialDialog: delete で一括取り消しのダイアログが開く', async () => {
@@ -1807,27 +1829,32 @@ describe('#83 handoff が changed の行（設計 §8.3・§9.3.4）', () => {
 });
 
 /* -------------------------------------------------------------------------- */
-/* 検証 2 回目 軽微-B 順に投稿を閉じたときの後始末（設計 §9.5.2。変異 M23）                    */
+/* 検証 2 回目 軽微-B 順に投稿を閉じたときの後始末（055 設計 §9.5.2・057 設計 §7.5・#38。変異 M23）  */
 /* -------------------------------------------------------------------------- */
 
 /**
- * 順に投稿を閉じたとき、「投稿した」「投稿しなかった」で 1 件でも保存していれば Toast・読み込み直し・選択を空にする。
- * **「飛ばした」だけで閉じたときは何もしない**（Toast も読み込み直しも出さず、選択もそのまま。設計 §9.5.2）。
+ * 順に投稿を閉じたとき、「投稿した」「投稿しなかった」で 1 件でも保存していれば読み込み直し・選択を空にする。
+ * **「飛ばした」だけで閉じたときは何もしない**（読み込み直さず、選択もそのまま。055 設計 §9.5.2）。
+ * 057 で **Toast は出さない**（終わりの表示で伝える。057 設計 §7.5）。
  *
- * 描画器で `SocialPending` を描き、一括の帯の「選んだ手動投稿を順に投稿…」→ ダイアログの中の「投稿した」（409 なら
- * 「飛ばして次へ」）→ 終わりの表示の「閉じる」と押す。読み込み直しは `RefreshOnMount` を描くことなので
- * （`bulk-post-actions.tsx`。`useEffect` は描画器では走らない）、それを葉にして描かれたかを見る。
+ * 057 で入り口が一括投稿になった（057 #38 の読み込み直しと選択）。描画器で `SocialPending` を描き、帯の「一括投稿…」→
+ * 確認の「投稿する」（先頭の予約済みの手動投稿の窓を開く）→ 順に投稿の「記録へ進む」→「投稿した」（409 なら「飛ばして次へ」）→
+ * 終わりの表示の「閉じる」と押す。読み込み直しは `RefreshOnMount` を描くことなので（`bulk-post-actions.tsx`。
+ * `useEffect` は描画器では走らない）、それを葉にして描かれたかを見る。
  */
-describe('検証 2 回目 軽微-B 順に投稿を閉じたときの後始末（設計 §9.5.2）', () => {
+describe('検証 2 回目 軽微-B 順に投稿を閉じたときの後始末（057 #38）', () => {
   let SocialPending: ComponentType<PendingProps>;
   let RefreshOnMount: unknown;
   const TARGETS: readonly PendingRow[] = [MANUAL_PENDING, MANUAL_FUTURE];
   const SKIP_LABEL = '飛ばして次へ';
   const CLOSE_LABEL = '閉じる';
+  const RECORD_NOW_LABEL = '記録へ進む';
+  const RESULT_TITLE = '一括投稿の結果';
   const STALE = {
     ok: false,
     error: { code: 'CONFLICT', message: 'サーバの 409 の文言です。', status: 409 },
   } as const;
+  const open = vi.fn();
 
   beforeEach(async () => {
     hookHarness.reset();
@@ -1837,6 +1864,7 @@ describe('検証 2 回目 軽微-B 順に投稿を閉じたときの後始末（
       'RefreshOnMount'
     ];
     hookHarness.leaves.add(RefreshOnMount);
+    open.mockReset();
     SocialPending = await loadComponent();
   });
 
@@ -1846,6 +1874,7 @@ describe('検証 2 回目 軽微-B 順に投稿を閉じたときの後始末（
         ...BASE,
         rows: TARGETS,
         total: TARGETS.length,
+        open,
         initialSelectedIds: TARGETS.map((item) => item.id),
       }),
     );
@@ -1883,14 +1912,20 @@ describe('検証 2 回目 軽微-B 順に投稿を閉じたときの後始末（
     ).length;
   }
 
-  /** 帯の「選んだ手動投稿を順に投稿…」でダイアログを開く。 */
-  function start(): void {
-    click(only(draw(), `${SEQUENCE_LABEL}…`));
-    expect(dialogOf(draw()), '順に投稿のダイアログ').toHaveLength(1);
+  /** 帯の「一括投稿…」→ 確認の「投稿する」で順に投稿を始める（予約済みの手動だけなので要求は送らない）。 */
+  async function start(): Promise<void> {
+    click(only(draw(), `${BULK_POST_LABEL}…`));
+    click(only(dialogOf(draw()), '投稿する'));
+    await flush();
+    expect(
+      dialogOf(draw()).some((node) => String(node.props['aria-label']).startsWith('手動投稿（')),
+      '順に投稿のダイアログ',
+    ).toBe(true);
   }
 
-  /** 今の件をダイアログの「投稿した」で保存する（409 なら「飛ばして次へ」まで押す）。 */
+  /** 今の件を「記録へ進む」→「投稿した」で保存する。 */
   async function post(): Promise<void> {
+    click(only(dialogOf(draw()), RECORD_NOW_LABEL));
     click(only(dialogOf(draw()), DONE_LABEL));
     await flush();
   }
@@ -1902,14 +1937,14 @@ describe('検証 2 回目 軽微-B 順に投稿を閉じたときの後始末（
 
   function closeFinished(): readonly HostNode[] {
     const dialog = dialogOf(draw());
-    expect(textOfNodes(dialog)).toContain('すべての手動投稿を記録しました');
+    expect(dialog.map((node) => node.props['aria-label'])).toContain(RESULT_TITLE);
     click(only(dialog, CLOSE_LABEL));
     return draw();
   }
 
-  it('軽微-B：「飛ばした」だけで閉じたら Toast を出さない', async () => {
+  it('軽微-B：「飛ばした」だけで閉じたら Toast を出さず、ダイアログが閉じる', async () => {
     capture.apiRequest.mockResolvedValue(STALE);
-    start();
+    await start();
     await skip();
     await skip();
     const after = closeFinished();
@@ -1920,7 +1955,7 @@ describe('検証 2 回目 軽微-B 順に投稿を閉じたときの後始末（
 
   it('軽微-B：「飛ばした」だけで閉じたら読み込み直さない', async () => {
     capture.apiRequest.mockResolvedValue(STALE);
-    start();
+    await start();
     await skip();
     await skip();
 
@@ -1929,7 +1964,7 @@ describe('検証 2 回目 軽微-B 順に投稿を閉じたときの後始末（
 
   it('軽微-B：「飛ばした」だけで閉じたら選択はそのまま', async () => {
     capture.apiRequest.mockResolvedValue(STALE);
-    start();
+    await start();
     await skip();
     await skip();
     const after = closeFinished();
@@ -1938,12 +1973,15 @@ describe('検証 2 回目 軽微-B 順に投稿を閉じたときの後始末（
     expect(textOfNodes(after)).toContain(`${TARGETS.length} 件を選択中`);
   });
 
-  it('軽微-B：途中で「飛ばした」後に「やめる」で閉じても何もしない', async () => {
+  it('軽微-B：途中で「飛ばした」後に「やめる」→ 終わりの表示 →「閉じる」でも何もしない', async () => {
     capture.apiRequest.mockResolvedValue(STALE);
-    start();
+    await start();
     await skip();
     click(only(dialogOf(draw()), 'やめる'));
-    const after = draw();
+    expect(textOfNodes(dialogOf(draw()))).toContain(
+      '記録していない手動投稿 1 件は送信待ちに残ります。',
+    );
+    const after = closeFinished();
 
     expect(dialogOf(after)).toHaveLength(0);
     expect(toastText(after)).toBe('');
@@ -1951,20 +1989,21 @@ describe('検証 2 回目 軽微-B 順に投稿を閉じたときの後始末（
     expect(checkedRows(after)).toBe(TARGETS.length);
   });
 
-  it('軽微-B 対照：「投稿した」を 1 件含めて閉じたら Toast・読み込み直し・選択を空にする', async () => {
+  it('軽微-B 対照：「投稿した」を 1 件含めて閉じたら読み込み直し・選択を空にし、Toast は出さない（終わりの表示で伝える）', async () => {
     capture.apiRequest.mockResolvedValueOnce({ ok: true, data: {} }).mockResolvedValue(STALE);
-    start();
+    await start();
     await post();
     await skip();
+    expect(textOfNodes(dialogOf(draw()))).toMatch(/投稿した\s*1/);
     const after = closeFinished();
 
-    expect(toastText(after)).toBe('1 件を記録しました（投稿した 1・投稿しなかった 0）。');
+    expect(toastText(after)).toBe('');
     expect(reloaded(after)).toBe(true);
     expect(checkedRows(after)).toBe(0);
   });
 
-  it('軽微-B 対照：閉じる前（ダイアログを開いた直後）は読み込み直していない', () => {
-    start();
+  it('軽微-B 対照：閉じる前（順に投稿を始めた直後）は読み込み直していない', async () => {
+    await start();
 
     expect(reloaded(draw())).toBe(false);
   });
