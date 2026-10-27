@@ -122,17 +122,28 @@ export interface BulkPostActionsApi<R extends BulkActionRow> {
   readonly reload: () => void;
 }
 
+/** `renderSend` に渡すもの。 */
+export interface BulkSendSlot<R extends BulkActionRow> {
+  /** 選んでいる行（表示中の行の並び）。 */
+  readonly selectedRows: readonly R[];
+  /** 一括操作の処理中か。 */
+  readonly busy: boolean;
+  readonly showToast: (message: ToastMessage) => void;
+  /** 選択を空にして読み込み直す。 */
+  readonly reload: () => void;
+}
+
 export interface BulkPostActionsProps<R extends BulkActionRow> {
   /** 表示中のページの行（props のまま。消した行はここで隠す）。 */
   readonly rows: readonly R[];
   /** 絞り込みに合う全件数（全行を選んだときの「全 n 件」）。 */
   readonly total: number;
   readonly permissions: readonly string[];
-  /** 帯の末尾に足すボタン（送信待ちタブの「選んだ手動投稿を順に投稿…」。055 設計 §9.5.1）。 */
-  readonly bandExtra?: (input: {
-    readonly selectedRows: readonly R[];
-    readonly busy: boolean;
-  }) => ReactNode;
+  /**
+   * 渡すと、帯の 054 の「一括送信（承認）…」の代わりに同じ位置に描く（送信待ちタブの「一括投稿…」と
+   * そのダイアログ。057-social-bulk-post 設計 §7.2・ユーザー裁定 3）。出すのは 054 と同じく承認か投稿の権限があるときだけ。
+   */
+  readonly renderSend?: (input: BulkSendSlot<R>) => ReactNode;
   /**
    * 選んだ状態・ダイアログを開いた状態・結果のダイアログ・1 件の削除の確認を開いた状態で描く
    * （テストのための口。Server Component は渡さない。054 設計 §9.8・055 実装プラン §8 の 62）。
@@ -432,7 +443,14 @@ export function BulkPostActions<R extends BulkActionRow>(props: BulkPostActionsP
             ? SELECTED_PAGE_COUNT(selectedRows.length, props.total)
             : SELECTED_COUNT(selectedRows.length)}
         </span>
-        {canSend && (
+        {canSend && props.renderSend !== undefined ? (
+          props.renderSend({
+            selectedRows,
+            busy: busy !== null,
+            showToast: (message) => setToast(message),
+            reload,
+          })
+        ) : canSend ? (
           <Button
             variant="secondary"
             disabled={busy !== null || sendTargetCount === 0}
@@ -444,7 +462,7 @@ export function BulkPostActions<R extends BulkActionRow>(props: BulkPostActionsP
             {`${BULK_SEND_LABEL}…`}
             {busy === 'send' && <Spinner />}
           </Button>
-        )}
+        ) : null}
         {canDelete && (
           <Button
             variant="secondary"
@@ -455,7 +473,6 @@ export function BulkPostActions<R extends BulkActionRow>(props: BulkPostActionsP
             {busy === 'delete' && <Spinner />}
           </Button>
         )}
-        {props.bandExtra?.({ selectedRows, busy: busy !== null })}
       </div>
     ) : null;
 
