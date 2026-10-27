@@ -97,6 +97,12 @@ export interface BulkPostActionsApi<R extends BulkActionRow> {
   readonly rows: readonly R[];
   /** 選択の列。選べないとき（操作の権限が無い）は null。 */
   readonly selectColumn: Column<R> | null;
+  /**
+   * 状態のセルのクリックでチェックを切り替える（057-social-bulk-post 設計 §5.1）。呼ぶ側は状態の列の `onCellClick` に渡す。
+   * 選択の列を描かないとき（閲覧者）は undefined（セルに `onClick`・`cursor` を付けない）。
+   * 選べない行・一括の処理中は何もしない（チェックボックスが `disabled` のときと同じ）。
+   */
+  readonly cellToggle: ((row: R) => void) | undefined;
   /** 一括の帯。描かないとき（選べない・行が無い）は null。 */
   readonly band: ReactNode;
   /** 選んでいる行（表示中の行の並び）。 */
@@ -377,6 +383,12 @@ export function BulkPostActions<R extends BulkActionRow>(props: BulkPostActionsP
     setToast(afterSingleDelete({ hiddenIds: removed, selectedIds: selected }, id, result).toast);
   }
 
+  /** セルのクリックでの切り替え（057 設計 §5.1）。チェックボックスを押したのと同じ。 */
+  function cellToggle(row: R): void {
+    if (!isSelectable(row) || busy !== null) return;
+    toggleRow(row.id);
+  }
+
   const selectColumn: Column<R> = {
     key: 'select',
     header: (
@@ -404,6 +416,8 @@ export function BulkPostActions<R extends BulkActionRow>(props: BulkPostActionsP
           onChange={() => toggleRow(row.id)}
         />
       ) : null,
+    // セルの余白を押しても切り替わる。チェックボックス自身のクリックは `Table` が数えない（二重に切り替えない）。
+    onCellClick: cellToggle,
   };
 
   /*
@@ -461,6 +475,7 @@ export function BulkPostActions<R extends BulkActionRow>(props: BulkPostActionsP
       {props.children({
         rows,
         selectColumn: canSelect ? selectColumn : null,
+        cellToggle: canSelect ? cellToggle : undefined,
         band,
         selectedRows,
         busy: busy !== null,

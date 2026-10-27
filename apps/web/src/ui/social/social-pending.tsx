@@ -285,6 +285,7 @@ export function SocialPending(props: SocialPendingProps) {
       {({
         rows,
         selectColumn,
+        cellToggle,
         band,
         requestDelete,
         hideRow,
@@ -515,7 +516,8 @@ export function SocialPending(props: SocialPendingProps) {
         const columns: Column<PendingRow>[] = [
           ...(selectColumn === null ? [] : [selectColumn]),
           // 列の幅は選択の列だけが持つ（056 設計 §5.5）。本文は 2 段目（detailCell）。
-          { key: 'status', header: '状態', render: statusCell },
+          // 状態のセルのクリックでもチェックを切り替える（057 設計 §5.1。閲覧者には付かない）。
+          { key: 'status', header: '状態', render: statusCell, onCellClick: cellToggle },
           {
             key: 'account',
             header: 'アカウント',
