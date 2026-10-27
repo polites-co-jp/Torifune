@@ -210,6 +210,8 @@ CORS ヘッダが付く（`*` は指定できない）。ただし **API トー�
 
 * `meta.total` は**そのページの件数ではなく、条件に合う全件数**
 * `DELETE` の成功は **204（本文なし）**
+* **すべての応答（成功・エラーとも）に `Cache-Control: no-store` が付く。** クライアントも途中のプロキシも応答を保存しない前提で作る。
+  ただし API の共通の入口（`defineRoute`）を通らない応答は除く：CORS の Preflight（`OPTIONS`）の 204 と、存在しないパスへの 404 など。どれも利用者のデータを載せない
 
 ### 3.2 エラー応答の形
 
@@ -1437,6 +1439,7 @@ while True:
 | 2026-10-18 | **管理画面の投稿一覧に登録元・絞り込み・一括操作を足した**（`054-bulk-post-actions`）。OpenAPI に**画面専用の 3 操作**（`POST /social/posts/bulk/approve`・`/bulk/publish-now`・`/bulk/delete`。`security` は `session` だけ）が増えた（§3.7・§4.1）。**API トークンでは呼べない**（401）。API のバージョンは v1 のまま。**既存の外部アプリへの影響**：(1) `GET /social/posts` のクエリと投稿の応答（§4.3・§4.5）は変わらない。登録元の絞り込み・トークンの名前は公開 API に出ない。(2) **運用者が一括操作をすると、1 件ずつ操作されたのと同じに見える**：承認待ちの投稿が承認される・削除されて 404 になる、未来の予約の `scheduledAt` がいまに早まる（`approvedAt` は変わらない）（§6.1）。(3) 一括承認では承認された件数だけ `social.post.approved` が届く。(4) **トークンの名前が管理画面の投稿一覧に「登録元」として表示される**（`social.read` を持つ人に見える。[手順書 §1](SNS投稿の外部連携.md#トークン-1-本--外部アプリ-1-つ)）。Plugin API・イベントの形・Webhook は変わらない |
 | 2026-10-24 | **管理画面の SNS をタブに分け、「送信待ち」タブを足した**（`055-social-pending-tab`）。承認待ち・予約済み・手動投稿待ちを 1 つの表に並べ、**予約日時の前の手動投稿も投稿画面を開ける**（§6.5）。OpenAPI に**画面専用の 1 操作**（`POST /social/posts/{id}/manual-outcome`。`recordSocialPostManualOutcome`。`security` は `session` だけ）が増えた（§3.7・§4.1）。**API トークンでは呼べない**（401）。API のバージョンは v1 のまま。**既存の外部アプリへの影響**：(1) 手動投稿の `publishedAt` が予約日時より前になりうる。(2) 人が「投稿しなかった」を選ぶと `failed` になり、`failureReason` が固定の文言（§6.4）、`social.post.failed` が届く。(3) `GET` / `POST` / `PATCH` の要求と応答の形、イベントの形・Webhook・Plugin API は変わらない |
 | 2026-10-27 | **送信待ちタブの「一括送信（承認）」と「選んだ手動投稿を順に投稿」を「一括投稿」1 つにまとめた**（`057-social-bulk-post`。投稿タブの一括操作は 054 のまま）。一括投稿は選んだ承認待ちを承認して即投稿し、未来の自動配信の予約を今すぐ送り、手動投稿は 1 件ずつ投稿画面を開く（§6.5）。OpenAPI に**画面専用の 1 操作**（`GET /social/posts/{id}/manual-handoff`。`getSocialPostManualHandoff`。`security` は `session` だけ）が増えた（§3.7・§4.1）。**API トークンでは呼べない**（401）。API のバージョンは v1 のまま。**既存の外部アプリへの影響**：運用者が一括投稿をすると、1 件ずつ承認・今すぐ送る・結果の記録をしたのと同じに見える（承認は即投稿で、`social.post.approved` が承認された件数だけ届く）。`GET` / `POST` / `PATCH` の要求と応答の形、イベントの形・Webhook・Plugin API は変わらない |
+| 2026-10-27 | **API の応答に `Cache-Control: no-store` を付けた**（`058-api-no-store`）。成功・エラー・Rate Limit の 429・CSRF の 403 のどれにも、どのメソッドにも付く（§3.1）。CORS の Preflight（`OPTIONS`）と存在しないパスへの 404 など、API の共通の入口を通らない応答には付かない（どれも利用者のデータを載せない）。API のバージョンは v1 のまま。**既存の外部アプリへの影響**：応答のヘッダが 1 つ増えるだけで、本文・ステータス・認可は変わらない。API は前から `ETag`・`Last-Modified`・`max-age` を返していないので、条件つきの要求や保存を前提にしたクライアントは無い前提。`Cache-Control` は CORS の下でもブラウザの JavaScript から読める。OpenAPI・イベント・Webhook・Plugin API は変わらない |
 
 ### 関連文書
 
@@ -1448,7 +1451,8 @@ while True:
   `038-sns-instagram` / `040-sns-threads`、承認待ちは `048-social-post-approval`、
   アカウントの ID の表示とコピーは `051-social-account-id-display`、トークンの区画は `053-site-scoped-social`、
   投稿一覧の登録元と一括操作は `054-bulk-post-actions`、送信待ちタブと手動投稿の結果の記録は `055-social-pending-tab`、
-  送信待ちタブの一括投稿は `057-social-bulk-post`
+  送信待ちタブの一括投稿は `057-social-bulk-post`、
+  応答の `Cache-Control: no-store` は `058-api-no-store`
 
 ---
 
