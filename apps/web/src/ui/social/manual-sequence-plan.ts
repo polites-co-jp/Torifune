@@ -93,6 +93,45 @@ export interface ManualSequenceTarget {
   readonly note: string | null;
 }
 
+/**
+ * 順に投稿の今の件の段（057 設計 §5.4）。
+ *
+ * * `ready`：まだこの件の窓を開いていない
+ * * `opened`：窓を開いた。とりふねの画面に戻るのを待つ
+ * * `returned`：戻った（か「記録へ進む」を押した）。記録のボタンを出す
+ */
+export type WindowStage = 'ready' | 'opened' | 'returned';
+
+/**
+ * 段を動かす出来事（057 設計 §5.4）。`open` は窓を開いた・「別のタブで開く」を押した、`left` はとりふねの
+ * `window` の `blur` か `hidden`、`back` は `focus` か `visible`、`recordNow` は「記録へ進む」。
+ */
+export type WindowEvent = 'open' | 'left' | 'back' | 'recordNow';
+
+/** 段と、窓を開いた後にとりふねの画面から離れたか（離れた後に戻ったら `returned`）。 */
+export interface WindowState {
+  readonly stage: WindowStage;
+  readonly left: boolean;
+}
+
+/**
+ * 出来事で段を移す（057 設計 §5.4 の表）。**窓を閉じたことは知れない**（X・Threads の COOP で、開き手の参照は
+ * 開いた直後から `closed`。§3.4）ので、開いた後に離れて戻ってきたことを「閉じた」の代わりにする。
+ * 離れる前の `back` では戻ったとみなさない。`open` は離れたかを数え直す。渡した状態は書き換えない。
+ */
+export function windowStageAfter(state: WindowState, event: WindowEvent): WindowState {
+  switch (event) {
+    case 'open':
+      return { stage: 'opened', left: false };
+    case 'left':
+      return state.stage === 'opened' ? { stage: 'opened', left: true } : state;
+    case 'back':
+      return state.stage === 'opened' && state.left ? { stage: 'returned', left: true } : state;
+    case 'recordNow':
+      return state.stage === 'returned' ? state : { stage: 'returned', left: state.left };
+  }
+}
+
 /** `POST /social/posts/{id}/manual-outcome` の本文（設計 §5.6・§9.5.2）。 */
 export interface ManualOutcomeRequestBody {
   readonly outcome: ManualOutcome;
