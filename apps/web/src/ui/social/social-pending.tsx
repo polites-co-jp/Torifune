@@ -26,6 +26,7 @@ import {
 } from '@/ui/components';
 import { ApprovalDialog, RejectDialog } from '@/ui/social/approval-dialog';
 import { BulkPostActions, type BulkResultsInput } from '@/ui/social/bulk-post-actions';
+import { scheduledManualTargetsOf } from '@/ui/social/bulk-post-plan';
 import {
   APPROVAL_DESIRED_PAST_NOTE,
   APPROVAL_PENDING_GUIDE,
@@ -721,9 +722,9 @@ export function SocialPending(props: SocialPendingProps) {
 
             {sequence !== null && (
               <ManualSequence
-                plan={sequence}
+                targets={scheduledManualTargetsOf(sequence.targets)}
                 accountNames={props.accountNames}
-                onClose={closeSequence}
+                onFinish={closeSequence}
                 {...(props.open === undefined ? {} : { open: props.open })}
               />
             )}

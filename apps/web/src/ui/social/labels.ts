@@ -583,6 +583,50 @@ export const MANUAL_SEQUENCE_EXCLUDED_LABEL = {
 export const MANUAL_SEQUENCE_STALE_MESSAGE =
   '内容が変わっています。この投稿は飛ばして次へ進めます。';
 
+/** 窓を開いた後の案内（057-social-bulk-post 設計 §5.4 の `opened`）。 */
+export const MANUAL_SEQUENCE_OPENED_GUIDE =
+  'SNS の窓で投稿したら、窓を閉じてこの画面に戻ってください。戻ると記録のボタンが出ます。窓が開かないときは『別のタブで開く』を使ってください。';
+
+/** 戻らずに記録のボタンを出す（057 設計 §5.4）。 */
+export const MANUAL_SEQUENCE_RECORD_NOW = '記録へ進む';
+
+/** 記録のボタンに添える。次の件があるときだけ（057 設計 §5.4 の `returned`）。 */
+export const MANUAL_SEQUENCE_NEXT_GUIDE = '選ぶと次の投稿画面が開きます。';
+
+/** 記録に失敗したが、次の件の窓はもう開いている（057 設計 §7.5）。 */
+export const MANUAL_SEQUENCE_NEXT_OPENED = '次の投稿画面は開いています。';
+
+// ---------------------------------------------------------------------------
+// 送信待ちタブの一括投稿（057-social-bulk-post 設計 §7.2〜§7.6）
+// ---------------------------------------------------------------------------
+
+/** 終わりの表示の題（順に投稿の後も、順に投稿の無い一括投稿の結果も。057 実装プラン §8 の 21）。 */
+export const BULK_POST_RESULT_TITLE = '一括投稿の結果';
+
+/** 手動投稿の記録の内訳（例「手動投稿：投稿した 2・飛ばした 1」）。0 件の結果は書かない。 */
+export function BULK_POST_MANUAL_RESULT(
+  posted: number,
+  notPosted: number,
+  skipped: number,
+): string {
+  const breakdown = (
+    [
+      [MANUAL_SEQUENCE_POSTED, posted],
+      [MANUAL_SEQUENCE_NOT_POSTED, notPosted],
+      [MANUAL_SEQUENCE_SKIPPED, skipped],
+    ] as const
+  )
+    .filter(([, count]) => count > 0)
+    .map(([label, count]) => `${label} ${count}`)
+    .join('・');
+  return `手動投稿：${breakdown}`;
+}
+
+/** 途中でやめたとき（057 設計 §7.5）。まだ記録していない件は何も変えていない。 */
+export function BULK_POST_UNRECORDED(count: number): string {
+  return `記録していない手動投稿 ${count} 件は送信待ちに残ります。`;
+}
+
 // ---------------------------------------------------------------------------
 // 一覧の 2 段目の本文（056-social-row-layout 設計 §5.3）
 // ---------------------------------------------------------------------------
