@@ -362,6 +362,10 @@ CORS ヘッダが付く（`*` は指定できない）。ただし **API トー�
   `POST /social/posts/{id}/manual-outcome`。§4.1 の表の下）も載る。`security` は `session` だけで、**API トークンでは 401**。
   `description` に「画面（セッション）専用。API トークンでは 401。外部アプリは PATCH /social/posts/{id} を使う。」とある。
   1 件の操作なので 404・409 も宣言されている
+* さらに、**管理画面の送信待ちタブの「一括投稿」が、承認した手動投稿の投稿画面の URL を取る画面専用の 1 操作**（`getSocialPostManualHandoff`。
+  `GET /social/posts/{id}/manual-handoff`。§4.1 の表の下）も載る。`security` は `session` だけで、**API トークンでは 401**。
+  `description` に「画面（セッション）専用。API トークンでは 401。」とある。予約でない（承認待ちなど）投稿には URL を作らず `not_scheduled` を返す。
+  1 件の操作なので 404 も宣言されている
 * 必要な権限は各操作の拡張項目 **`x-required-permission`** に書かれている
 * 認証方式は `session`（Cookie）と `bearer`（API トークン）の 2 つが宣言されている
 * 応答は、成功・401・403・422・429・500 のほかに次が宣言されている
@@ -407,7 +411,8 @@ CORS ヘッダが付く（`*` は指定できない）。ただし **API トー�
 
 **画面専用の操作**：表のほかに、管理画面の投稿一覧の一括操作が使う `POST /social/posts/bulk/approve`（`social.approve`）・
 `POST /social/posts/bulk/publish-now`（`social.write`）・`POST /social/posts/bulk/delete`（`social.delete`）と、
-送信待ちタブが手動投稿の結果（投稿した／投稿しなかった）を記録する `POST /social/posts/{id}/manual-outcome`（`social.write`）がある。
+送信待ちタブが手動投稿の結果（投稿した／投稿しなかった）を記録する `POST /social/posts/{id}/manual-outcome`（`social.write`）、
+送信待ちタブの「一括投稿」が承認した手動投稿の投稿画面の URL を取る `GET /social/posts/{id}/manual-handoff`（`social.read`）がある。
 **セッション（画面）専用で、API トークンでは 401**（`UNAUTHENTICATED`）。外部アプリからは呼べないので、この文書では要求・応答を扱わない
 （OpenAPI には載る。§3.7）。運用者がこれらを使ったときの外部アプリからの見え方は §6.1。
 
@@ -1040,13 +1045,15 @@ SNS 側に投稿されている可能性があるので**人が SNS を確かめ
 * 承認待ち（`awaiting_approval`）の手動投稿は、承認されるまで投稿画面を開けない
 * **Torifune の定期実行は手動投稿に一切触らない。** `attemptCount` は 0 のまま、人が記録するまで
   `scheduled` のまま残る
-* 結果の記録は画面の「投稿した」「取りやめ」、送信待ちタブの「選んだ手動投稿を順に投稿」の「投稿した」「投稿しなかった」、
+* 結果の記録は画面の「投稿した」「取りやめ」、送信待ちタブの「一括投稿」の順に投稿の「投稿した」「投稿しなかった」、
   または API の `PATCH`（§4.7）で行う。画面の「投稿した」「投稿しなかった」は画面専用の `manual-outcome`（§4.1）を使い、
   「投稿しなかった」は `failed`（`failureReason` は §6.4 の固定の文言）になって `social.post.failed` が届く。予約日時と `approvedAt` は変わらない
   * 投稿した：`{ "status": "published", "externalUrl": "https://…", "externalId": "…" }`
     （`externalUrl` / `externalId` は任意）
   * 取りやめ：`{ "status": "draft" }`
-* **外部アプリが投稿画面の URL を API で受け取る口は無い**（画面専用）
+* 送信待ちタブの「一括投稿」では、選んだ承認待ちの手動投稿も承認してから順に投稿画面を開く（承認の後に画面専用の
+  `manual-handoff`（§4.1）で URL を取る。承認待ちのままでは URL は作られない）
+* **外部アプリが投稿画面の URL を API で受け取る口は無い**（画面専用。`manual-handoff` も API トークンでは 401）
 
 ### 6.6 イベントと Webhook
 
@@ -1429,6 +1436,7 @@ while True:
 | 2026-10-08 | 053 の検証を受けて足した。**トークンから見えない投稿が載ったアカウントは、トークンから削除・資格情報の変更ができない**（403 `FORBIDDEN`。§2.3・§3.3・§4.2）。表示名・`handle`・`status` の変更は通る。見えない投稿が載るのは共通のアカウントへサイトのトークンが投稿を登録したときだけなので、**サイトを使っていない間は既存の外部アプリに影響しない**。あわせて、同じ `externalRef` の要求が同時に届いた場合も、既存の投稿が区画の外なら 422 `externalRef`（§3.5 の再送と同じ）にそろえた |
 | 2026-10-18 | **管理画面の投稿一覧に登録元・絞り込み・一括操作を足した**（`054-bulk-post-actions`）。OpenAPI に**画面専用の 3 操作**（`POST /social/posts/bulk/approve`・`/bulk/publish-now`・`/bulk/delete`。`security` は `session` だけ）が増えた（§3.7・§4.1）。**API トークンでは呼べない**（401）。API のバージョンは v1 のまま。**既存の外部アプリへの影響**：(1) `GET /social/posts` のクエリと投稿の応答（§4.3・§4.5）は変わらない。登録元の絞り込み・トークンの名前は公開 API に出ない。(2) **運用者が一括操作をすると、1 件ずつ操作されたのと同じに見える**：承認待ちの投稿が承認される・削除されて 404 になる、未来の予約の `scheduledAt` がいまに早まる（`approvedAt` は変わらない）（§6.1）。(3) 一括承認では承認された件数だけ `social.post.approved` が届く。(4) **トークンの名前が管理画面の投稿一覧に「登録元」として表示される**（`social.read` を持つ人に見える。[手順書 §1](SNS投稿の外部連携.md#トークン-1-本--外部アプリ-1-つ)）。Plugin API・イベントの形・Webhook は変わらない |
 | 2026-10-24 | **管理画面の SNS をタブに分け、「送信待ち」タブを足した**（`055-social-pending-tab`）。承認待ち・予約済み・手動投稿待ちを 1 つの表に並べ、**予約日時の前の手動投稿も投稿画面を開ける**（§6.5）。OpenAPI に**画面専用の 1 操作**（`POST /social/posts/{id}/manual-outcome`。`recordSocialPostManualOutcome`。`security` は `session` だけ）が増えた（§3.7・§4.1）。**API トークンでは呼べない**（401）。API のバージョンは v1 のまま。**既存の外部アプリへの影響**：(1) 手動投稿の `publishedAt` が予約日時より前になりうる。(2) 人が「投稿しなかった」を選ぶと `failed` になり、`failureReason` が固定の文言（§6.4）、`social.post.failed` が届く。(3) `GET` / `POST` / `PATCH` の要求と応答の形、イベントの形・Webhook・Plugin API は変わらない |
+| 2026-10-27 | **送信待ちタブの「一括送信（承認）」と「選んだ手動投稿を順に投稿」を「一括投稿」1 つにまとめた**（`057-social-bulk-post`。投稿タブの一括操作は 054 のまま）。一括投稿は選んだ承認待ちを承認して即投稿し、未来の自動配信の予約を今すぐ送り、手動投稿は 1 件ずつ投稿画面を開く（§6.5）。OpenAPI に**画面専用の 1 操作**（`GET /social/posts/{id}/manual-handoff`。`getSocialPostManualHandoff`。`security` は `session` だけ）が増えた（§3.7・§4.1）。**API トークンでは呼べない**（401）。API のバージョンは v1 のまま。**既存の外部アプリへの影響**：運用者が一括投稿をすると、1 件ずつ承認・今すぐ送る・結果の記録をしたのと同じに見える（承認は即投稿で、`social.post.approved` が承認された件数だけ届く）。`GET` / `POST` / `PATCH` の要求と応答の形、イベントの形・Webhook・Plugin API は変わらない |
 
 ### 関連文書
 
@@ -1439,7 +1447,8 @@ while True:
 * 設計：`docs/設計/035-social-publishing/設計.md`、各 SNS は `036-sns-bluesky` / `037-sns-x` /
   `038-sns-instagram` / `040-sns-threads`、承認待ちは `048-social-post-approval`、
   アカウントの ID の表示とコピーは `051-social-account-id-display`、トークンの区画は `053-site-scoped-social`、
-  投稿一覧の登録元と一括操作は `054-bulk-post-actions`、送信待ちタブと手動投稿の結果の記録は `055-social-pending-tab`
+  投稿一覧の登録元と一括操作は `054-bulk-post-actions`、送信待ちタブと手動投稿の結果の記録は `055-social-pending-tab`、
+  送信待ちタブの一括投稿は `057-social-bulk-post`
 
 ---
 
