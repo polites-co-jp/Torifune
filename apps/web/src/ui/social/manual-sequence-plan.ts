@@ -75,6 +75,24 @@ export function manualSequencePlanOf<R extends ManualSequenceRow>(
   };
 }
 
+/**
+ * 順に投稿の 1 件（057-social-bulk-post 設計 §5.3・§7.5）。予約済みの手動投稿は行から、
+ * 一括投稿で承認した手動投稿は承認の結果と取得の口の URL から作る。
+ *
+ * `updatedAt` は記録の `expectedUpdatedAt`。承認した手動投稿では**承認の結果の `post.updatedAt`**
+ * （行の値は承認の前のもの）。見た後に本文が変わっていれば記録は 409 になる。
+ */
+export interface ManualSequenceTarget {
+  readonly id: string;
+  readonly body: string;
+  readonly socialAccountId: string;
+  readonly scheduledAt: string | null;
+  readonly updatedAt: string;
+  /** 投稿画面の URL（配信 Plugin の `manual()` が作ったもの）。 */
+  readonly url: string;
+  readonly note: string | null;
+}
+
 /** `POST /social/posts/{id}/manual-outcome` の本文（設計 §5.6・§9.5.2）。 */
 export interface ManualOutcomeRequestBody {
   readonly outcome: ManualOutcome;
