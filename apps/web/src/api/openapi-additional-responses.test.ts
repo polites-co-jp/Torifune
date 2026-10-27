@@ -64,7 +64,8 @@ const REST_ADDITIONAL: Readonly<Record<string, readonly number[]>> = {
 
 /**
  * 042 §6.4 の表（SNS の 8 操作）と 048 の承認（048-social-post-approval 設計 §6.11）と
- * 055 の手動投稿の結果（055-social-pending-tab 設計 §8.4）：操作 ID → 追加の status。
+ * 055 の手動投稿の結果（055-social-pending-tab 設計 §8.4）と 057 の手動投稿の URL の取得
+ * （057-social-bulk-post 設計 §6）：操作 ID → 追加の status。
  * 043 では変えない。
  */
 const SOCIAL_ADDITIONAL: Readonly<Record<string, readonly number[]>> = {
@@ -82,6 +83,9 @@ const SOCIAL_ADDITIONAL: Readonly<Record<string, readonly number[]>> = {
   // 055 で足した（存在しない・区画の外の投稿と、見た後に内容が変わっていた・条件付き更新が当たらなかった記録。
   // 055-social-pending-tab 設計 §8.2・§8.4。055 実装プラン §8 の 1）。
   recordSocialPostManualOutcome: [404, 409],
+  // 057 で足した（存在しない・区画の外の投稿と、自動配信の投稿。GET に本文が無いので 422 は既定の応答に入らず
+  // 宣言する。057-social-bulk-post 設計 §6、057 実装プラン §7 の 10）。
+  getSocialPostManualHandoff: [404, 422],
 };
 
 const ADDITIONAL: Readonly<Record<string, readonly number[]>> = {
@@ -156,10 +160,10 @@ describe('#38 設計 §6.4 の表の 404 / 409 / 401 はエラーの形', () => 
 /* -------------------------------------------------------------------------- */
 
 describe('#39 全公開操作の追加の応答が表とちょうど一致する', () => {
-  it('#39 表は設計 §6.4 の 27 操作と 053 の 1 操作、042・048 の 9 操作、055 の 1 操作の計 38 行', () => {
+  it('#39 表は設計 §6.4 の 27 操作と 053 の 1 操作、042・048 の 9 操作、055 の 1 操作、057 の 1 操作の計 39 行', () => {
     expect(Object.keys(REST_ADDITIONAL)).toHaveLength(28);
-    expect(Object.keys(SOCIAL_ADDITIONAL)).toHaveLength(10);
-    expect(Object.keys(ADDITIONAL)).toHaveLength(38);
+    expect(Object.keys(SOCIAL_ADDITIONAL)).toHaveLength(11);
+    expect(Object.keys(ADDITIONAL)).toHaveLength(39);
   });
 
   it('#39 表の操作はすべて文書に載っている公開操作', () => {
@@ -175,13 +179,15 @@ describe('#39 全公開操作の追加の応答が表とちょうど一致する
   // G4：bulkApproveSocialPosts。G5：bulkPublishSocialPostsNow。G6：bulkDeleteSocialPosts。
   // 055 で手動投稿の結果（recordSocialPostManualOutcome）を足した。404・409 を宣言するので表に 1 行足し、
   // 公開操作と表の行が 1 つずつ増え、何も足さない操作は 33 のまま（055-social-pending-tab 設計 §8.4・§14）。
-  it('#39 公開操作は 71 で、表の 38 と何も足さない 33 に分かれる', () => {
+  // 057 で手動投稿の URL の取得（getSocialPostManualHandoff）を足した。404・422 を宣言するので同じく表に 1 行足し、
+  // 公開操作と表の行が 1 つずつ増え、何も足さない操作は 33 のまま（057-social-bulk-post 設計 §14.2）。
+  it('#39 公開操作は 72 で、表の 39 と何も足さない 33 に分かれる', () => {
     const endpoints = listDocumentedEndpoints();
     const withoutAdditional = endpoints.filter(
       (endpoint) => ADDITIONAL[endpoint.operationId] === undefined,
     );
 
-    expect(endpoints).toHaveLength(71);
+    expect(endpoints).toHaveLength(72);
     expect(withoutAdditional).toHaveLength(33);
   });
 

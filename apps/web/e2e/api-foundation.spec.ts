@@ -137,6 +137,8 @@ test('OpenAPI に登録済みエンドポイントが含まれる', async ({ req
     '/social/posts/{id}',
     // 048-social-post-approval 設計 §6.4。承認待ちの投稿を承認する。
     '/social/posts/{id}/approve',
+    // 057-social-bulk-post 設計 §6。画面（セッション）専用の手動投稿の投稿画面の URL の取得。
+    '/social/posts/{id}/manual-handoff',
     // 055-social-pending-tab 設計 §8.2・§8.4。画面（セッション）専用の手動投稿の結果の記録。
     '/social/posts/{id}/manual-outcome',
     // 035-social-publishing 設計 §6.5.9。
