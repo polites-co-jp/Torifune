@@ -26,7 +26,7 @@ export const GET = defineRoute({
   additionalResponses: [
     {
       status: 404,
-      description: '投稿が存在しない（UUID の形でない ID を含む。区画の外の投稿を含む）',
+      description: '投稿が存在しない（UUID の形でない ID を含む）',
     },
   ],
   handler: async ({ context, params }) => {
