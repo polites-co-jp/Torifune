@@ -268,8 +268,14 @@ function isRowChecked(nodes: readonly HostNode[], body: string): boolean {
   return rowCheckbox(nodes, body)?.props['checked'] === true;
 }
 
+/**
+ * 件数の文の要素（「件を選択中」を含み、子にそれを含むものが無い要素）を引いてから読む。描画の全文に当てると、
+ * 投稿タブでは直前の表示件数の選択肢（20・50・100）の文字とつながって「20501001 件を選択中」と読む（057 実装プラン §8 の 30）。
+ */
 function selectedCountText(nodes: readonly HostNode[]): string {
-  return /(\d+)\s*件を選択中/.exec(textOfNodes(nodes))?.[0] ?? '';
+  const holds = (node: HostNode): boolean => node.text.includes('件を選択中');
+  const own = findAll(nodes, (node) => holds(node) && !node.children.some(holds));
+  return /(\d+)\s*件を選択中/.exec(textOfNodes(own))?.[0] ?? '';
 }
 
 function styleOf(node: HostNode): Record<string, unknown> {

@@ -219,8 +219,15 @@ function secondTierCell(row: Locator): Locator {
   return row.locator('tr').nth(1).locator('td').first();
 }
 
+/**
+ * 行のチェックボックス。名前は「この投稿を選択：<60 字の抜粋>」（設計 §3.1。054 のまま）なので、本文の全文ではなく
+ * 先頭 60 字で引く（長い本文には末尾に「…」が付くが、名前の既定の照合は部分一致なので先頭 60 字で当たる。057 実装プラン §8 の 30）。
+ */
+const EXCERPT_LENGTH = 60;
+
 function rowCheckbox(page: Page, body: string): Locator {
-  return page.getByRole('checkbox', { name: `${SELECT_ROW_PREFIX}${body}` });
+  const excerpt = body.replace(/\s+/g, ' ').trim().slice(0, EXCERPT_LENGTH);
+  return page.getByRole('checkbox', { name: `${SELECT_ROW_PREFIX}${excerpt}` });
 }
 
 /** 予約時刻前の手動の予約（予約済み）。 */

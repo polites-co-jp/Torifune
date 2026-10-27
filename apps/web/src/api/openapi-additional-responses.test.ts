@@ -83,9 +83,9 @@ const SOCIAL_ADDITIONAL: Readonly<Record<string, readonly number[]>> = {
   // 055 で足した（存在しない・区画の外の投稿と、見た後に内容が変わっていた・条件付き更新が当たらなかった記録。
   // 055-social-pending-tab 設計 §8.2・§8.4。055 実装プラン §8 の 1）。
   recordSocialPostManualOutcome: [404, 409],
-  // 057 で足した（存在しない・区画の外の投稿と、自動配信の投稿。GET に本文が無いので 422 は既定の応答に入らず
-  // 宣言する。057-social-bulk-post 設計 §6、057 実装プラン §7 の 10）。
-  getSocialPostManualHandoff: [404, 422],
+  // 057 で足した（存在しない・区画の外の投稿）。自動配信の投稿の 422 は、生成器が GET を含むすべての操作に既定で出すので
+  // 追加の応答には入らず、宣言するのは 404 だけ（057-social-bulk-post 設計 §6、057 実装プラン §7 の 10・§8 の 30）。
+  getSocialPostManualHandoff: [404],
 };
 
 const ADDITIONAL: Readonly<Record<string, readonly number[]>> = {
@@ -179,7 +179,7 @@ describe('#39 全公開操作の追加の応答が表とちょうど一致する
   // G4：bulkApproveSocialPosts。G5：bulkPublishSocialPostsNow。G6：bulkDeleteSocialPosts。
   // 055 で手動投稿の結果（recordSocialPostManualOutcome）を足した。404・409 を宣言するので表に 1 行足し、
   // 公開操作と表の行が 1 つずつ増え、何も足さない操作は 33 のまま（055-social-pending-tab 設計 §8.4・§14）。
-  // 057 で手動投稿の URL の取得（getSocialPostManualHandoff）を足した。404・422 を宣言するので同じく表に 1 行足し、
+  // 057 で手動投稿の URL の取得（getSocialPostManualHandoff）を足した。404 を宣言するので同じく表に 1 行足し、
   // 公開操作と表の行が 1 つずつ増え、何も足さない操作は 33 のまま（057-social-bulk-post 設計 §14.2）。
   it('#39 公開操作は 72 で、表の 39 と何も足さない 33 に分かれる', () => {
     const endpoints = listDocumentedEndpoints();
