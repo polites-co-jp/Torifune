@@ -21,13 +21,16 @@ test('#35 ログインした状態の GET /api/v1/social/posts の 200 の cache
 });
 
 /**
- * #36。未認証は `storageState` を引き継がない新しい要求の文脈で叩く
- * （`playwright.request.newContext` は config の `use.storageState` を読まない）。
+ * #36。未認証は Cookie を空にした新しい要求の文脈で叩く。
+ * `playwright.request.newContext` は config の `use.storageState` を引き継ぐので、`storageState` を明示的に空にする。
  */
 test('#36 未認証の GET /api/v1/social/posts の 401 の cache-control が no-store ちょうど', async ({
   playwright,
 }) => {
-  const context = await playwright.request.newContext({ baseURL: origin });
+  const context = await playwright.request.newContext({
+    baseURL: origin,
+    storageState: { cookies: [], origins: [] },
+  });
   try {
     // 未認証になっていることを先に確かめる。Cookie が残っていると検査が意味を失う。
     expect((await context.storageState()).cookies).toEqual([]);
